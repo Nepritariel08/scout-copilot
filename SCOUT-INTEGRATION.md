@@ -79,14 +79,18 @@ On Windows with isolated Bun1.4.3, frozen installation with dependency scripts
 disabled succeeded. The Bun Windows archive matched the upstream release
 SHA256 `0bf84e808552beea67bf1202a287a35c6c825d837b287b3f8e9dd513dba35d3d`.
 
-69 tests passed across the existing tenant-package duplicate/agent-file,
-model-provider, model-URL and Intelligence entitlement suites. The real package
+251 selected tests passed across nine existing suites:69 tenant-package
+duplicate/agent-file, model-provider, model-URL and Intelligence entitlement
+checks;182 configuration, listener, same-origin and organization-auth checks.
+The authentication tests use local fixture authorities and Better Auth's test
+exchange, not the company's live identity provider. The real package
 loader returned Scout branding, one built-in Scout agent and zero knowledge
 sources with a synthetic model. Removing `SCOUT_MODEL` was refused. Generated
 app configuration also contained Scout branding. These selected tests use local
 fixtures; they are not a live provider, identity or end-to-end queue test.
 
 The original OpenDuet package, platform server/shared code and Bun lockfile were
-unchanged from the pinned upstream. Additional build/auth checks and exact-head
-CI are reported separately in the primary checkpoint; do not infer them from
-this bounded source receipt.
+unchanged from the pinned upstream. The local Vite build reached transformation
+and was deliberately interrupted after host free RAM fell below1GiB; no frontend
+build pass is claimed. Exact-head CI is reported separately in the primary
+checkpoint; do not infer it from these bounded source checks.
