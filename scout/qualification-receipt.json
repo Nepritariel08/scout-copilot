@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "scope": "CopilotKit Scout requester-adapter source and synthetic qualification; not deployment or live acceptance",
+  "upstream_pin": "f52288fff5ccdbd3de428d573d9f026fce5ff480",
+  "baseline_before_changes": "b98b4d7b18183b5e6c402d3c10f2301dc7ee7ed1",
+  "hash_normalization": "UTF-8 text with CRLF normalized to LF; no whitespace stripped",
+  "source_sha256": {
+    "openbot/app/src/components/channels/channel-chat.tsx": "76f06f298558c64536692211ad9bcc6d032e64c7a41ebd2bc0cc0c2e190a1cca",
+    "openbot/app/src/components/scout/drafts.tsx": "3fb5be737342a60dfe00560a681c0c8b77d8daf3e3d2c3c4766f9380b71eae72",
+    "openbot/app/src/lib/scout.ts": "e7ae804e6362df8de1b263998bf6585854cf83d6f46de5477c774f69dbe1bbfe",
+    "openbot/app/tests/scout-drafts.test.tsx": "3e368532b7ec833f8cb921fd988f37685889280d948fdba3cdd7963ebfcf994f",
+    "openbot/server/drizzle.config.ts": "ed22991a78d337268f61db54202eb3a44130f62690d25503cef507b0ba6c90dd",
+    "openbot/server/drizzle/0068_scout_queue_requester.sql": "f5d61b387141dd13ac8d6fb60221741032b2f75fd43b3e667a266664b6f1ad52",
+    "openbot/server/drizzle/meta/0068_snapshot.json": "4c13d941bdadf3c8994972521207672a28e1ae0870f721cd9ca61159c3318567",
+    "openbot/server/drizzle/meta/_journal.json": "4073331684ccf9737e0c3cf8149ee0aed999f312374db5d9bb3abb612064bda7",
+    "openbot/server/scripts/qualify-scout-stdio.ts": "338f2a288a67434bce1a71cbfef1082154bb432b563a1cfc51701046a4e932e8",
+    "openbot/server/src/app.ts": "12ec480a09e660a86b2b29a0a57c6875de3e7f9f4ef58287465e29ae1b458168",
+    "openbot/server/src/config.ts": "90c28d937f062b358e2fcedb01c8acaed30cc5600b9e34ac0550ea19ad60f39d",
+    "openbot/server/src/db/schema/index.ts": "48ae858badf6f110a9ce6dfd8acbb751503d9e48ddfc60362553a80019027389",
+    "openbot/server/src/db/schema/scout.ts": "297ceac9efba257f53f0766b18de52d939e8b357b0fa779420357cd8dc11198a",
+    "openbot/server/src/index.ts": "b7c4ab62d3e9fd3ea3326f60efc4cbbdc91c55a5cbacb2c5a3ce23f96f392414",
+    "openbot/server/src/scout/binding.ts": "f49459907ddef9f5fea9e9833fefb177bd71cfc2d8b29caab74cfc01d858a19e",
+    "openbot/server/src/scout/mcp.ts": "04a6d530b21ec64b1374ccff109f8e85f96fb8922a134f8575f0b20d04b971bd",
+    "openbot/server/src/scout/routes.ts": "a6ad0caa72818f7014368ba076bf4357e32b2293d4051ababf5bd56cb727b483",
+    "openbot/server/src/scout/service.ts": "3563dc10e16baf9702d1b1c4c001fd92a5fe122bdb673857bdf734b8302b7be9",
+    "openbot/server/src/scout/store.ts": "0601485a1f8daf68a27e507c0fec6367053ace5d0ec9b1c6d80fc965eaff0bb6",
+    "openbot/server/src/scout/types.ts": "14980e3fb01e37daa4f14091ad21ee8f32f7143bd2ed271910a960a85c6e6faa",
+    "openbot/server/tests/scout-binding.test.ts": "80607ab02ebc41a2e5985d1a000981d4aecad16f16a1846226acb6d7b24f9993",
+    "openbot/server/tests/scout-config.test.ts": "01e5c3b90286052d3581e29d4796c3fc8dcbc37d2195d7aa6c7fec50ba594312",
+    "openbot/server/tests/scout-queue.integration.test.ts": "9e441cd6f90bb3ec26b9593bd64894f156dcb8b10612cfc8f24d7ec3f9385941",
+    "openbot/server/tests/support/scout-mcp.ts": "c6dc51d64a63a6389fb42b7ce388b4c51af6cfe6051cec236262be7e92d44515",
+    "openbot/shared/scout.ts": "99bed2e4ae90925f6fcea20c346e37380d3d1cd4d38d74491df3871b172b9b60",
+    "scout/queue-bindings.example.json": "87485ee94b80622e2974cb7691367e808553ddfe2d77c5b3619da56e79a7ccb0"
+  },
+  "results": {
+    "backend_tests": {
+      "passed": 218,
+      "failed": 0,
+      "files": 7
+    },
+    "frontend_tests": {
+      "passed": 14,
+      "failed": 0,
+      "files": 2
+    },
+    "focused_after_test_type_fix": {
+      "passed": 34,
+      "failed": 0
+    },
+    "app_typecheck": "pass including app tests",
+    "server_typecheck": "pass including stdio qualification script",
+    "server_tests_typecheck": {
+      "existing_baseline_diagnostics": 239,
+      "new": 0,
+      "comparison": "Existing server test tsconfig; Windows path normalization; baseline unchanged"
+    },
+    "scoped_biome": "pass",
+    "migration": "Generated 0068: two additive tables; applied to dedicated PostgreSQL16 fixture with a minimal users table; not a full OpenBot deployment migration",
+    "migration_metadata_check": "drizzle-kit check passed"
+  },
+  "stdio": {
+    "result": "pass",
+    "scope": "real stdio MCP to pinned Python connector and synthetic local JSON-2",
+    "uniqueItems": 2,
+    "acceptCalls": 1,
+    "cancelCalls": 1,
+    "recoveredLostSubmitReply": true,
+    "methods": [
+      "queue_accept",
+      "queue_cancel",
+      "queue_context",
+      "queue_get",
+      "queue_submit"
+    ],
+    "observedSourceSurfaces": [
+      "chatgpt"
+    ],
+    "liveOdooOrDsh": false
+  },
+  "fixture": {
+    "postgres_image": "postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94",
+    "container": "scout-copilot-queue-01a19336",
+    "memory_bytes": 268435456,
+    "stopped": true,
+    "exit_code": 0,
+    "oom": false,
+    "wsl_helper_ended": true
+  },
+  "connector": {
+    "pin": "dba1dab16dcaa32c03984229c628cd866e02e712",
+    "normalized_client_sha256": "92f37d582597cccb17e2a1a564c09d7c9d293ef22ef2a46da0933a26133cb423",
+    "normalized_server_sha256": "76eb42fb638afd7bf21f6ce81ce7085a11dbc866cfcd5d186cdab682f288b4a6"
+  },
+  "limitations": [
+    "No live Odoo/DSH/model/provider requests",
+    "Synthetic session authority; not company SSO",
+    "New-pool reconstruction after lost reply; not a process-kill or PC-off test",
+    "Pinned MCP source_surface remains chatgpt; requires queue-owner provenance reconciliation",
+    "Intelligence hosting/entitlement unresolved",
+    "Natural chat AG-UI delegation not yet connected",
+    "Local full frontend build was previously interrupted for low memory; exact-head CI remains separate",
+    "No Linode/mobile/shared-user activation"
+  ],
+  "actions": {
+    "CI": "active after fork UI registration",
+    "security_zizmor": "disabled_fork; unchanged",
+    "source_workflows_modified": false
+  },
+  "upstream_ci": {
+    "run_id": 41243617189,
+    "conclusion": "failure",
+    "failed_jobs": [
+      "python harness regressions",
+      "tests",
+      "verify"
+    ],
+    "qualifies_scout_changes": false
+  }
+}

@@ -26,6 +26,7 @@ import {
 import { VoiceCallWidget } from "@/components/channels/voice-call-widget";
 import { HandoffResumeNotice } from "@/components/computer/handoff-resume-notice";
 import { Topic } from "@/components/duet/kit";
+import { ScoutDrafts } from "@/components/scout/drafts";
 import { agentListQueryOptions } from "@/lib/agents/queries";
 import { type ApprovalInboxData, approvalInboxOptions } from "@/lib/approvals";
 import { attachmentUrl } from "@/lib/channels/attachments";
@@ -72,6 +73,7 @@ import { afterMs } from "@/lib/copilot/join-thread";
 import { repairUnansweredToolCalls } from "@/lib/copilot/repair-history";
 import { stoppedReason } from "@/lib/copilot/stopped-turn";
 import { readThreadMessages } from "@/lib/copilot/thread-messages";
+import { appConfig } from "@/lib/generated/application-config";
 import { useSkillCommands } from "@/lib/plugins/skill-commands";
 import {
   askChannelAgent,
@@ -1665,6 +1667,9 @@ export function ChannelChat({
             }
             taskRunning={agent.isRunning || runsInFlight > 0}
           />
+          {appConfig.brand.tenantId === "scout" && channel.active ? (
+            <ScoutDrafts channelId={channel.id} />
+          ) : null}
           <ConversationView
             approvals={presenceInbox.data?.requests}
             folded={folded}

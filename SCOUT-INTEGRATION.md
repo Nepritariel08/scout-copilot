@@ -42,10 +42,14 @@ by the existing DSH queue.
 | Existing Scout MatePad/phone shell | Device consent, narrow native actions and receipts. Remote content must not inherit a trusted JavaScript bridge. Validate WebView/browser login/reconnect before installing/replacing a client. |
 | Intelligence | Required thread persistence and optional entitled memory/learning; resolve ownership, data handling, license, availability and restore before real staff/customer data. |
 
-The first queue port must preserve durable intent before submission, stable
+The queue port at `openbot/server/src/scout` and the conversation's Delegated
+drafts panel now implement the source/fixture path. See [setup, invariants and
+remaining live acceptance](scout/QUEUE.md). The adapter preserves durable intent before submission, stable
 originating-message/idempotency key, exact requester/tenant binding, work-item
 ID/revision, status/result retrieval, explicit draft acceptance, cancellation
-and recovery without replay. An AG-UI endpoint alone supplies none of those.
+and recovery without replay. It does not yet provide model-selected AG-UI
+delegation or live company SSO/DSH acceptance. An AG-UI endpoint alone supplies
+none of those guarantees.
 No existing owner/worker secret is included in this fork. The reference adapter
 and accepted task5/client-crash task7 receipts remain in
 [scout-workspace PR1](https://github.com/Nepritariel08/scout-workspace/pull/1).
@@ -89,8 +93,10 @@ sources with a synthetic model. Removing `SCOUT_MODEL` was refused. Generated
 app configuration also contained Scout branding. These selected tests use local
 fixtures; they are not a live provider, identity or end-to-end queue test.
 
-The original OpenDuet package, platform server/shared code and Bun lockfile were
-unchanged from the pinned upstream. The local Vite build reached transformation
+At the bootstrap checkpoint, the original OpenDuet package, platform server/shared
+code and Bun lockfile were unchanged. The queue port subsequently adds narrow
+server/schema/shared/UI wiring; the original package and lockfile remain intact.
+The local Vite build reached transformation
 and was deliberately interrupted after host free RAM fell below1GiB; no frontend
 build pass is claimed. Exact-head CI is reported separately in the primary
 checkpoint; do not infer it from these bounded source checks.
