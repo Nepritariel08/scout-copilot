@@ -50,13 +50,13 @@ import {
   wakeUpTools,
 } from "./agents/wake-up";
 import { createApp } from "./app";
+import { signallingBusy } from "./approvals/busy-runner";
 import { createApprovedActionExecutor } from "./approvals/execute";
 import { createPersonResponseTick } from "./approvals/person-response-sweep";
 import {
   type PersonQuestion,
   questionConversationBot,
 } from "./approvals/questions";
-import { signallingBusy } from "./approvals/busy-runner";
 import { createApprovalResumeTick } from "./approvals/resume-sweep";
 import { createApprovalStore } from "./approvals/store";
 import { ApprovalRefusedError } from "./approvals/types";
@@ -168,6 +168,7 @@ import {
   createIntelligenceClient,
   observeIntelligenceAuthentication,
 } from "./intelligence-client";
+import { reportIntelligenceEntitlement } from "./intelligence-entitlement-check";
 import {
   createLearningAutoAssign,
   probeLearningContainer,
@@ -186,33 +187,54 @@ import { createMemoryDefaults } from "./memory/defaults";
 import { createMemoryIngestion } from "./memory/ingestion";
 import { createIntelligenceMemory } from "./memory/intelligence";
 import { createMemoryStore } from "./memory/store";
-import { reportModelAvailability } from "./model-availability-check";
 import { memoryTools } from "./memory/tools";
-import { appAccessTools } from "./plugins/app-access-tool";
+import { reportModelAvailability } from "./model-availability-check";
+import {
+  createChannelHello,
+  createDuetChannelStore,
+} from "./openduet/channels";
+import { createComputerCheck } from "./openduet/computer-check";
+import { createPageStore } from "./openduet/pages";
+import { withRunChannels } from "./openduet/run-channel";
+import {
+  createSetupSources,
+  modelKeyOf,
+  primaryBotIdOf,
+} from "./openduet/setup";
+import { createTaskReplyContext } from "./openduet/task-reply-context";
+import {
+  createTaskReportReader,
+  intelligenceHistory,
+} from "./openduet/task-report";
+import { createTaskStore } from "./openduet/task-store";
+import { createTaskThreads, createTaskTurn } from "./openduet/task-threads";
+import type { TaskStarter } from "./openduet/tasks";
+import { createOpenDuetTools, createTaskIntake } from "./openduet/wiring";
 import { createSignInNotifier, createSignInResumer } from "./passwords/resume";
 import { createSignInService } from "./passwords/service";
 import { createPasswordStore } from "./passwords/store";
 import { createOnboardingStore } from "./people/onboarding";
 import { createPeopleStore } from "./people/store";
-import { createAccountModeSwitch } from "./plugins/account-mode";
-import { assertActivatable, providerDecision } from "./plugins/broker";
 import { BROKERED_PROFILE } from "./plugins/access";
-import { useRoutineTools } from "./plugins/builtin-routines";
+import { createAccountModeSwitch } from "./plugins/account-mode";
+import { appAccessTools } from "./plugins/app-access-tool";
 import { useArcadeClient } from "./plugins/arcade";
 import { createArcadeClient } from "./plugins/arcade-adapter";
+import { assertActivatable, providerDecision } from "./plugins/broker";
+import { useRoutineTools } from "./plugins/builtin-routines";
 import { useComposioClient } from "./plugins/composio";
 import { createComposioClient } from "./plugins/composio-adapter";
 import { backfillBrokeredLogos } from "./plugins/logos";
 import { redirectUriFor } from "./plugins/oauth";
 import {
-  createSharedUseGate,
-  createSharedUseStore,
-} from "./plugins/shared-use-store";
-import {
   arcadeVerifierNotice,
   selectProviderWiring,
   storedProvider,
 } from "./plugins/provider-wiring";
+import {
+  createSharedUseGate,
+  createSharedUseStore,
+} from "./plugins/shared-use-store";
 import { createPluginStore } from "./plugins/store";
 import {
   grantedSkills,
@@ -258,28 +280,10 @@ import { createRoutineRunner } from "./routines/runner";
 import { createRoutineStore } from "./routines/store";
 import { createIntentRouter } from "./routing/classify";
 import { createModelCompleter } from "./routing/model";
-import {
-  createChannelHello,
-  createDuetChannelStore,
-} from "./openduet/channels";
-import { createComputerCheck } from "./openduet/computer-check";
-import { createPageStore } from "./openduet/pages";
-import { withRunChannels } from "./openduet/run-channel";
-import {
-  createSetupSources,
-  modelKeyOf,
-  primaryBotIdOf,
-} from "./openduet/setup";
-import {
-  createTaskReportReader,
-  intelligenceHistory,
-} from "./openduet/task-report";
-import { createTaskStore } from "./openduet/task-store";
-import { createTaskReplyContext } from "./openduet/task-reply-context";
-import { createTaskThreads, createTaskTurn } from "./openduet/task-threads";
-import type { TaskStarter } from "./openduet/tasks";
-import { createOpenDuetTools, createTaskIntake } from "./openduet/wiring";
-import { reportIntelligenceEntitlement } from "./intelligence-entitlement-check";
+import { createScoutBindingReader } from "./scout/binding";
+import { createScoutConnector } from "./scout/mcp";
+import { createScoutService } from "./scout/service";
+import { createScoutStore } from "./scout/store";
 import { createSelfHostBanner } from "./self-host-banner";
 import { createTeamBots } from "./team-bots/team-bots";
 import {
@@ -2721,6 +2725,15 @@ const app = createApp(
     },
     memory: { store: personalMemoryStore, ingestion: memoryIngestion },
     proactive: { store: proactiveStore, engine: proactiveEngine },
+    scout: config.scoutQueueBindingsFile
+      ? createScoutService({
+          store: createScoutStore(database),
+          binding: createScoutBindingReader(config.scoutQueueBindingsFile),
+          canReadChannel: async (actor, channelId) =>
+            Boolean(await channelStore.get(actor, channelId)),
+          connect: createScoutConnector(),
+        })
+      : undefined,
     openduet: {
       pages: openDuetPages,
       tasks: openDuetTasks,

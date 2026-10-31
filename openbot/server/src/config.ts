@@ -3,6 +3,9 @@
  * for durable threads and memory. Configuration the product cannot function without belongs at the
  * boot boundary.
  */
+
+import { networkInterfaces } from "node:os";
+import { isAbsolute } from "node:path";
 import {
   isLearningContainerId,
   type LearningTarget,
@@ -13,7 +16,6 @@ import {
   listenHosts,
 } from "@openbot/shared/listen-host";
 import { listenPort } from "@openbot/shared/listen-port";
-import { networkInterfaces } from "node:os";
 import { singleUserEnabled } from "./auth/dev-actor";
 import { normalizeDomain } from "./auth/email-domain";
 import { organizationAuthority } from "./auth/organization";
@@ -312,6 +314,8 @@ export type DeploymentConfig = {
    */
   appUrl: string | undefined;
   tenantPackageDirectory: string;
+  /** Optional protected native-user/requester bindings; verified sign-in is mandatory. */
+  scoutQueueBindingsFile?: string;
   runtime: RuntimeCapabilities;
   /**
    * How long a Bot's stream may say nothing before this deployment ends the turn, in milliseconds.
@@ -1444,8 +1448,20 @@ export function loadConfig(
     ...(workerSharedSecret ? { workerSharedSecret } : {}),
   };
   // After everything above, so its refusals keep the order they were always raised in.
+  const scoutQueueBindingsFile = optional(
+    environment,
+    "SCOUT_QUEUE_BINDINGS_FILE",
+  );
+  if (
+    scoutQueueBindingsFile &&
+    (!isAbsolute(scoutQueueBindingsFile) || loaded.singleUser)
+  )
+    throw new Error(
+      "SCOUT_QUEUE_BINDINGS_FILE requires an absolute path and verified sign-in; single-user mode is refused.",
+    );
   return {
     ...loaded,
+    ...(scoutQueueBindingsFile ? { scoutQueueBindingsFile } : {}),
     listen: listenAddresses(environment, loaded.singleUser, interfaces),
     appOrigins: appOriginsFrom(environment),
   };
