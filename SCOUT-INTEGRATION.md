@@ -143,3 +143,17 @@ This run selected the upstream profile expected by its banner text assertions;
 the generated Scout configuration was restored afterward. No assertion,
 product behavior or CI failure handling was removed. Full exact-head CI still
 requires its own terminal readback.
+
+The full test job at `d4c8d40758c50648603bcaf04ba33b2256fe36d4` then passed
+10,161checks/75skips/0fail/0unhandled errors across824files. Its later AG2
+Python step exposed the same old X-Api-Key expectation. The AG2 fixture now
+checks the exact official endpoint, selected model and the same two credential/
+API-version pairs. Its10cases passed locally with AG2 1.2.2/Anthropic2.3.0.
+The final Microsoft harness was also qualified independently:10cases passed
+with its original test unchanged. Its framework constrains Anthropic to
+`>=1.11.0,<2` and resolved1.17.0, which retains the original header/API version;
+the initial compatibility edit there was discarded. Both isolated Python3.14.7
+runs used synthetic credentials and local HTTP/mocked transports, not a live
+provider. The AG2 change preserves completion, key, endpoint and model checks;
+no runtime, requirements or workflow changes are involved. These versioned
+receipts qualify the resolved dependencies, not all future unlocked installs.
