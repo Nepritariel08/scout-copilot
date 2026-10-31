@@ -181,7 +181,7 @@ async def _run_answer_with_httpx2_capture(monkeypatch, response_json, messages=N
         captured.append(
             {
                 "url": str(request.url),
-                "headers": dict(request.headers),
+                "headers": request.headers.copy(),
                 "body": json.loads(request.content.decode()),
             }
         )
@@ -337,8 +337,18 @@ async def test_anthropic_selection_reaches_anthropic_boundary_without_openai_key
     assert result["messages"][0].content == "anthropic proof"
     assert "OPENAI_API_KEY" not in os.environ
     assert captured[0]["url"] == "http://127.0.0.1:4311/v1/messages"
-    assert captured[0]["headers"]["x-api-key"] == "sk-ant-openbot-ci"
-    assert captured[0]["headers"]["anthropic-version"] == "2023-06-01"
+    # SDK 2.x changed API-key auth and its default API version together.
+    # Require exactly one supported encoding of the same synthetic credential;
+    # neither an absent/wrong key nor competing credentials may pass.
+    auth_headers = {
+        name: captured[0]["headers"][name]
+        for name in ("x-api-key", "authorization")
+        if name in captured[0]["headers"]
+    }
+    assert (auth_headers, captured[0]["headers"]["anthropic-version"]) in (
+        ({"x-api-key": "sk-ant-openbot-ci"}, "2023-06-01"),
+        ({"authorization": "Bearer sk-ant-openbot-ci"}, "2026-10-21"),
+    )
     assert captured[0]["body"]["model"] == request_model
     assert captured[0]["body"]["messages"] == [
         {"role": "user", "content": "Say hello."}

@@ -100,3 +100,35 @@ The local Vite build reached transformation
 and was deliberately interrupted after host free RAM fell below1GiB; no frontend
 build pass is claimed. Exact-head CI is reported separately in the primary
 checkpoint; do not infer it from these bounded source checks.
+
+## Requester-port build and CI follow-up
+
+The later Scout-profile production frontend build passed at adapter commit
+`17a406781d440dcf71eda67109c9ae52e3452c55` using Bun1.4.3 and the frozen lockfile.
+Vite7.3.6 completed in3m3s; existing large-chunk warnings remain. The generated
+configuration selected Scout. The built `app/dist/index.html` SHA256 was
+`9de4f15ff98dc50a628429e9641172c26ae48afd84e0f01043b9e855c54d5b6d`.
+This follows the interrupted low-memory attempt; it does not rewrite that receipt.
+
+Full CI at that commit failed two test assumptions also present in the pinned
+upstream's failed run41243617189. The first-day route test now sends today's UTC
+date rather than an expired fixed date, preserving the route's date window.
+The provider fixture keeps HTTP's case-insensitive header lookup and requires
+exactly one synthetic credential plus a documented API version. The official
+[Anthropic SDK1.0 client](https://github.com/anthropics/anthropic-sdk-python/blob/v1.0.0/src/anthropic/_client.py)
+uses X-Api-Key/API2023-06-01; the installed and official
+[SDK2.3 client](https://github.com/anthropics/anthropic-sdk-python/blob/v2.3.0/src/anthropic/_client.py)
+uses Authorization: Bearer with
+[API2026-10-21](https://github.com/anthropics/anthropic-sdk-python/blob/v2.3.0/src/anthropic/_constants.py).
+Wrong, absent or competing credentials and unknown credential/version pairs fail.
+Endpoint, selected model, messages and absence of an OpenAI key remain asserted.
+No provider behavior, dependency or CI workflow changes are involved.
+
+Local validation of this repair:3 first-day checks passed (96filtered);85 Python
+harness checks passed,3 existing platform cases skipped,2 Linux Docker-mount
+cases deselected on Windows. Those two remain unchanged and run in Linux CI.
+The Python run used isolated Python3.14.7, Anthropic2.3.0 and httpx2 2.16.0,
+with synthetic credentials and HTTP/loopback fixtures, not a live provider.
+Scoped Biome formatting/lint and `git diff --check` passed. Exact-head CI and
+deployment status remain in the primary tracker; local success is not live
+company SSO, remote DSH or employee/customer acceptance.
