@@ -132,3 +132,14 @@ with synthetic credentials and HTTP/loopback fixtures, not a live provider.
 Scoped Biome formatting/lint and `git diff --check` passed. Exact-head CI and
 deployment status remain in the primary tracker; local success is not live
 company SSO, remote DSH or employee/customer acceptance.
+
+At test-repair commit `3cf6ee089c3173560447889bf9fccc0d2fca9116`, the Linux full
+test run completed10,161 passes/75skips/0failed assertions, but failed overall
+on1 unhandled React scheduler callback after the banner test removed its DOM.
+That test now uses the repository's existing `settleReactWork` drain before
+unregistering, as other React suites already do. The banner, chat-step and
+Scout-draft suites passed together locally:28checks/0fail/0unhandled errors.
+This run selected the upstream profile expected by its banner text assertions;
+the generated Scout configuration was restored afterward. No assertion,
+product behavior or CI failure handling was removed. Full exact-head CI still
+requires its own terminal readback.
