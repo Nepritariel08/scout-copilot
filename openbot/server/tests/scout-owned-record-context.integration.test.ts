@@ -1,15 +1,17 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
+import { addAuditTap } from "../src/audit";
 import { encryptSecret } from "../src/credentials";
 import { createDatabase } from "../src/db/client";
-import { credentials } from "../src/db/schema/core";
+import { auditEvents, credentials } from "../src/db/schema/core";
 import {
   scoutContextReleaseGrants,
   scoutOdooRecordAccessGrants,
 } from "../src/db/schema/scout-record-context";
 import { createOwnedOdooProjectTaskContext } from "../src/scout/owned-model/context-source";
 import { createOdooJson2CredentialResolver } from "../src/scout/owned-model/odoo-credentials";
+import { createOwnedOdooGrantService } from "../src/scout/owned-model/grant-service";
 import type { ProjectTaskReadRequest } from "../src/scout/owned-model/record-context";
 import { createProjectTaskContextStore } from "../src/scout/owned-model/record-context-store";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
@@ -145,6 +147,119 @@ afterAll(async () => {
 });
 
 describe("owned Odoo grant persistence and credential resolution", () => {
+  test("provisions encrypted record access, records explicit release consent, and revokes both atomically", async () => {
+    const grantPrincipal = {
+      ...principal,
+      userId: `${prefix}-provisioning-user`,
+      bindingFingerprint: "c".repeat(64),
+    };
+    const provisioningSourceId = `${sourceInstanceId}-${randomUUID()}`;
+    const service = createOwnedOdooGrantService(
+      database,
+      encryptionKey,
+      provisioningSourceId,
+    );
+    let taps = 0;
+    const removeTap = addAuditTap(() => {
+      taps += 1;
+    });
+    try {
+      const issued = await service.issueRecord({
+        principal: grantPrincipal,
+        binding: {
+          sourceUid: 201,
+          companyIds: [1, 2],
+          bindingExpiresAt: "2099-01-01T00:00:00.000Z",
+        },
+        apiKey: "synthetic-new-api-key",
+        allowedProjectIds: [501, 502],
+      });
+      expect(issued).toMatchObject({ revision: 1, projectCount: 2 });
+      const [record] = await database
+        .select()
+        .from(scoutOdooRecordAccessGrants)
+        .where(
+          eq(scoutOdooRecordAccessGrants.nativeUserId, grantPrincipal.userId),
+        );
+      expect(record).toMatchObject({
+        active: true,
+        revision: 1,
+        sourceUid: 201,
+        qualification: "verified_nonadmin",
+        companyIds: [1, 2],
+        allowedProjectIds: [501, 502],
+      });
+      const [storedSecret] = await database
+        .select({ encryptedValue: credentials.encryptedValue })
+        .from(credentials)
+        .where(eq(credentials.id, record!.credentialRef));
+      expect(storedSecret?.encryptedValue).not.toContain(
+        "synthetic-new-api-key",
+      );
+      const resolver = createOdooJson2CredentialResolver(
+        database,
+        encryptionKey,
+        provisioningSourceId,
+      );
+      await expect(
+        resolver.resolveForUid(201, record!.credentialRef),
+      ).resolves.toEqual({ uid: 201, apiKey: "synthetic-new-api-key" });
+
+      const consent = await service.consentRelease({
+        principal: grantPrincipal,
+        bindingExpiresAt: "2099-01-01T00:00:00.000Z",
+        modelPolicyExpiresAt: "2099-01-01T00:00:00.000Z",
+        provider: "openrouter",
+        modelPolicyFingerprint,
+      });
+      expect(consent).toMatchObject({ revision: 1, provider: "openrouter" });
+      expect(await service.revokeAll(grantPrincipal)).toEqual({
+        recordGrantRevoked: true,
+        recordGrantsRevoked: 1,
+        releaseGrantsRevoked: 1,
+        localCredentialRevoked: true,
+        odooKeyRevokedUpstream: false,
+      });
+      const recordRevisions = await database
+        .select()
+        .from(scoutOdooRecordAccessGrants)
+        .where(
+          eq(scoutOdooRecordAccessGrants.nativeUserId, grantPrincipal.userId),
+        )
+        .orderBy(desc(scoutOdooRecordAccessGrants.revision));
+      expect(recordRevisions[0]).toMatchObject({ active: false, revision: 2 });
+      const releaseRevisions = await database
+        .select()
+        .from(scoutContextReleaseGrants)
+        .where(
+          eq(scoutContextReleaseGrants.nativeUserId, grantPrincipal.userId),
+        )
+        .orderBy(desc(scoutContextReleaseGrants.revision));
+      expect(releaseRevisions[0]).toMatchObject({ active: false, revision: 2 });
+      await expect(
+        resolver.resolveForUid(201, record!.credentialRef),
+      ).resolves.toBeNull();
+      expect(taps).toBe(0);
+      const events = await database
+        .select({
+          eventType: auditEvents.eventType,
+          payload: auditEvents.payload,
+        })
+        .from(auditEvents)
+        .where(eq(auditEvents.actorUserId, grantPrincipal.userId));
+      expect(events.map((event) => event.eventType).sort()).toEqual(
+        [
+          "scout.odoo_context_grant.issued",
+          "scout.odoo_context_grant.revoked",
+          "scout.odoo_context_release.consent_recorded",
+        ].sort(),
+      );
+      expect(JSON.stringify(events)).not.toContain("synthetic-new-api-key");
+    } finally {
+      removeTap();
+    }
+  });
+
   test("the newest inactive record revision shadows the prior active grant", async () => {
     const store = createProjectTaskContextStore(database, sourceInstanceId, {
       readProjectTask: async () => null,

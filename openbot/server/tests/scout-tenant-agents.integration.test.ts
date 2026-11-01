@@ -44,6 +44,7 @@ const scope = createTenantScope({
       tenantId: membership.tenantId,
       deploymentId,
       fingerprint: `revision-${membership.revision}`,
+      expiresAt: "2099-01-01T00:00:00.000Z",
       command: ["synthetic-python", "-m", "scout_queue.mcp_server"],
       cwd: "/synthetic",
       environment: {

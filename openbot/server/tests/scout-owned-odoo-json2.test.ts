@@ -76,6 +76,111 @@ function capture() {
 }
 
 describe("owned Odoo JSON-2 project-task transport", () => {
+  test("derives a bounded project scope from the fixed bound nonadmin identity", async () => {
+    const requests: CapturedRequest[] = [];
+    const subject = createOdooJson2ProjectTaskReader({
+      instanceId: "odoo-test",
+      baseUrl: "http://127.0.0.1:8069",
+      database: "synthetic_odoo",
+      credentials: { resolveForUid: async (uid) => ({ uid, apiKey: key }) },
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        requests.push({ url: new URL(String(input)), init: init ?? {} });
+        if (requests.at(-1)?.url.pathname.endsWith("context_get"))
+          return json({ uid: 401 });
+        if (requests.at(-1)?.url.pathname.endsWith("has_group"))
+          return json(false);
+        return json([
+          { id: 31, company_id: [7, "Synthetic company"] },
+          { id: 32, company_id: [8, "Other bound company"] },
+        ]);
+      }) as unknown as typeof fetch,
+    });
+
+    await expect(
+      subject.verifyUserProjectScope(key, 401, [8, 7]),
+    ).resolves.toEqual([31, 32]);
+    expect(requests.map(({ url }) => url.pathname)).toEqual([
+      "/json/2/res.users/context_get",
+      "/json/2/res.users/has_group",
+      "/json/2/res.users/has_group",
+      "/json/2/project.project/search_read",
+      "/json/2/res.users/has_group",
+      "/json/2/res.users/has_group",
+    ]);
+    expect(JSON.parse(String(requests[3]?.init.body))).toEqual({
+      context: { allowed_company_ids: [7, 8] },
+      domain: [["company_id", "in", [7, 8]]],
+      fields: ["id", "company_id"],
+      limit: 101,
+    });
+    expect(
+      requests.every(
+        ({ init }) =>
+          new Headers(init.headers).get("authorization") === `bearer ${key}`,
+      ),
+    ).toBe(true);
+  });
+
+  test.each([
+    {
+      name: "a mismatched Odoo UID",
+      identity: { uid: 402 },
+      groups: false,
+      rows: [{ id: 31, company_id: [7, "Synthetic company"] }],
+    },
+    {
+      name: "an administrator group",
+      identity: { uid: 401 },
+      groups: true,
+      rows: [{ id: 31, company_id: [7, "Synthetic company"] }],
+    },
+    {
+      name: "a cross-company project",
+      identity: { uid: 401 },
+      groups: false,
+      rows: [{ id: 31, company_id: [99, "Unbound company"] }],
+    },
+    {
+      name: "an empty project scope",
+      identity: { uid: 401 },
+      groups: false,
+      rows: [],
+    },
+    {
+      name: "an over-cap project scope",
+      identity: { uid: 401 },
+      groups: false,
+      rows: Array.from({ length: 101 }, (_, index) => ({
+        id: index + 1,
+        company_id: [7, "Synthetic company"],
+      })),
+    },
+  ])(
+    "fails closed for $name during grant qualification",
+    async ({ identity, groups, rows }) => {
+      const paths: string[] = [];
+      const subject = createOdooJson2ProjectTaskReader({
+        instanceId: "odoo-test",
+        baseUrl: "http://127.0.0.1:8069",
+        database: "synthetic_odoo",
+        credentials: { resolveForUid: async (uid) => ({ uid, apiKey: key }) },
+        fetch: (async (input: RequestInfo | URL) => {
+          const path = new URL(String(input)).pathname;
+          paths.push(path);
+          if (path.endsWith("context_get")) return json(identity);
+          if (path.endsWith("has_group")) return json(groups);
+          return json(rows);
+        }) as unknown as typeof fetch,
+      });
+      await expect(
+        subject.verifyUserProjectScope(key, 401, [7]),
+      ).rejects.toThrow("MODEL_ACCESS_DENIED");
+      if (identity.uid !== 401 || groups)
+        expect(paths).not.toContain("/json/2/project.project/search_read");
+      else expect(paths).toContain("/json/2/project.project/search_read");
+    },
+  );
+
   test("verifies the API key UID, then reads one fixed row under that same user", async () => {
     const fake = capture();
     await expect(fake.subject.readProjectTask(request)).resolves.toEqual([

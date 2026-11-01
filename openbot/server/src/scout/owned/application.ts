@@ -45,9 +45,11 @@ import { createHistoryStore } from "../history/store";
 import { createScoutConnector } from "../mcp";
 import { createOwnedModelAgents } from "../owned-model/agents";
 import {
-  createOwnedOdooProjectTaskContext,
+  createOwnedOdooContextAdapters,
   readOwnedOdooContextSource,
 } from "../owned-model/context-source";
+import { createOwnedOdooGrantService } from "../owned-model/grant-service";
+import { createModelPolicyReader } from "../owned-model/policy";
 import type { ProjectTaskContextPort } from "../owned-model/record-context";
 import { createModelCallStore } from "../owned-model/store";
 import { createScoutService } from "../service";
@@ -195,15 +197,51 @@ export async function createOwnedApplication(
     scope,
   );
   const modelCalls = createModelCallStore(database);
-  const configuredRecordContext = config.scoutOdooContextSourceFile
-    ? createOwnedOdooProjectTaskContext(
+  const odooContextSource = config.scoutOdooContextSourceFile
+    ? await readOwnedOdooContextSource(config.scoutOdooContextSourceFile)
+    : undefined;
+  const odooContextAdapters = odooContextSource
+    ? createOwnedOdooContextAdapters(
         database,
         config.keyEncryptionKey,
-        await readOwnedOdooContextSource(config.scoutOdooContextSourceFile),
+        odooContextSource,
         options.odooFetch,
       )
     : undefined;
+  const configuredRecordContext = odooContextAdapters?.recordContext;
   const recordContext = options.recordContext ?? configuredRecordContext;
+  const odooGrantService = odooContextSource
+    ? createOwnedOdooGrantService(
+        database,
+        config.keyEncryptionKey,
+        odooContextSource.sourceInstanceId,
+      )
+    : undefined;
+  const readOdooModelPolicy = config.scoutModelPolicyFile
+    ? createModelPolicyReader(config.scoutModelPolicyFile)
+    : undefined;
+  const odooGrants =
+    odooContextSource && odooContextAdapters && odooGrantService
+      ? {
+          source: {
+            sourceInstanceId: odooContextSource.sourceInstanceId,
+            baseUrl: odooContextSource.baseUrl,
+            database: odooContextSource.database,
+          },
+          verifyUserProjectScope: odooContextAdapters.verifyUserProjectScope,
+          ...odooGrantService,
+          ...(readOdooModelPolicy
+            ? {
+                readModelPolicy: (input: {
+                  userId: string;
+                  tenantId: string;
+                  deploymentId: string;
+                  agentId: string;
+                }) => readOdooModelPolicy(input),
+              }
+            : {}),
+        }
+      : undefined;
   const agents =
     options.agents ??
     (config.scoutModelPolicyFile
@@ -255,6 +293,7 @@ export async function createOwnedApplication(
       ).check(threadId, "read", thread.agentId);
       return receipts;
     },
+    odooGrants,
   });
   const scout = createScoutService({
     store: createScoutStore(database),

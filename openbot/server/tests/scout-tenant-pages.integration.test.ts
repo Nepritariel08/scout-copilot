@@ -70,6 +70,7 @@ const scope = createTenantScope({
       tenantId: value.tenantId,
       deploymentId,
       fingerprint: `${value.tenantId}:${value.revision}`,
+      expiresAt: "2099-01-01T00:00:00.000Z",
       command: ["fixture", "-m", "scout_queue.mcp_server"],
       cwd: "fixture",
       environment: {

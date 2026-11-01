@@ -61,6 +61,9 @@ export const auditEventTypes = [
    */
   "credential.rotation_refused",
   "credential.revoked",
+  "scout.odoo_context_grant.issued",
+  "scout.odoo_context_release.consent_recorded",
+  "scout.odoo_context_grant.revoked",
   /**
    * Which coworker an untagged message was routed to, and why.
    *
@@ -789,7 +792,10 @@ export function addAuditTap(tap: AuditTap): () => void {
   return () => auditTaps.delete(tap);
 }
 
-export function createAuditStore(database: Database): AuditStore {
+export function createAuditStore(
+  database: Database,
+  options: { emitTaps?: boolean } = {},
+): AuditStore {
   return {
     insert: async ({ initiator, ...event }) => {
       const row = {
@@ -798,7 +804,12 @@ export function createAuditStore(database: Database): AuditStore {
         payload: redactAuditPayload(event.payload) as Record<string, unknown>,
       };
       await database.insert(auditEvents).values(row);
-      for (const tap of auditTaps) {
+      // A transaction-scoped audit row is not durable until its caller commits.
+      // Do not publish a tap from inside that transaction: a later rollback
+      // would otherwise leave an external record for an event that never
+      // committed. Transactional callers may opt out and let the row itself be
+      // the authoritative audit receipt.
+      for (const tap of options.emitTaps === false ? [] : auditTaps) {
         try {
           tap(row);
         } catch (error) {

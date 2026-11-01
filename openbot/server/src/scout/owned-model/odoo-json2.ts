@@ -10,6 +10,8 @@ const taskFields = [
 ] as const;
 const maximumContextBytes = 1024;
 const maximumRequestBytes = 4096;
+const maximumProjectScopeBytes = 65_536;
+const maximumProjectScopeRows = 100;
 const defaultTimeoutMs = 5000;
 
 export type OdooUserApiKey = {
@@ -250,7 +252,7 @@ export function createOdooJson2ProjectTaskReader(
   const transport = options.fetch ?? fetch;
 
   const post = async (
-    model: "res.users" | "project.task",
+    model: "res.users" | "project.task" | "project.project",
     method: "context_get" | "has_group" | "search_read",
     apiKey: string,
     body: Record<string, unknown>,
@@ -304,7 +306,85 @@ export function createOdooJson2ProjectTaskReader(
     }
   };
 
+  /**
+   * Qualify one server-bound native user's own Odoo key and snapshot the
+   * projects that the same nonadmin user can currently read. The request can
+   * provide neither the UID nor project/company scope. Project ACLs and record
+   * rules on Odoo are the authority; over-cap or malformed results deny.
+   */
+  const verifyUserProjectScope = async (
+    apiKey: string,
+    expectedUid: number,
+    companyIds: number[],
+  ): Promise<number[]> => {
+    const uid = configuredOdooUserUid(expectedUid);
+    const companies = configuredCompanyIds(companyIds);
+    const key = credentialKey({ uid, apiKey }, uid);
+    const identity = await post(
+      "res.users",
+      "context_get",
+      key,
+      {},
+      maximumContextBytes,
+    );
+    if (
+      !identity ||
+      typeof identity !== "object" ||
+      Array.isArray(identity) ||
+      (identity as Record<string, unknown>).uid !== uid
+    )
+      return denied();
+
+    await assertCurrentUserIsNotAdministrator(key, uid);
+    const rows = await post(
+      "project.project",
+      "search_read",
+      key,
+      {
+        context: { allowed_company_ids: companies },
+        domain: [["company_id", "in", companies]],
+        fields: ["id", "company_id"],
+        limit: maximumProjectScopeRows + 1,
+      },
+      maximumProjectScopeBytes,
+    );
+    await assertCurrentUserIsNotAdministrator(key, uid);
+    if (
+      !Array.isArray(rows) ||
+      rows.length === 0 ||
+      rows.length > maximumProjectScopeRows
+    )
+      return denied();
+
+    const projects: number[] = [];
+    for (const row of rows) {
+      if (
+        !row ||
+        typeof row !== "object" ||
+        Array.isArray(row) ||
+        Object.keys(row).sort().join(",") !== "company_id,id"
+      )
+        return denied();
+      const project = row as Record<string, unknown>;
+      if (
+        !Number.isSafeInteger(project.id) ||
+        Number(project.id) < 1 ||
+        !Array.isArray(project.company_id) ||
+        project.company_id.length !== 2 ||
+        !Number.isSafeInteger(project.company_id[0]) ||
+        !companies.includes(Number(project.company_id[0])) ||
+        typeof project.company_id[1] !== "string" ||
+        project.company_id[1].length > 400
+      )
+        return denied();
+      projects.push(Number(project.id));
+    }
+    if (new Set(projects).size !== projects.length) return denied();
+    return projects.sort((left, right) => left - right);
+  };
+
   return {
+    verifyUserProjectScope,
     async readProjectTask(request: ProjectTaskReadRequest): Promise<unknown> {
       const allowedProjectIds = projectIds(request, instanceId);
       let apiKey: string;
@@ -377,4 +457,24 @@ export function createOdooJson2ProjectTaskReader(
       });
     },
   };
+}
+
+function configuredOdooUserUid(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 1) return denied();
+  return value;
+}
+
+function configuredCompanyIds(value: number[]): number[] {
+  if (
+    !Array.isArray(value) ||
+    value.length < 1 ||
+    value.length > 100 ||
+    value.some(
+      (id) =>
+        !Number.isSafeInteger(id) || id < 1 || id > 2_147_483_647,
+    ) ||
+    new Set(value).size !== value.length
+  )
+    return denied();
+  return [...value].sort((left, right) => left - right);
 }

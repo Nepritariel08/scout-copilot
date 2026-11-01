@@ -58,6 +58,17 @@ export function createOwnedOdooProjectTaskContext(
   source: OwnedOdooContextSource,
   fetch?: typeof globalThis.fetch,
 ): ProjectTaskContextPort {
+  return createOwnedOdooContextAdapters(database, encryptionKey, source, fetch)
+    .recordContext;
+}
+
+/** Read and provisioning adapters share one fixed source and one JSON-2 transport. */
+export function createOwnedOdooContextAdapters(
+  database: Database,
+  encryptionKey: string,
+  source: OwnedOdooContextSource,
+  fetch?: typeof globalThis.fetch,
+) {
   const credentials = createOdooJson2CredentialResolver(
     database,
     encryptionKey,
@@ -70,9 +81,13 @@ export function createOwnedOdooProjectTaskContext(
     credentials,
     ...(fetch ? { fetch } : {}),
   });
-  return createProjectTaskContextStore(
-    database,
-    source.sourceInstanceId,
-    reader,
-  );
+  return {
+    sourceInstanceId: source.sourceInstanceId,
+    recordContext: createProjectTaskContextStore(
+      database,
+      source.sourceInstanceId,
+      reader,
+    ),
+    verifyUserProjectScope: reader.verifyUserProjectScope,
+  };
 }

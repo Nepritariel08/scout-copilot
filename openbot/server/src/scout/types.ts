@@ -76,6 +76,8 @@ export type ScoutBinding = {
   userId: string;
   tenantId: string;
   fingerprint: string;
+  /** Expiration of the current protected membership binding. */
+  expiresAt: string;
   deploymentId: string;
   command: [string, "-m", "scout_queue.mcp_server"];
   cwd: string;
