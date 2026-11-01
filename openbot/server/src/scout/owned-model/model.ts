@@ -18,13 +18,13 @@ const safeError = (error: unknown) =>
     ? error
     : new ModelPolicyError("MODEL_UNAVAILABLE");
 
-function messagesFor(options: Options) {
+function messagesFor(options: Options, trustedContext?: string) {
   if (
     options.prompt.length > 500 ||
     (options.responseFormat && options.responseFormat.type !== "text")
   )
     throw new ModelPolicyError("MODEL_ACCESS_DENIED");
-  return options.prompt.map((message) => {
+  const messages = options.prompt.map((message) => {
     if (message.role === "system")
       return { role: message.role, content: message.content };
     if (message.role !== "user" && message.role !== "assistant")
@@ -38,6 +38,9 @@ function messagesFor(options: Options) {
         .join(""),
     };
   });
+  return trustedContext
+    ? [{ role: "system" as const, content: trustedContext }, ...messages]
+    : messages;
 }
 
 /** Text-only first model port. No environment fallback, browser tools, files, retrieval or remote agent. */
@@ -55,6 +58,7 @@ export class OwnedTextModel implements PlanLanguageModel {
     private readonly store: ModelCallStore,
     private readonly runSignal: AbortSignal,
     private readonly transport: typeof fetch = fetch,
+    private readonly trustedContext?: string,
   ) {}
 
   private async currentGrant(fingerprint: string, signal: AbortSignal) {
@@ -126,7 +130,7 @@ export class OwnedTextModel implements PlanLanguageModel {
     // definitions/selection rather than forwarding them; tool content and provider calls still deny.
     const body = {
       model: grant.route.model,
-      messages: messagesFor(options),
+      messages: messagesFor(options, this.trustedContext),
       stream: true,
       max_tokens: grant.limits.maxOutputTokens,
       ...(grant.route.provider === "openrouter"

@@ -201,6 +201,28 @@ settings, reports those capabilities unavailable, and refuses their native
 routes before provider construction. Delegated drafts continue through the separately governed
 Scout/DSH requester port.
 
+### Odoo project-task context seam
+
+The source now accepts one exact browser marker, `scout.project_task_id`, as an
+untrusted numeric selection hint. It strips the marker from the AG-UI input and
+constructs any released context on the server. A separate per-user grant must
+match the current native user, tenant, deployment and binding fingerprint, be
+active and unexpired, and identify a qualified nonadmin Odoo user. The existing
+Scout/DSH queue binding is not an Odoo record grant.
+
+The typed adapter request fixes the model to `project.task`, the domain to the
+selected ID plus the grant's allowed project IDs, the fields to `id`, `name`,
+`stage_id` and `date_deadline`, the result limit to one, and the byte cap to
+4,096. Server context contains only `name`, `stage_id` and `date_deadline`,
+along with source, provenance and freshness metadata. It rejects mismatched
+rows, extra fields, oversized data, malformed selections, missing grants and
+grant changes before model egress. No Odoo RPC adapter is wired in production;
+there is no approved qualified source credential or live Odoo schema/identity
+readback in this slice. Consequently a selected task fails closed in production
+until that separate source identity, grant store and read-only adapter are
+implemented and qualified. Synthetic adapter tests do not establish live
+Odoo access or acceptance.
+
 Storing conversations on Linode does not keep prompts on Linode when an
 OpenRouter route is selected. The operator must approve the actual context
 release and verify the selected provider/account policy. Strict privacy fields
