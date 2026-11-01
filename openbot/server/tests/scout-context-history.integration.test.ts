@@ -191,17 +191,21 @@ describe("durable source provenance SQL fencing", () => {
       await createHistoryContextStore(database).read(owner, thread.id),
     ).toEqual(before);
     expect(before.dependencies.map((d) => d.recordId)).toEqual([42, 43]);
-    await expect(
-      database.execute(
-        sql`update scout_history_context set revision=1,dependencies=${JSON.stringify([dependency(44)])}::jsonb where thread_id=${thread.id}`,
-      ),
-    ).rejects.toThrow();
+    await expectTriggerRefusal(
+      () =>
+        database.execute(
+          sql`update scout_history_context set revision=1,dependencies=${JSON.stringify([dependency(44)])}::jsonb where thread_id=${thread.id}`,
+        ),
+      "Scout history context is append-only",
+    );
     expect(await contexts.read(owner, thread.id)).toEqual(before);
-    await expect(
-      database.execute(
-        sql`update scout_history_context set revision=3,dependencies=${JSON.stringify([dependency(44), dependency(43), dependency(45)])}::jsonb where thread_id=${thread.id}`,
-      ),
-    ).rejects.toThrow();
+    await expectTriggerRefusal(
+      () =>
+        database.execute(
+          sql`update scout_history_context set revision=3,dependencies=${JSON.stringify([dependency(44), dependency(43), dependency(45)])}::jsonb where thread_id=${thread.id}`,
+        ),
+      "Scout history context is append-only",
+    );
     expect(await contexts.read(owner, thread.id)).toEqual(before);
   });
   test("wrong user, tenant, agent, run, expired lease and terminal run cannot mark a thread", async () => {
@@ -298,11 +302,13 @@ describe("durable source provenance SQL fencing", () => {
     ).rejects.toThrow();
     await contexts.markRun(owner, thread.id, "scout", runId, 1);
     await contexts.markRun(owner, thread.id, "scout", runId, 1);
-    await expect(
-      database.execute(
-        sql`update scout_history_runs set context_revision=0 where thread_id=${thread.id} and id=${runId}`,
-      ),
-    ).rejects.toThrow();
+    await expectTriggerRefusal(
+      () =>
+        database.execute(
+          sql`update scout_history_runs set context_revision=0 where thread_id=${thread.id} and id=${runId}`,
+        ),
+      "Scout run context provenance is immutable",
+    );
     await history.finish(lease, "completed");
     const nextId = randomUUID();
     await history.start(owner, "scout", {
