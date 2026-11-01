@@ -244,6 +244,11 @@ only `version`, `sourceInstanceId`, `baseUrl`, and `database`. The file rejects
 credentials, user IDs, project/company scope, URL paths and non-HTTPS remote
 origins. Per-user keys resolve only through the opaque grant reference and the
 encrypted vault row bound to the exact source instance and Odoo UID.
+This file-backed source adapter is supported only on Linux and refuses to load
+elsewhere. Runtime checks for Windows ACLs and ancestor directories are not
+implemented, so protect the full path as described above. The source file
+selects the endpoint that receives Odoo credentials; do not enable this adapter
+on Windows or macOS.
 
 The grant store remains read-only: this change adds no grant issuance or
 revocation endpoint. Until an audited provisioning path exists and verified

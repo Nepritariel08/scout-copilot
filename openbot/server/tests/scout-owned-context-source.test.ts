@@ -20,10 +20,21 @@ describe("protected Odoo context source configuration", () => {
     const path = join(directory, "source.json");
     try {
       await writeFile(path, JSON.stringify(valid), { mode: 0o600 });
-      expect(await readOwnedOdooContextSource(path)).toEqual(valid);
+      expect(await readOwnedOdooContextSource(path, "linux")).toEqual(valid);
     } finally {
       await rm(path, { force: true });
       await rmdir(directory);
+    }
+  });
+
+  test("refuses the source file outside Linux before attempting to read it", async () => {
+    const missingPath = join(tmpdir(), "scout-odoo-source-not-present.json");
+    const unqualifiedPlatforms: NodeJS.Platform[] = ["win32", "darwin"];
+
+    for (const platform of unqualifiedPlatforms) {
+      await expect(
+        readOwnedOdooContextSource(missingPath, platform),
+      ).rejects.toMatchObject({ code: "MODEL_NOT_CONFIGURED" });
     }
   });
 
@@ -43,7 +54,9 @@ describe("protected Odoo context source configuration", () => {
       ];
       for (const value of invalid) {
         await writeFile(path, JSON.stringify(value), { mode: 0o600 });
-        await expect(readOwnedOdooContextSource(path)).rejects.toMatchObject({
+        await expect(
+          readOwnedOdooContextSource(path, "linux"),
+        ).rejects.toMatchObject({
           code: "MODEL_NOT_CONFIGURED",
         });
       }
