@@ -330,6 +330,9 @@ describe.skipIf(!configured)(
 
       // Positive customer access uses the separate portal adapter. The original
       // employee reader above still rejects the same keys before source reads.
+      const classificationReports: ReturnType<
+        typeof customerClassificationReport
+      >[] = [];
       for (const portal of ["portalA", "portalB"] as const) {
         const seedReport = customerClassificationReport(
           portal,
@@ -337,28 +340,42 @@ describe.skipIf(!configured)(
           fixture.customerClassification[portal],
         );
         console.log(JSON.stringify(seedReport));
-        expect(customerClassificationMatches(seedReport)).toBe(true);
+        classificationReports.push(seedReport);
         const post = createOdooJson2ReadTransport({
           baseUrl,
           database: fixture.database,
           fetch: transport,
         });
         const currentGroups: Record<string, unknown> = {};
-        for (const [group] of customerGroupExpectations)
-          currentGroups[group] = await post(
-            "res.users",
-            "has_group",
-            credentials[portal],
-            { ids: [fixture.users[portal]], group_ext_id: group },
-            1024,
-          );
+        for (const [group] of customerGroupExpectations) {
+          try {
+            currentGroups[group] = await post(
+              "res.users",
+              "has_group",
+              credentials[portal],
+              { ids: [fixture.users[portal]], group_ext_id: group },
+              1024,
+            );
+          } catch {
+            // A failed diagnostic request is unknown, never a passing boolean.
+            // Continue collecting both customers' reports without logging the exception.
+            currentGroups[group] = null;
+          }
+        }
         const rpcReport = customerClassificationReport(
           portal,
           "json2",
           currentGroups,
         );
         console.log(JSON.stringify(rpcReport));
-        expect(customerClassificationMatches(rpcReport)).toBe(true);
+        classificationReports.push(rpcReport);
+      }
+      // Collect all four reports before failing any exact classification check.
+      // Seed/environment/cache differences remain observable for both customers.
+      for (const report of classificationReports)
+        expect(customerClassificationMatches(report)).toBe(true);
+
+      for (const portal of ["portalA", "portalB"] as const) {
         expect(
           await customerReader.verifyUserProjectScope(
             credentials[portal],

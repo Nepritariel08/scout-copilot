@@ -83,6 +83,10 @@ expected booleans and actual booleans (or null for malformed/missing values).
 No API key, token, password, raw response, user/contact or business record is
 logged. Redaction and exact expectations have focused pure tests. A mismatch
 still fails; no production UID, portal, internal/admin or ACL check was relaxed.
+Both seed and own-key RPC reports for both synthetic customers are collected
+before any classification assertion. Failed RPC diagnostics become unknown/null,
+never a passing boolean, so all four reports remain available before the strict
+gate blocks the positive customer stage.
 
 Odoo 20's [own-user group check](https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/res_users.py)
 uses effective group membership, and its user-type groups are disjoint. Its
