@@ -137,12 +137,23 @@ export function createOwnedModelAgents(deps: {
                       principal,
                       selection.recordId,
                       grant.route.provider,
+                      grant.fingerprint,
                     );
                   else
                     await selectedContext.assertCurrent(
                       principal,
                       grant.route.provider,
                     );
+                  // Source and grant reads can await remote I/O. Pin native
+                  // identity again after they finish, before authorizing egress.
+                  const afterContext = await deps.authority.binding(request);
+                  if (
+                    afterContext.person.id !== actor.id ||
+                    afterContext.policy.fingerprint !== bindingFingerprint ||
+                    afterContext.policy.tenantId !== principal.tenantId ||
+                    afterContext.policy.deploymentId !== principal.deploymentId
+                  )
+                    throw new ModelPolicyError("MODEL_ACCESS_DENIED");
                 }
                 return grant;
               };

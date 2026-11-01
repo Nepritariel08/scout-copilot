@@ -1,7 +1,13 @@
 import { ModelPolicyError } from "./policy";
 import type { ProjectTaskReadRequest } from "./record-context";
 
-const taskFields = ["id", "name", "stage_id", "date_deadline"] as const;
+const taskFields = [
+  "id",
+  "name",
+  "stage_id",
+  "date_deadline",
+  "company_id",
+] as const;
 const maximumContextBytes = 1024;
 const maximumRequestBytes = 4096;
 const defaultTimeoutMs = 5000;
@@ -13,11 +19,15 @@ export type OdooUserApiKey = {
 
 /** Must return the protected API key explicitly mapped to this qualified Odoo UID. */
 export type OdooUserApiKeyResolver = {
-  resolveForUid(uid: number): Promise<OdooUserApiKey | null>;
+  resolveForUid(
+    uid: number,
+    credentialRef: string,
+  ): Promise<OdooUserApiKey | null>;
 };
 
 export type OdooJson2ProjectTaskReaderOptions = {
   /** Trusted server configuration. It cannot be selected by a requester or model. */
+  instanceId: string;
   baseUrl: string;
   database: string;
   credentials: OdooUserApiKeyResolver;
@@ -62,6 +72,12 @@ function configuredDatabase(value: string): string {
   return value;
 }
 
+function configuredInstanceId(value: string): string {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(value))
+    return denied();
+  return value;
+}
+
 function validTimeout(value: number): number {
   if (!Number.isSafeInteger(value) || value < 500 || value > 15_000)
     return denied();
@@ -78,21 +94,33 @@ function hasCredentialWhitespaceOrControl(value: string): boolean {
   );
 }
 
-function projectIds(request: ProjectTaskReadRequest): number[] {
+function projectIds(
+  request: ProjectTaskReadRequest,
+  expectedInstanceId: string,
+): number[] {
   if (!request || typeof request !== "object") return denied();
   const source = request.sourceIdentity;
   if (
     !source ||
     typeof source !== "object" ||
+    source.instanceId !== expectedInstanceId ||
+    !/^[A-Za-z0-9_-]{1,100}$/.test(source.instanceId) ||
     !Array.isArray(source.companyIds) ||
     !Number.isSafeInteger(source.uid) ||
     source.uid < 1 ||
     source.uid === 1 ||
     source.role !== "user" ||
     source.qualification !== "qualified" ||
+    !Number.isFinite(Date.parse(source.qualificationExpiresAt)) ||
+    Date.parse(source.qualificationExpiresAt) <= Date.now() ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      source.credentialRef,
+    ) ||
     source.companyIds.length < 1 ||
     source.companyIds.length > 100 ||
-    source.companyIds.some((id) => !Number.isSafeInteger(id) || id < 1) ||
+    source.companyIds.some(
+      (id) => !Number.isSafeInteger(id) || id < 1 || id > 2_147_483_647,
+    ) ||
     new Set(source.companyIds).size !== source.companyIds.length ||
     request.model !== "project.task" ||
     request.limit !== 1 ||
@@ -120,7 +148,9 @@ function projectIds(request: ProjectTaskReadRequest): number[] {
     !Array.isArray(projectScope[2]) ||
     projectScope[2].length < 1 ||
     projectScope[2].length > 100 ||
-    projectScope[2].some((id) => !Number.isSafeInteger(id) || id < 1) ||
+    projectScope[2].some(
+      (id) => !Number.isSafeInteger(id) || id < 1 || id > 2_147_483_647,
+    ) ||
     new Set(projectScope[2]).size !== projectScope[2].length
   )
     return denied();
@@ -213,6 +243,7 @@ async function boundedJson(
 export function createOdooJson2ProjectTaskReader(
   options: OdooJson2ProjectTaskReaderOptions,
 ) {
+  const instanceId = configuredInstanceId(options.instanceId);
   const origin = configuredOrigin(options.baseUrl);
   const database = configuredDatabase(options.database);
   const timeoutMs = validTimeout(options.timeoutMs ?? defaultTimeoutMs);
@@ -220,7 +251,7 @@ export function createOdooJson2ProjectTaskReader(
 
   const post = async (
     model: "res.users" | "project.task",
-    method: "context_get" | "search_read",
+    method: "context_get" | "has_group" | "search_read",
     apiKey: string,
     body: Record<string, unknown>,
     maxResponseBytes: number,
@@ -255,13 +286,34 @@ export function createOdooJson2ProjectTaskReader(
     return boundedJson(response, maxResponseBytes);
   };
 
+  const assertCurrentUserIsNotAdministrator = async (
+    apiKey: string,
+    uid: number,
+  ) => {
+    // Unknown values, missing methods, and failed checks must never be treated
+    // as evidence that an Odoo user is safe to release context for.
+    for (const groupExtId of ["base.group_system", "base.group_erp_manager"]) {
+      const isAdministrator = await post(
+        "res.users",
+        "has_group",
+        apiKey,
+        { ids: [uid], group_ext_id: groupExtId },
+        maximumContextBytes,
+      );
+      if (isAdministrator !== false) return denied();
+    }
+  };
+
   return {
     async readProjectTask(request: ProjectTaskReadRequest): Promise<unknown> {
-      const allowedProjectIds = projectIds(request);
+      const allowedProjectIds = projectIds(request, instanceId);
       let apiKey: string;
       try {
         apiKey = credentialKey(
-          await options.credentials.resolveForUid(request.sourceIdentity.uid),
+          await options.credentials.resolveForUid(
+            request.sourceIdentity.uid,
+            request.sourceIdentity.credentialRef,
+          ),
           request.sourceIdentity.uid,
         );
       } catch (error) {
@@ -284,6 +336,11 @@ export function createOdooJson2ProjectTaskReader(
       )
         return denied();
 
+      await assertCurrentUserIsNotAdministrator(
+        apiKey,
+        request.sourceIdentity.uid,
+      );
+
       const [selected] = request.domain;
       const rows = await post(
         "project.task",
@@ -301,6 +358,13 @@ export function createOdooJson2ProjectTaskReader(
           limit: 1,
         },
         maximumRequestBytes + 1024,
+      );
+      // Check again after Odoo returns the task. This catches a privilege
+      // promotion that overlaps the read instead of trusting the grant's
+      // earlier nonadmin qualification until it expires.
+      await assertCurrentUserIsNotAdministrator(
+        apiKey,
+        request.sourceIdentity.uid,
       );
       if (!Array.isArray(rows)) return rows;
       return rows.map((row) => {

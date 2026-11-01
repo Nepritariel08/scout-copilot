@@ -27,10 +27,13 @@ function grant(
     revision: 1,
     expiresAt: "2099-01-01T00:00:00.000Z",
     sourceIdentity: {
+      instanceId: "odoo-test",
       uid: 401,
       role: "user",
       qualification: "qualified",
+      qualificationExpiresAt: "2099-01-01T00:00:00.000Z",
       companyIds: [7],
+      credentialRef: "00000000-0000-4000-8000-000000000401",
     },
     allowedProjectIds: [31],
     ...changes,
@@ -47,6 +50,8 @@ function releaseGrant(
     expiresAt: "2099-01-01T00:00:00.000Z",
     dataClass: "odoo.project_task_summary.v1",
     provider: "local",
+    sourceInstanceId: "odoo-test",
+    modelPolicyFingerprint: "a".repeat(64),
     ...changes,
   };
 }
@@ -58,6 +63,7 @@ function row(id = 700) {
       name: "Synthetic task name",
       stage_id: [9, "Synthetic stage"],
       date_deadline: "2026-12-15",
+      company_id: [7, "Synthetic company"],
     },
   ];
 }
@@ -79,6 +85,7 @@ function fakePort(
   let rows: unknown = options.rows === undefined ? row() : options.rows;
   const requests: ProjectTaskReadRequest[] = [];
   const port: ProjectTaskContextPort = {
+    sourceInstanceId: "odoo-test",
     getReleaseGrant: async () => currentReleaseGrant,
     getGrant: async () => currentGrant,
     readProjectTask: async (request) => {
@@ -143,22 +150,26 @@ describe("owned read-only project.task context seam", () => {
       principal,
       700,
       "local",
+      "a".repeat(64),
       () => timestamp,
     );
     expect(fake.requests).toHaveLength(1);
     expect(fake.requests[0]).toEqual({
       sourceIdentity: {
+        instanceId: "odoo-test",
         uid: 401,
         role: "user",
         qualification: "qualified",
+        qualificationExpiresAt: "2099-01-01T00:00:00.000Z",
         companyIds: [7],
+        credentialRef: "00000000-0000-4000-8000-000000000401",
       },
       model: "project.task",
       domain: [
         ["id", "=", 700],
         ["project_id", "in", [31]],
       ],
-      fields: ["id", "name", "stage_id", "date_deadline"],
+      fields: ["id", "name", "stage_id", "date_deadline", "company_id"],
       limit: 1,
       maxBytes: 4096,
     });
@@ -197,6 +208,7 @@ describe("owned read-only project.task context seam", () => {
         principal,
         700,
         "local",
+        "a".repeat(64),
         () => timestamp,
       ),
     ).rejects.toThrow("MODEL_ACCESS_DENIED");
@@ -212,10 +224,13 @@ describe("owned read-only project.task context seam", () => {
         currentGrant: grant({
           principal: foreignPrincipal,
           sourceIdentity: {
+            instanceId: "odoo-test",
             uid: 402,
             role: "user",
             qualification: "qualified",
+            qualificationExpiresAt: "2099-01-01T00:00:00.000Z",
             companyIds: [7],
+            credentialRef: "00000000-0000-4000-8000-000000000402",
           },
         }),
       });
@@ -225,6 +240,7 @@ describe("owned read-only project.task context seam", () => {
           principal,
           700,
           "local",
+          "a".repeat(64),
           () => timestamp,
         ),
       ).rejects.toThrow("MODEL_ACCESS_DENIED");
@@ -237,19 +253,25 @@ describe("owned read-only project.task context seam", () => {
       {
         ...grant(),
         sourceIdentity: {
+          instanceId: "odoo-test",
           uid: 401,
           role: "admin",
           qualification: "qualified",
+          qualificationExpiresAt: "2099-01-01T00:00:00.000Z",
           companyIds: [7],
+          credentialRef: "00000000-0000-4000-8000-000000000401",
         },
       },
       {
         ...grant(),
         sourceIdentity: {
+          instanceId: "odoo-test",
           uid: 401,
           role: "user",
           qualification: "pending",
+          qualificationExpiresAt: "2099-01-01T00:00:00.000Z",
           companyIds: [7],
+          credentialRef: "00000000-0000-4000-8000-000000000401",
         },
       },
     ];
@@ -261,6 +283,7 @@ describe("owned read-only project.task context seam", () => {
           principal,
           700,
           "local",
+          "a".repeat(64),
           () => timestamp,
         ),
       ).rejects.toThrow("MODEL_ACCESS_DENIED");
@@ -282,6 +305,7 @@ describe("owned read-only project.task context seam", () => {
           principal,
           700,
           "local",
+          "a".repeat(64),
           () => timestamp,
         ),
       ).rejects.toThrow("MODEL_ACCESS_DENIED");
@@ -297,6 +321,7 @@ describe("owned read-only project.task context seam", () => {
         principal,
         700,
         "local",
+        "a".repeat(64),
         () => timestamp,
       ),
     ).rejects.toThrow("MODEL_ACCESS_DENIED");
@@ -309,7 +334,24 @@ describe("owned read-only project.task context seam", () => {
       "name",
       "stage_id",
       "date_deadline",
+      "company_id",
     ]);
+  });
+
+  test("denies a selected task whose company is outside the per-user grant", async () => {
+    const fake = fakePort({
+      rows: [{ ...row()[0], company_id: [8, "Another customer company"] }],
+    });
+    await expect(
+      resolveProjectTaskContext(
+        fake.port,
+        principal,
+        700,
+        "local",
+        "a".repeat(64),
+        () => timestamp,
+      ),
+    ).rejects.toThrow("MODEL_ACCESS_DENIED");
   });
 
   test("denies missing, duplicate, oversized, or extra-field rows", async () => {
@@ -326,6 +368,7 @@ describe("owned read-only project.task context seam", () => {
           principal,
           700,
           "local",
+          "a".repeat(64),
           () => timestamp,
         ),
       ).rejects.toThrow("MODEL_ACCESS_DENIED");
@@ -339,12 +382,45 @@ describe("owned read-only project.task context seam", () => {
       principal,
       700,
       "local",
+      "a".repeat(64),
       () => timestamp,
     );
     fake.setGrant(grant({ active: false, revision: 2 }));
     await expect(resolved.assertCurrent(principal, "local")).rejects.toThrow(
       "MODEL_ACCESS_DENIED",
     );
+  });
+
+  test("rechecks record and release grants after the final Odoo read", async () => {
+    for (const revoke of ["record", "release"] as const) {
+      const fake = fakePort();
+      const resolved = await resolveProjectTaskContext(
+        fake.port,
+        principal,
+        700,
+        "local",
+        "a".repeat(64),
+        () => timestamp,
+      );
+      const readProjectTask = fake.port.readProjectTask;
+      let reads = 0;
+      fake.port.readProjectTask = async (request) => {
+        const value = await readProjectTask(request);
+        reads++;
+        if (reads === 1) {
+          if (revoke === "record")
+            fake.setGrant(grant({ active: false, revision: 2 }));
+          else
+            fake.setReleaseGrant(releaseGrant({ active: false, revision: 2 }));
+        }
+        return value;
+      };
+
+      await expect(resolved.assertCurrent(principal, "local")).rejects.toThrow(
+        "MODEL_ACCESS_DENIED",
+      );
+      expect(reads).toBe(1);
+    }
   });
 
   test("pins the data-class/provider release grant and rechecks it before egress", async () => {
@@ -354,6 +430,7 @@ describe("owned read-only project.task context seam", () => {
       principal,
       700,
       "local",
+      "a".repeat(64),
       () => timestamp,
     );
     fake.setReleaseGrant(releaseGrant({ revision: 2 }));
@@ -370,6 +447,7 @@ describe("owned read-only project.task context seam", () => {
       principal,
       700,
       "openrouter",
+      "a".repeat(64),
       () => timestamp,
     );
     await expect(
@@ -387,6 +465,7 @@ describe("owned read-only project.task context seam", () => {
           name: "Changed synthetic task name",
           stage_id: [9, "Synthetic stage"],
           date_deadline: "2026-12-15",
+          company_id: [7, "Synthetic company"],
         },
       ],
     ]) {
@@ -396,6 +475,7 @@ describe("owned read-only project.task context seam", () => {
         principal,
         700,
         "local",
+        "a".repeat(64),
         () => timestamp,
       );
       fake.setRows(changedRows);

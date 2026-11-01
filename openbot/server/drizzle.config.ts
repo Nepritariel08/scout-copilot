@@ -45,6 +45,7 @@ export default defineConfig({
     "./src/db/schema/scout.ts",
     "./src/db/schema/scout-history.ts",
     "./src/db/schema/scout-model.ts",
+    "./src/db/schema/scout-record-context.ts",
     "./src/db/schema/scout-scope.ts",
   ],
   out: "./drizzle",
