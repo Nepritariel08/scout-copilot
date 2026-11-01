@@ -44,6 +44,7 @@ import { createBoundHistory } from "../history/service";
 import { createHistoryStore } from "../history/store";
 import { createScoutConnector } from "../mcp";
 import { createOwnedModelAgents } from "../owned-model/agents";
+import type { ProjectTaskContextPort } from "../owned-model/record-context";
 import { createModelCallStore } from "../owned-model/store";
 import { createScoutService } from "../service";
 import { createScoutStore } from "../store";
@@ -67,6 +68,8 @@ export async function createOwnedApplication(
     ) => Promise<Record<string, AbstractAgent>>;
     /** Trusted synthetic provider seam; absent in the production entry. */
     modelFetch?: typeof fetch;
+    /** Test-only record reader seam; production remains fail-closed until a source identity is approved. */
+    recordContext?: ProjectTaskContextPort;
   } = {},
 ) {
   if (
@@ -197,6 +200,7 @@ export async function createOwnedApplication(
           calls: modelCalls,
           transport: options.modelFetch,
           scope,
+          recordContext: options.recordContext,
         })
       : async (actor: AuthenticatedActor) =>
           Object.fromEntries(

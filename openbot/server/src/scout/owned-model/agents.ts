@@ -18,12 +18,37 @@ import {
   ModelPolicyError,
   modelPrincipal,
 } from "./policy";
+import {
+  type ProjectTaskContextPort,
+  type ProjectTaskSelection,
+  type ResolvedProjectTaskContext,
+  resolveProjectTaskContext,
+  selectProjectTask,
+} from "./record-context";
 import type { ModelCallStore } from "./store";
 
 class OwnedTextAgent extends RunBuiltAgent {
+  constructor(
+    identity: { agentId: string; description: string },
+    whole: UnavailableAgent,
+    build: ConstructorParameters<typeof RunBuiltAgent>[2],
+    private selections: WeakMap<RunAgentInput, ProjectTaskSelection>,
+  ) {
+    super(identity, whole, build);
+  }
+
   run(input: RunAgentInput) {
-    // The initial owned pilot releases only owned conversation text, never arbitrary browser context/tools.
-    return super.run({ ...input, tools: [], context: [], forwardedProps: {} });
+    // Keep only one typed, untrusted selection hint in a private weak map. The actual input passed
+    // to the agent and provider has all browser context, tools and forwarded props removed.
+    const sanitized = { ...input, tools: [], context: [], forwardedProps: {} };
+    this.selections.set(sanitized, selectProjectTask(input.context));
+    return super.run(sanitized);
+  }
+
+  clone(): OwnedTextAgent {
+    const cloned = super.clone() as OwnedTextAgent;
+    cloned.selections = this.selections;
+    return cloned;
   }
 }
 
@@ -35,6 +60,8 @@ export function createOwnedModelAgents(deps: {
   calls: ModelCallStore;
   transport?: typeof fetch;
   scope?: TenantScope;
+  /** Test-only trusted adapter seam. Production leaves this absent until source identity is qualified. */
+  recordContext?: ProjectTaskContextPort;
 }) {
   const load = createRuntimeAgentLoader(
     deps.database,
@@ -56,14 +83,19 @@ export function createOwnedModelAgents(deps: {
           reason: "MODEL_UNAVAILABLE",
         });
         if (registered.type !== "built_in") return [registered.id, unavailable];
+        const selections = new WeakMap<RunAgentInput, ProjectTaskSelection>();
         return [
           registered.id,
           new OwnedTextAgent(
             { agentId: registered.id, description: registered.name },
             unavailable,
             async (input, signal) => {
+              const selection = selections.get(input) ?? { kind: "none" };
+              let selectedContext: ResolvedProjectTaskContext | undefined;
               let bindingFingerprint: string | undefined;
               const authorize = async () => {
+                if (selection.kind === "invalid")
+                  throw new ModelPolicyError("MODEL_ACCESS_DENIED");
                 const { person, policy: binding } =
                   await deps.authority.binding(request);
                 if (
@@ -90,6 +122,28 @@ export function createOwnedModelAgents(deps: {
                   current.policy.fingerprint !== bindingFingerprint
                 )
                   throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+                if (selection.kind === "selected") {
+                  if (!deps.recordContext)
+                    throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+                  const principal = {
+                    userId: current.person.id,
+                    tenantId: current.policy.tenantId,
+                    deploymentId: current.policy.deploymentId,
+                    bindingFingerprint: current.policy.fingerprint,
+                  };
+                  if (!selectedContext)
+                    selectedContext = await resolveProjectTaskContext(
+                      deps.recordContext,
+                      principal,
+                      selection.recordId,
+                      grant.route.provider,
+                    );
+                  else
+                    await selectedContext.assertCurrent(
+                      principal,
+                      grant.route.provider,
+                    );
+                }
                 return grant;
               };
               const grant = await authorize();
@@ -107,6 +161,7 @@ export function createOwnedModelAgents(deps: {
                 deps.calls,
                 signal,
                 deps.transport,
+                selectedContext?.prompt,
               );
               return createActorAgentResolver({
                 loadAgents: async (current) =>
@@ -127,6 +182,7 @@ export function createOwnedModelAgents(deps: {
                   : {}),
               }).resolveAgentForActor(actor, registered.id);
             },
+            selections,
           ),
         ];
       }),
