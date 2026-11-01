@@ -235,14 +235,24 @@ bounded. Odoo's standard ACLs, record rules and field permissions remain the
 final enforcement point for reads
 ([Odoo JSON-2 API](https://www.odoo.com/documentation/20.0/developer/reference/external_api.html)).
 
-The source now includes append-only per-user record and context-release grant
+The source includes append-only per-user record and context-release grant
 tables, a latest-revision store, and an opaque credential-reference resolver
-over OpenBot's encrypted credential vault. At the prior exact head, the
-PostgreSQL-backed integration tests applied the migrations and passed in CI
-run 41292114270 at commit `35f85726e88abfcc17d0d7d20804e7fa470ed4f6`; this
-checkout has no verified disposable PostgreSQL test database. The resolver
-binds each key row to the exact source instance, UID, provider and credential
-ID; grants store only that opaque credential ID.
+over OpenBot's encrypted credential vault. The owned application now composes
+those pieces with the fixed JSON-2 reader when
+`SCOUT_ODOO_CONTEXT_SOURCE_FILE` points to a protected JSON file containing
+only `version`, `sourceInstanceId`, `baseUrl`, and `database`. The file rejects
+credentials, user IDs, project/company scope, URL paths and non-HTTPS remote
+origins. Per-user keys resolve only through the opaque grant reference and the
+encrypted vault row bound to the exact source instance and Odoo UID.
+
+The grant store remains read-only: this change adds no grant issuance or
+revocation endpoint. Until an audited provisioning path exists and verified
+active grants are issued, selected-record context remains denied. The source
+configuration alone does not create or authorize a user, project, or provider
+release grant. The persistence integration tests previously applied the
+migrations and passed in CI run 41292114270 at commit
+`35f85726e88abfcc17d0d7d20804e7fa470ed4f6`; the new composition regression
+uses a synthetic database and mock Odoo transport, not a live service.
 
 Qualification remains a hard live gate. The stored `verified_nonadmin`
 attestation is provisioning evidence, not a live authorization decision. On
@@ -254,18 +264,20 @@ failed or malformed privilege check denies the read. Odoo documents that
 `has_group` applies to the current user and restricts
 non-internal users from querying another user's groups
 ([Odoo 20 `res.users` implementation](https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/res_users.py#L1085-L1101)).
-Before production composition, test promotion/revocation against the exact
-self-hosted Community build and prove task-read and provider-dispatch denial.
+Before enabling the configured composition against a live service, test
+promotion/revocation against the exact self-hosted Community build and prove
+task-read and provider-dispatch denial.
 Provisioning must also verify that every granted project belongs to the
 approved company/customer scope; independent ID arrays alone do not establish
 that relationship. The selected task's company is now checked against the
 grant's company IDs, but project/customer ownership still needs trusted
 provisioning evidence. Add same-company customer isolation and cross-company
 project tests. An Odoo 20 Community test database, live UID/ACL readback,
-customer isolation evidence, and production composition remain absent. No live
-Odoo credential or business record was used by the mocked transport tests. A
-selected task continues to fail closed in production. Before enabling JSON-2
-on the self-hosted Community build, verify the endpoint against that exact
+customer isolation evidence, and an audited grant issuance workflow remain
+absent. No live Odoo credential or business record was used by the mocked
+transport tests. A selected task continues to fail closed unless the complete
+configured source and both grant ledgers are valid. Before enabling JSON-2 on
+the self-hosted Community build, verify the endpoint against that exact
 installed build and its available API route.
 On 2026-11-01, a loopback read of the target Linode returned HTTP 200 for
 `/web/version`; an unauthenticated JSON-2 `res.users/context_get` request

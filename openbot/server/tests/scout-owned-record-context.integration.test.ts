@@ -8,7 +8,9 @@ import {
   scoutContextReleaseGrants,
   scoutOdooRecordAccessGrants,
 } from "../src/db/schema/scout-record-context";
+import { createOwnedOdooProjectTaskContext } from "../src/scout/owned-model/context-source";
 import { createOdooJson2CredentialResolver } from "../src/scout/owned-model/odoo-credentials";
+import type { ProjectTaskReadRequest } from "../src/scout/owned-model/record-context";
 import { createProjectTaskContextStore } from "../src/scout/owned-model/record-context-store";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
@@ -215,6 +217,100 @@ describe("owned Odoo grant persistence and credential resolution", () => {
         "other-instance",
       ).resolveForUid(101, credentialRef),
     ).resolves.toBeNull();
+  });
+
+  test("production context composition reads through encrypted credentials and the fixed JSON-2 allowlist", async () => {
+    const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const transport: typeof fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input));
+        const headers = new Headers(init?.headers);
+        expect(url.origin).toBe("https://odoo.fixture.example");
+        expect(headers.get("authorization")).toBe(
+          "bearer synthetic-odoo-key-101",
+        );
+        expect(headers.get("x-odoo-database")).toBe("fixture_odoo");
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        calls.push({ path: url.pathname, body });
+        let result: unknown;
+        if (url.pathname === "/json/2/res.users/context_get")
+          result = { uid: 101 };
+        else if (url.pathname === "/json/2/res.users/has_group") result = false;
+        else if (url.pathname === "/json/2/project.task/search_read")
+          result = [
+            {
+              id: 77,
+              name: "Synthetic task",
+              stage_id: [2, "In Progress"],
+              date_deadline: "2026-11-30",
+              company_id: [1, "Synthetic company"],
+            },
+          ];
+        else return new Response(null, { status: 404 });
+        return new Response(JSON.stringify(result), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      { preconnect: async () => {} },
+    );
+    const context = createOwnedOdooProjectTaskContext(
+      database,
+      encryptionKey,
+      {
+        version: 1,
+        sourceInstanceId,
+        baseUrl: "https://odoo.fixture.example",
+        database: "fixture_odoo",
+      },
+      transport,
+    );
+    const request: ProjectTaskReadRequest = {
+      sourceIdentity: {
+        instanceId: sourceInstanceId,
+        uid: 101,
+        role: "user",
+        qualification: "qualified",
+        qualificationExpiresAt: qualificationExpiresAt.toISOString(),
+        companyIds: [1],
+        credentialRef,
+      },
+      model: "project.task",
+      domain: [
+        ["id", "=", 77],
+        ["project_id", "in", [501]],
+      ],
+      fields: ["id", "name", "stage_id", "date_deadline", "company_id"],
+      limit: 1,
+      maxBytes: 4096,
+    };
+
+    await expect(context.readProjectTask(request)).resolves.toEqual([
+      {
+        id: 77,
+        name: "Synthetic task",
+        stage_id: [2, "In Progress"],
+        date_deadline: "2026-11-30",
+        company_id: [1, "Synthetic company"],
+      },
+    ]);
+    expect(calls.map((call) => call.path)).toEqual([
+      "/json/2/res.users/context_get",
+      "/json/2/res.users/has_group",
+      "/json/2/res.users/has_group",
+      "/json/2/project.task/search_read",
+      "/json/2/res.users/has_group",
+      "/json/2/res.users/has_group",
+    ]);
+    expect(calls[3]?.body).toEqual({
+      context: { allowed_company_ids: [1] },
+      domain: [
+        ["id", "=", 77],
+        ["project_id", "in", [501]],
+      ],
+      fields: ["id", "name", "stage_id", "date_deadline", "company_id"],
+      limit: 1,
+    });
   });
 
   test("the database refuses update, delete and truncate on both grant ledgers", async () => {

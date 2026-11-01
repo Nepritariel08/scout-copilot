@@ -76,6 +76,24 @@ describe("explicit owned runtime configuration", () => {
       }),
     ).toThrow("absolute protected file path");
   });
+  test("Odoo context source configuration is optional and requires an absolute protected file path", () => {
+    expect(
+      loadOwnedConfig(environment).scoutOdooContextSourceFile,
+    ).toBeUndefined();
+    const path = join(tmpdir(), "scout-odoo-context-source.json");
+    expect(
+      loadOwnedConfig({
+        ...environment,
+        SCOUT_ODOO_CONTEXT_SOURCE_FILE: path,
+      }).scoutOdooContextSourceFile,
+    ).toBe(path);
+    expect(() =>
+      loadOwnedConfig({
+        ...environment,
+        SCOUT_ODOO_CONTEXT_SOURCE_FILE: "relative-source.json",
+      }),
+    ).toThrow("absolute protected file path");
+  });
   test("requires no vendor key, emits no fabricated Intelligence settings, and turns off licensed auto assignment", () => {
     const config = loadOwnedConfig(environment);
     expect(config.runtime).toEqual({ mode: "owned", durableHistory: true });

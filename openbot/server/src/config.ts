@@ -1433,6 +1433,8 @@ export type AnyDeploymentConfig = DeploymentConfig<RuntimeCapabilities>;
 export type OwnedDeploymentConfig =
   DeploymentConfig<OwnedRuntimeCapabilities> & {
     scoutModelPolicyFile?: string;
+    /** Optional protected fixed-source settings for the read-only Odoo context adapter. */
+    scoutOdooContextSourceFile?: string;
     scoutPlatformOwnerIds: readonly string[];
     scoutDelegatedDraftsEnabled: boolean;
   };
@@ -1473,6 +1475,14 @@ export function loadOwnedConfig(
     throw new Error(
       "SCOUT_MODEL_POLICY_FILE must be an absolute protected file path.",
     );
+  const scoutOdooContextSourceFile = optional(
+    environment,
+    "SCOUT_ODOO_CONTEXT_SOURCE_FILE",
+  );
+  if (scoutOdooContextSourceFile && !isAbsolute(scoutOdooContextSourceFile))
+    throw new Error(
+      "SCOUT_ODOO_CONTEXT_SOURCE_FILE must be an absolute protected file path.",
+    );
   const scoutPlatformOwnerIds = (
     optional(environment, "SCOUT_PLATFORM_OWNER_IDS") ?? ""
   )
@@ -1506,6 +1516,7 @@ export function loadOwnedConfig(
     learningAutoAssign: false,
     selfHostBanner: false,
     ...(scoutModelPolicyFile ? { scoutModelPolicyFile } : {}),
+    ...(scoutOdooContextSourceFile ? { scoutOdooContextSourceFile } : {}),
     scoutPlatformOwnerIds,
     scoutDelegatedDraftsEnabled:
       delegatedDrafts === "true" || delegatedDrafts === "1",
