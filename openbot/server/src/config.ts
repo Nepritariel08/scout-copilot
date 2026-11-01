@@ -1389,7 +1389,18 @@ export function loadOwnedConfig(
   if (environment.SCOUT_RUNTIME_MODE?.trim() !== "owned")
     throw new Error("Owned runtime requires SCOUT_RUNTIME_MODE=owned.");
   const config = readDeploymentConfig(
-    environment,
+    {
+      ...environment,
+      // These auxiliary providers do not yet pass the owned context/budget port.
+      TRANSCRIPTION_PROVIDER: undefined,
+      TRANSCRIPTION_BASE_URL: undefined,
+      TRANSCRIPTION_MODEL: undefined,
+      TRANSCRIPTION_API_KEY: undefined,
+      VOICE_PROVIDER: undefined,
+      VOICE_MODEL: undefined,
+      VOICE_API_KEY: undefined,
+      VOICE_NAME: undefined,
+    },
     interfaces,
     () => ({ mode: "owned", durableHistory: true }) as const,
   );

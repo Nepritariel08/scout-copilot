@@ -184,7 +184,9 @@ instructions. It strips client tools, arbitrary context and forwarded
 properties; provider options cannot override the constructed outbound request.
 It rejects file/media messages, unexpected provider tool calls and unadapted
 remote-agent execution. Auxiliary model calls cannot inherit an unrestricted
-credential path. Delegated drafts continue through the separately governed
+credential path. Owned configuration ignores transcription/voice environment
+settings, reports those capabilities unavailable, and refuses their native
+routes before provider construction. Delegated drafts continue through the separately governed
 Scout/DSH requester port.
 
 Storing conversations on Linode does not keep prompts on Linode when an

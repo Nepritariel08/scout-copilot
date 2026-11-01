@@ -312,6 +312,24 @@ afterAll(async () => {
 });
 
 describe("owned model: real SQL and SDK chat-completions", () => {
+  test("unadapted audio and voice endpoints cannot bypass owned model admission", async () => {
+    for (const path of [
+      "/api/audio/transcriptions",
+      "/api/voice/calls",
+      "/api/voice/sessions",
+    ]) {
+      const response = await request(path, {});
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({
+        code: "MODEL_ROUTE_UNAVAILABLE",
+      });
+    }
+    const capabilities = await (await request("/api/capabilities")).json();
+    expect(capabilities.transcription).toBe(false);
+    expect(capabilities.voice).toBe(false);
+    expect(providerCalls).toBe(0);
+    expect(await rows()).toHaveLength(0);
+  });
   test("uses an explicit local endpoint/key/model, bounds output and stores observed usage without inventing cost", async () => {
     const output = await model(await run()).doGenerate(modelOptions());
     expect(output.content).toEqual([

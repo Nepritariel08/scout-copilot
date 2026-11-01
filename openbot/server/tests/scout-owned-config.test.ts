@@ -12,6 +12,20 @@ const environment = {
   OPENBOT_HOST: "127.0.0.1",
 };
 describe("explicit owned runtime configuration", () => {
+  test("unadapted transcription and voice cannot inherit ambient provider credentials", () => {
+    const config = loadOwnedConfig({
+      ...environment,
+      TRANSCRIPTION_PROVIDER: "unadapted-fixture",
+      TRANSCRIPTION_MODEL: "unused",
+      TRANSCRIPTION_API_KEY: "synthetic-unapproved-transcription-key",
+      VOICE_PROVIDER: "unadapted-fixture",
+      VOICE_MODEL: "unused",
+      VOICE_API_KEY: "synthetic-unapproved-voice-key",
+    });
+    expect(config.transcription).toBeUndefined();
+    expect(config.voice).toBeUndefined();
+    expect(JSON.stringify(config)).not.toContain("synthetic-unapproved");
+  });
   test("model policy is optional for unavailable agents and requires an absolute protected path when enabled", () => {
     expect(loadOwnedConfig(environment).scoutModelPolicyFile).toBeUndefined();
     const path = join(tmpdir(), "scout-model-policy.json");

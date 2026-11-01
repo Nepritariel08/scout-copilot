@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "recordedAt": "2026-11-01T03:30:12.518Z",
+  "recordedAt": "2026-11-01T03:34:11.194Z",
   "branch": "scout/owned-model-20261101",
   "base": "f3a6df0b64dde70548f5937b8010484ac26fd6bf",
   "runtime": {
@@ -25,18 +25,19 @@
     "finalStatus": "exited",
     "exitCode": 0,
     "oomKilled": false,
-    "remainingModelLedgerRows": 0,
-    "boundedWslHelperExited": 0
+    "boundedWslHelperExited": 0,
+    "remainingModelLedgerRowsBeforeFirstStop": 0,
+    "finalFixtureData": "Ephemeral tmpfs dropped on stop; fixture stopped after final 188-test run"
   },
   "passed": {
-    "combinedRegressionTests": 166,
-    "combinedRegressionFiles": 8,
-    "combinedRegressionAssertions": 706,
-    "combinedIncludesEarlierEdgeCases": 19,
+    "combinedRegressionTests": 188,
+    "combinedRegressionFiles": 9,
+    "combinedRegressionAssertions": 764,
+    "combinedIncludesEarlierEdgeCases": 20,
     "finalEdgeTests": 20,
     "finalEdgeAssertions": 129,
     "policyTests": 5,
-    "nativeSdkModelIntegrationTests": 12,
+    "nativeSdkModelIntegrationTests": 13,
     "productionTypecheck": true,
     "testProjectBaseline": {
       "existingDiagnostics": 239,
@@ -44,7 +45,7 @@
       "removedDiagnostics": 0,
       "windowsPathsNormalized": true
     },
-    "scopedBiomeFiles": 17,
+    "scopedBiomeFiles": 18,
     "migrationCheck": true,
     "schemaDrift": "No schema changes, nothing to migrate",
     "frozenInstall": true
@@ -66,7 +67,8 @@
     "unknownCostAndTokensRemainNull": true,
     "positiveOpenRouterReportedCostRefused": true,
     "privateMetadataOmittedFromOwnerReceipts": true,
-    "independentReadOnlySecurityReview": "Two concrete recovery defects corrected and tested; no further proven source blocker. Whole-app tenant partitioning remains required."
+    "independentReadOnlySecurityReview": "Two concrete recovery defects corrected and tested; no further proven source blocker. Whole-app tenant partitioning remains required.",
+    "auxiliaryAudioVoiceRoutesRefused": true
   },
   "limitations": [
     "Text-only model port; record/source retrieval and qualified tool execution remain required.",
@@ -90,7 +92,8 @@
     "openbot/server/drizzle/meta/0070_snapshot.json": "d5569b0ae28a2e78002ec8139a8fca2edc1b6c89d5e0666be10af8f1a54fa937",
     "openbot/server/drizzle/meta/_journal.json": "4c209f7d2b2d3c1778584ee493d76b16a46893804a66ddf2e9bc3881aa7db60e",
     "openbot/server/package.json": "c4b12792195e8069c1649f7448d45ce702024d3513bc47a08356d5ab410fe78c",
-    "openbot/server/src/config.ts": "bb0f37635c903dc887d8dbea5c5010929f62caebd1f49245bbf656ac632a532d",
+    "openbot/server/src/app.ts": "69719b3fb407e5ded18e85e0615e9fa4529a82073c7a8ed7830e7a3219b6b247",
+    "openbot/server/src/config.ts": "7d699f210ddf5b00289d9648763e9984da63b5011aec33c300d5d92d65f37a00",
     "openbot/server/src/copilot.ts": "4258af85158ee8d80f5225b07594d8597528625e29430990cbe5ec8dc353ec1e",
     "openbot/server/src/db/schema/index.ts": "cd9750cec3279f780579f5f07eb4c8cf5988359a638407b218000946e56b6121",
     "openbot/server/src/db/schema/scout-model.ts": "2e8e5c2efb382e764f65547be99c2523c3961ef7848e96a965d1bc8d9f8cecff",
@@ -101,11 +104,11 @@
     "openbot/server/src/scout/owned-model/store.ts": "a19a831696668bb13d3729bfc7ae37e5a9facd78d819e4f33011dc1f6a8c40c8",
     "openbot/server/src/scout/owned/application.ts": "aac636d99498e620e5cb933752d5131f3717dc98c59891745da4dde4d5eff98d",
     "openbot/server/src/scout/owned/routes.ts": "01b0c79ea6c771d7f2a4a535a9b794b9e34495915d8b08e6c7a840f6707c4f84",
-    "openbot/server/tests/scout-owned-config.test.ts": "e44d0735ec4c404f4df06ecb560563f8fc5dabe81f05edc04827f6a48a3cdfc6",
+    "openbot/server/tests/scout-owned-config.test.ts": "ed59d0d3b6b8f5f76838800beb41d8b1166491e55b645b339ec032738b4bda2c",
     "openbot/server/tests/scout-owned-model-edgecases.test.ts": "29c1ed630314760092f464de4db79bca0e78c605bb515d252cf76d9f94979c46",
     "openbot/server/tests/scout-owned-model-policy.test.ts": "3e6963c8f778a0d39fc5fb60302aaf5e6baaa04de4732dc4bd7244482f3b0f99",
-    "openbot/server/tests/scout-owned-model.integration.test.ts": "bc50cc3228c0b60ea5921469b9853b0b7bf7efc91c6f410e86b4a3cb34a1dba2",
-    "scout/OWNED-MODEL.md": "40c3a0a960d105c23c49c66d6e2bc9ac07701a8debf4e4194333bf4002a6939b",
+    "openbot/server/tests/scout-owned-model.integration.test.ts": "a0c1a8c3d59dae01bca162818a2e9d2091bc470d55c60fe36555ffb129708907",
+    "scout/OWNED-MODEL.md": "b3f032f2462c422257c716a289d3e062ea613f8f8a586ba56ced2bff0dd06635",
     "scout/OWNED-RUNTIME.md": "7720ba216f27884a9d51d1432104d0085fd913342bb2eaeeeadf76056df6cfb5",
     "scout/owned-model-policy.example.json": "b82ae56935f8073ca94773192d011909e1d49bf0483c4466557dd111821aac0a",
     "scout/owned.env.example": "13a171ebb8586e55995f2519e1fa0c9b6bb83dd3df1ed3357f916a552253e8cd"
