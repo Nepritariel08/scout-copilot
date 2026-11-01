@@ -414,6 +414,17 @@ beforeAll(async () => {
                   : "base.group_user"),
             );
           }
+          if (path === "/json/2/res.users/scout_own_identity_v1")
+            return Response.json({
+              contract: "scout-own-identity-v1",
+              uid: 101,
+              groups: {
+                "base.group_portal": customerOdooIdentity,
+                "base.group_user": !customerOdooIdentity,
+                "base.group_system": false,
+                "base.group_erp_manager": false,
+              },
+            });
           if (path === "/json/2/project.project/search_read")
             return Response.json(
               customerOdooIdentity && !customerCollaboration
