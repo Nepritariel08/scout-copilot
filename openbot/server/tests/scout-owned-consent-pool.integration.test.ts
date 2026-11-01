@@ -41,7 +41,7 @@ const identityDatabase = createDatabase(testDatabaseUrl(), { max: 1 });
 const prefix = `consent-pool-${randomUUID()}`;
 const userId = `${prefix}-native-user`;
 const email = `${prefix}@fixture.invalid`;
-const entraTenantId = "8f2c1e40-0000-0000-0000-000000000000";
+const entraTenantId = randomUUID();
 const issuer = `https://login.microsoftonline.com/${entraTenantId}/v2.0`;
 const entraObjectId = randomUUID();
 const sourceInstanceId = `${prefix}-odoo`;
@@ -151,9 +151,9 @@ function authorityFor(identity: ReturnType<typeof createOwnedNativeIdentity>) {
     channels: { get: async () => null },
   });
 }
-const authority = authorityFor(
-  createOwnedNativeIdentity(config, identityDatabase, scope),
-);
+let authority: ReturnType<typeof authorityFor>;
+let sharedAuthority: ReturnType<typeof authorityFor>;
+let app: ReturnType<typeof createOwnedRuntimeRoutes>;
 const grants = createOwnedOdooGrantService(
   database,
   config.keyEncryptionKey,
@@ -180,41 +180,43 @@ async function bounded<T>(work: Promise<T>, milliseconds: number): Promise<T> {
     void work.finally(() => pendingChecks.delete(work)).catch(() => {});
   }
 }
-const app = createOwnedRuntimeRoutes({
-  authority,
-  engine: {} as ReturnType<typeof createHistoryEngine>,
-  agents: async () => ({}),
-  generativeUi: false,
-  odooGrants: {
-    ...grants,
-    source: {
-      sourceInstanceId,
-      baseUrl: "https://synthetic-odoo.fixture.invalid",
-      database: "synthetic_odoo",
-    },
-    admit: createOwnedOdooAdmission({
-      membership,
-      binding: async (principal) =>
-        parseOwnedOdooBinding(odooDocument, principal, sourceInstanceId),
-      sourceInstanceId,
-    }),
-    readModelPolicy: async (principal) =>
-      parseModelPolicy(modelDocument, principal),
-    verifyUserProjectScope: async () => {
-      throw new Error("No Odoo calls in the consent SQL fixture");
-    },
-    consentRelease: (input) =>
-      grants.consentRelease({
-        ...input,
-        assertCurrent: async () => {
-          await beforeCheck(++transactionChecks);
-          // Bound the fixture even if composition regresses back to the shared
-          // pool: a deadline throws inside the actual transaction and rolls back.
-          await bounded(input.assertCurrent(), 2000);
-        },
+function createFixtureApp() {
+  return createOwnedRuntimeRoutes({
+    authority,
+    engine: {} as ReturnType<typeof createHistoryEngine>,
+    agents: async () => ({}),
+    generativeUi: false,
+    odooGrants: {
+      ...grants,
+      source: {
+        sourceInstanceId,
+        baseUrl: "https://synthetic-odoo.fixture.invalid",
+        database: "synthetic_odoo",
+      },
+      admit: createOwnedOdooAdmission({
+        membership,
+        binding: async (principal) =>
+          parseOwnedOdooBinding(odooDocument, principal, sourceInstanceId),
+        sourceInstanceId,
       }),
-  },
-});
+      readModelPolicy: async (principal) =>
+        parseModelPolicy(modelDocument, principal),
+      verifyUserProjectScope: async () => {
+        throw new Error("No Odoo calls in the consent SQL fixture");
+      },
+      consentRelease: (input) =>
+        grants.consentRelease({
+          ...input,
+          assertCurrent: async () => {
+            await beforeCheck(++transactionChecks);
+            // Bound the fixture even if composition regresses back to the shared
+            // pool: a deadline throws inside the actual transaction and rolls back.
+            await bounded(input.assertCurrent(), 2000);
+          },
+        }),
+    },
+  });
+}
 function request(method: "GET" | "POST" | "DELETE", body?: unknown) {
   return app.request(
     `/api/scout/odoo/context-grants${method === "GET" ? "?agentId=scout" : "/release"}`,
@@ -290,6 +292,65 @@ async function seedNative() {
 }
 
 beforeAll(async () => {
+  // Better Auth initializes provider discovery even when the tested operation
+  // only reads an existing signed session. Stub this exact synthetic tenant's
+  // discovery before constructing either native client; every other request
+  // still goes through the original test network guard. No OAuth login or
+  // provider token is supplied by this pool/authorization fixture.
+  const originalFetch = globalThis.fetch;
+  let discoveryReads = 0;
+  globalThis.fetch = Object.assign(
+    async (
+      input: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1],
+    ) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      const method =
+        init?.method ?? (input instanceof Request ? input.method : "GET");
+      if (
+        url === `${issuer}/.well-known/openid-configuration` &&
+        method.toUpperCase() === "GET"
+      ) {
+        discoveryReads++;
+        return Response.json({
+          issuer,
+          authorization_endpoint:
+            "https://synthetic-entra.fixture.invalid/authorize",
+          token_endpoint: "https://synthetic-entra.fixture.invalid/token",
+          jwks_uri: "https://synthetic-entra.fixture.invalid/jwks",
+          id_token_signing_alg_values_supported: ["RS256"],
+        });
+      }
+      return originalFetch(input, init);
+    },
+    { preconnect: originalFetch.preconnect },
+  );
+  try {
+    const identity = createOwnedNativeIdentity(config, identityDatabase, scope);
+    const sharedIdentity = createOwnedNativeIdentity(config, database, scope);
+    // Await initialization while the fixture transport is installed, before
+    // restoring fetch or holding a data transaction for the deadlock proof.
+    const initialized = await Promise.allSettled(
+      [identity, sharedIdentity].map((native) =>
+        native.auth.api.getSession({ headers: new Headers() }),
+      ),
+    );
+    for (const result of initialized) {
+      if (result.status === "rejected") throw result.reason;
+      expect(result.value).toBeNull();
+    }
+    expect(discoveryReads).toBe(2);
+    authority = authorityFor(identity);
+    sharedAuthority = authorityFor(sharedIdentity);
+    app = createFixtureApp();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
   await seedNative();
   // Only the synthetic persisted fixture is minted here; Better Auth's actual
   // signed-cookie/session reader and closed Entra hook perform every lookup.
@@ -320,13 +381,10 @@ afterAll(async () => {
 
 describe("native auth revalidation inside one-connection consent transactions", () => {
   test("reproduces the old shared-pool wait with real Better Auth and drains it after rollback", async () => {
-    const shared = authorityFor(
-      createOwnedNativeIdentity(config, database, scope),
-    );
     let pending: Promise<unknown> | undefined;
     await expect(
       database.transaction(async () => {
-        pending = shared.binding(
+        pending = sharedAuthority.binding(
           new Request("http://fixture.invalid", { headers: { cookie } }),
         );
         await bounded(pending, 250);
