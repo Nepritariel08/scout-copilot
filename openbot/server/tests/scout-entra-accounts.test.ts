@@ -89,18 +89,22 @@ describe("owned Entra preprovisioned account lookup", () => {
         subject,
       }),
     ).toBeNull();
-    await expect(
-      database
-        .insert(accounts)
-        .values({
-          id: `${prefix}-duplicate-issuer`,
-          userId,
-          providerId: "other-provider",
-          issuer,
-          accountId: subject,
-        })
-        .execute(),
-    ).rejects.toMatchObject({ cause: { code: "23505" } });
+    const duplicateError = await database
+      .insert(accounts)
+      .values({
+        id: `${prefix}-duplicate-issuer`,
+        userId,
+        providerId: "other-provider",
+        issuer,
+        accountId: subject,
+      })
+      .execute()
+      .then(
+        () => undefined,
+        (error: unknown) =>
+          error instanceof Error && "cause" in error ? error.cause : error,
+      );
+    expect(duplicateError).toMatchObject({ code: "23505" });
   });
 
   test("removing the exact binding stops login while leaving local contact data intact", async () => {
