@@ -36,8 +36,12 @@ export type OwnedOdooContextSource = z.infer<typeof sourceFile>;
 /** Bounded protected deployment settings; no user, grant, credential, or project scope is accepted here. */
 export async function readOwnedOdooContextSource(
   path: string,
+  platform: NodeJS.Platform = process.platform,
 ): Promise<OwnedOdooContextSource> {
   try {
+    if (platform !== "linux") {
+      throw new ModelPolicyError("MODEL_NOT_CONFIGURED");
+    }
     const value: unknown = JSON.parse(await readProtectedModelFile(path, 8192));
     const parsed = sourceFile.safeParse(value);
     if (!parsed.success) throw new Error("invalid source configuration");
