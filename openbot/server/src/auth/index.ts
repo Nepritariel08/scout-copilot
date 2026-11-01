@@ -40,8 +40,10 @@ import {
 } from "./scout-entra";
 
 /** What a person sees when SSO is required and they tried another way in. */
-/** The native app's custom scheme (mobile/app.config.ts). */
-const NATIVE_APP_ORIGIN = "openbotmobile://";
+/** The existing OpenBot native app's scheme (mobile/app.config.ts). */
+const OPENBOT_NATIVE_APP_ORIGIN = "openbotmobile://";
+/** The separately opted-in owned Scout chat client's scheme (mobile/app.config.ts). */
+const SCOUT_NATIVE_APP_ORIGIN = "scoutmobile://";
 
 export const SSO_REQUIRED_MESSAGE =
   "This deployment requires signing in through your company's identity provider. Enter your work email to continue.";
@@ -240,13 +242,21 @@ export function createAuth(
 
   /*
    * The native app signs in through its custom scheme, and the Expo plugin appends the session cookie
-   * to that redirect. Any Android app can register the same scheme, so the scheme is trusted only on
-   * a deployment that runs the native app (EXPO_PROJECT_ID, as for push). Elsewhere a sign-in can
-   * never be sent there.
+   * to that redirect. Any Android app can register the same scheme, so each scheme is trusted only
+   * when its client is explicitly enabled: the existing OpenBot app uses EXPO_PROJECT_ID, while the
+   * Scout chat app uses SCOUT_NATIVE_AUTH_ENABLED without opting into EAS or push.
    */
-  const nativeApp = Boolean(process.env.EXPO_PROJECT_ID?.trim());
+  // Existing Expo deployments keep their historical project-ID switch. Scout's bounded native
+  // client has no EAS project and no push capability, so its explicit opt-in enables only the Expo
+  // auth redirect plugin and the one scheme registered by that client.
+  const nativeAppOrigins = [
+    ...(process.env.EXPO_PROJECT_ID?.trim() ? [OPENBOT_NATIVE_APP_ORIGIN] : []),
+    ...(process.env.SCOUT_NATIVE_AUTH_ENABLED === "true"
+      ? [SCOUT_NATIVE_APP_ORIGIN]
+      : []),
+  ];
   const plugins = [
-    ...(nativeApp ? [expo()] : []),
+    ...(nativeAppOrigins.length ? [expo()] : []),
     /*
      * SCIM 2.0 at /api/auth/scim/v2, only when SCIM_BEARER_TOKEN is set. See scim.ts.
      */
@@ -378,10 +388,7 @@ export function createAuth(
           },
         }
       : {}),
-    trustedOrigins: [
-      ...authConfig.trustedOrigins,
-      ...(nativeApp ? [NATIVE_APP_ORIGIN] : []),
-    ],
+    trustedOrigins: [...authConfig.trustedOrigins, ...nativeAppOrigins],
     /*
      * Wrapped, so a company's client secret is ciphertext in the column.
      *

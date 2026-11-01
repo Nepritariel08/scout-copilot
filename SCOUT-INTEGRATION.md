@@ -43,6 +43,7 @@ by the existing DSH queue.
 | OpenRouter / optional local inference | Approved model route, data-release policy, output/context caps, budgets and usage receipts. Owning the UI does not confer model ownership. |
 | Existing Scout MatePad/phone shell | Device consent, narrow native actions and receipts. Remote content must not inherit a trusted JavaScript bridge. Validate WebView/browser login/reconnect before installing/replacing a client. |
 | Owned conversation storage | Public MIT runner, our PostgreSQL events/snapshots and native owner/tenant grants. Explicit owned mode integrates the same app and protected model port; live inference and deployment remain separately qualified. |
+| Scout native chat client | A small branded Expo client for built-in Scout conversations only. It uses the authenticated owned channel/history/AG-UI routes and server-persisted transcripts; delivery, routines, memory, approvals, computer, plugins and push are not included. Its Android test APK embeds the JS bundle and needs no EAS project or Metro server. |
 | Intelligence | Optional licensed composition for entitled memory/learning/managed Channels; retain its contract and assess cost/deployment separately. |
 
 The queue port at `openbot/server/src/scout` and the conversation's Delegated
