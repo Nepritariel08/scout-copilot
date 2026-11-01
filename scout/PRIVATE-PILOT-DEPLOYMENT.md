@@ -13,12 +13,18 @@ independent verification and staging boundary.
 
 ## Target, budget and first release boundary
 
-The bounded readback supplied to this preparation identified Linode107087677,
-`ssc-digital-workforce-runtime`, `172.104.173.160`, Ubuntu26.04 x86_64,4vCPU,
-7936MiB RAM with approximately6068MiB available. Native PostgreSQL18.6 is online;
-pgvector0.8.7 is available. Caddy, Community Odoo and the existing DSH/queue
-services are active. Bun is absent. Earlier root-space readback was66.1GiB free;
-refresh it before writing. These snapshots are not capacity or availability tests.
+The latest bounded host readback recorded for this preparation (2026-11-02,
+RDC298915) identifies Linode107087677, `ssc-digital-workforce-runtime`,
+`172.104.173.160`, Ubuntu26.04 x86_64,4vCPU,7936MiB RAM with approximately
+5950MiB available and63484MiB disk free. Native PostgreSQL18.6 listens on
+`localhost:5432`; its HBA file is `/etc/postgresql/18/main/pg_hba.conf`.
+`scout_owned_pilot` already exists. `scout_pilot` is currently NOLOGIN,
+NOSUPERUSER, NOCREATEDB, NOCREATEROLE, NOREPLICATION, CONNECTION LIMIT24;
+`scout_pilot_owner` is NOLOGIN. No `pilot.env`, `scout-pilot.service` or pilot
+listener exists. `ssc-odoo20-community`, `ssc-odoo20-caddy`, `scout-dsh-worker`
+and `scout-queue-tunnel` were active in that readback. These are dated snapshots,
+not capacity, availability or current-state guarantees; refresh the target and
+all relevant state under the existing WI75 record before host work.
 
 Keep this8GB host. The candidate topology is one unprivileged Bun API process
 serving the prebuilt Scout UI through `APP_DIST_DIR`, native PostgreSQL in a
@@ -85,22 +91,68 @@ Task: Scout owner-private pilot installation/acceptance, Issue4/architecture8.
 Owner/session: named deployment executor; coordinator01a19336-83fb-7ab0-9829-6fc1c290c93f.
 Target: Linode107087677, verified hostname/IP/account; current WI75 record.
 Scope: new /opt/scout-pilot, /etc/scout-pilot, /var/lib/scout-pilot,
-       /var/backups/scout-pilot; new Scout-only PG database/roles;
+       /var/backups/scout-pilot; use the existing Scout-only PG database/roles
+       only after ownership, grants and schema are reverified;
        scout-pilot.service; one reviewed Caddy site/import for exact approved
        private origin; loopback31881 after collision check; Scout-only
        backup/isolated-restore and bounded synthetic load/rollback checks.
+       No shared pg_hba.conf edit except under the separate HBA-only claim below.
 Source: exact reviewed release SHA, artifact SHA256 and terminal exact-head CI.
 Claim lifetime: 45minutes from recorded UTC start; checkpoint every15minutes.
 Expiry: stop issuing mutations; reconcile/extend through existing record and
         owner before continuing. Expiry never releases an outstanding writer.
 Excluded: Odoo database/filestore/modules, existing Caddy sites/certificates,
           DSH/queue/tunnel configuration or restarts, their credentials,
+          PUBLIC database ACLs, every other PostgreSQL role, listener/bind/port
+          changes and any HBA edit outside the marked Scout-role fence below,
           device state/installation, DNS/IdP/access changes outside separately
           verified exact configuration, shared publication and business actions.
 Release: Scout validation or safe rollback completed; no owned migration/test
          process left running; exact listeners/services/DB grants and preserved
          Odoo/DSH/HTTPS/queue readback recorded; backups/custody identified;
          WI75 explicitly cleared and read back, with unfinished work assigned.
+```
+
+The broad installation claim above does **not** authorize a shared HBA edit. Use
+this separate, narrow clause in the existing WI75 record before changing the
+shared file; it is a proposed claim text, not a reservation, executed claim or
+permission to change other PostgreSQL state:
+
+```text
+Task: Scout runtime-role HBA isolation preparation, Issue4/architecture8.
+Owner/session: named deployment executor; coordinator01a19336-83fb-7ab0-9829-6fc1c290c93f.
+Target: Linode107087677; PostgreSQL18.6 cluster18/main; verified
+        /etc/postgresql/18/main/pg_hba.conf; existing localhost:5432 listener.
+Scope: record exact HBA/include preimage, owner/group/mode/ACL and SHA256, plus
+       scout_pilot role-attribute and session preimage; add only
+       the marked literal scout_pilot rule block below before all existing
+       authentication records and includes; validate pg_hba_file_rules; perform
+       one PostgreSQL configuration reload after adding the block (no service
+       restart); if targeted rollback is needed, reload once after removing it;
+       make one positive scout_owned_pilot TCP/IPv4 connection and negative
+       wrong-database, Unix-socket, and IPv6-if-listening probes using the
+       existing protected scout_pilot credential; temporarily set LOGIN on
+       scout_pilot only for those probes, then restore its original NOLOGIN
+       state and close only its
+       own test sessions. Preserve every other HBA byte, role, grant and service.
+Credential: use only an already-provisioned protected scout_pilot credential;
+            do not create, print, rotate or export credentials in this claim.
+            If it is unavailable, do not substitute an owner credential and do
+            not edit HBA; record the positive-probe prerequisite as unresolved.
+Excluded: PUBLIC ACLs, all other roles and role attributes, owner credentials,
+          database/schema/migration changes, listen_addresses/port/firewall,
+          pilot.env/service/unit/listener, restarts, Odoo, Caddy, DSH/queue/tunnel,
+          device state, DNS/IdP/access changes, business actions and PC-off test.
+Rollback: set scout_pilot NOLOGIN; close only its sessions; remove only the exact
+          marked block if the full postimage hash and include preimages still
+          match; restore recorded owner/group/mode/ACL, validate and reload once.
+          If any unrelated file/hash/state changed, stop and preserve it for DBA
+          reconciliation; never restore a stale whole-file snapshot over drift.
+Release: record postimage hash/mode/ACL, parsed rule order/errors, reload
+         evidence, positive and explicit HBA-rejection results, unchanged grants
+         and services, every role's attributes restored to its preimage,
+         scout_pilot NOLOGIN, and zero scout_pilot sessions; or record the
+         verified targeted rollback. Pilot remains disabled and unstarted.
 ```
 
 Missing owner email or Entra `tid`/`oid` mapping does not block source qualification or an
@@ -226,27 +278,94 @@ directory, service or port is a reconciliation point, not permission to overwrit
 
 ## Dedicated PostgreSQL database and migrations
 
-Refresh native cluster identity/version, socket, extension availability, database
-inventory and connection headroom. Never migrate the Community database or use
-its connection string. Proposed new names are `scout_owned_pilot`, database owner
-`scout_pilot_owner` (NOLOGIN), and runtime `scout_pilot` (LOGIN, NOSUPERUSER,
-NOCREATEDB, NOCREATEROLE, NOREPLICATION, CONNECTION LIMIT24). Do not reuse those
-names if they already identify another workload.
+Reverify native cluster identity/version, socket, extension availability,
+database inventory, connection headroom and the ownership/grants/schema of
+`scout_owned_pilot` before any database work. The latest recorded readback found
+that database already present, with `scout_pilot_owner` NOLOGIN and
+`scout_pilot` NOLOGIN/NOSUPERUSER/NOCREATEDB/NOCREATEROLE/NOREPLICATION and
+CONNECTION LIMIT24. These dated facts are not permission to assume current state.
+Do not create or repurpose either name if fresh readback shows another workload.
+Never migrate Community Odoo or use its connection string. This runbook's
+bounded HBA claim does not authorize PUBLIC ACL changes or any other role,
+database, schema, grant or credential changes.
 
-The DBA creates the dedicated roles/database, revokes PUBLIC database CONNECT
-and TEMP where not required, grants only the runtime's CONNECT, and provisions
-its password through the protected custody path. A reviewed interactive `psql`
-`\password scout_pilot` avoids putting a password in SQL text or a shell argument.
-Use SCRAM on the existing loopback PostgreSQL listener; do not widen its network
-binding or edit shared `pg_hba.conf` as a shortcut. Verify `current_database()` and
-`current_user` on the intended connection before any DDL.
+The existing listener is localhost:5432 and the HBA path is
+`/etc/postgresql/18/main/pg_hba.conf`, subject to fresh readback under the
+separate narrow HBA claim. PostgreSQL uses the first matching rule and does not
+fall through after authentication failure; `local` matches Unix-domain sockets,
+while `host` matches TCP. Therefore place the exact block below before every
+existing HBA record and include directive, after inspecting the complete file
+and include chain. Do not delete, reorder, or edit any existing record/include,
+and do not rely on a missing `include_if_exists` file for an allow or denial.
+The two `all,replication` entries fence this one role from every other database
+and physical-replication connection; the specific TCP allow precedes the TCP
+deny. All other roles continue to match the existing rules.
+
+```conf
+# BEGIN SCOUT PILOT ROLE FENCE - WI75 bounded claim only
+host    scout_owned_pilot       scout_pilot     127.0.0.1/32    scram-sha-256
+local   all,replication         scout_pilot                     reject
+host    all,replication         scout_pilot     all             reject
+# END SCOUT PILOT ROLE FENCE
+```
+
+The PostgreSQL 18 [HBA documentation](https://www.postgresql.org/docs/18/auth-pg-hba-conf.html)
+defines first-match behavior, rule ordering and the `local`, `host`, `all` and
+`replication` selectors. Before editing, read back `SHOW hba_file`, port,
+`listen_addresses`, the complete HBA and every referenced include. Record exact
+file bytes, owner/group/mode and SHA256 for the main file and every included
+file; also record `pg_conf_load_time`, current `pg_hba_file_rules` rows/errors,
+the exact `scout_pilot` role attributes and all its current sessions, and whether
+unrelated PostgreSQL configuration changes are pending reload. Stop before
+editing if `scout_pilot` already has a session or any recorded state is unclear.
+Any drift, unresolved include, parse error or unrelated pending reload is a
+stop condition. `pg_hba_file_rules` parses the current on-disk files; it does
+not prove which rules the server has loaded ([view documentation](https://www.postgresql.org/docs/18/view-pg-hba-file-rules.html)).
+
+Under only the narrow HBA claim, add the marked block without changing any other
+byte; check that `pg_hba_file_rules` reports no errors and that the three rules
+are first, in the exact order shown. If an unrelated change would be activated
+by reload, stop and preserve it for DBA reconciliation. Otherwise request one
+configuration reload using `pg_reload_conf()` (which sends SIGHUP; see the
+[PostgreSQL 18 function reference](https://www.postgresql.org/docs/18/functions-admin.html));
+do not restart PostgreSQL or any service. A successful reload signal or a new
+`pg_conf_load_time` is not sufficient proof by itself: the real connection
+probes below must establish the effective rules.
+
+Only after verifying the protected `scout_pilot` credential is available, and
+with `scout_pilot` as the only role temporarily changed to LOGIN for these
+probes, verify a fresh TCP/IPv4 connection to `127.0.0.1:5432` succeeds for
+`scout_owned_pilot`; read back `current_user`, `current_database()` and
+`inet_client_addr()`. Using that same role and credential, verify a TCP attempt
+to a different database and a Unix-socket attempt to `scout_owned_pilot` are
+explicitly rejected by HBA, rather than failing because of a wrong password,
+NOLOGIN or a database CONNECT ACL. If PostgreSQL listens on IPv6, also verify a
+connection to `::1` is explicitly rejected. Do not alter PUBLIC ACLs to make a
+probe pass, substitute another role, or broaden the listener. Then restore
+`scout_pilot` to NOLOGIN and close only sessions owned by `scout_pilot`; verify
+the owner remains NOLOGIN, the role's other attributes and all grants are
+unchanged, and there are no remaining `scout_pilot` sessions. If a prerequisite
+or explicit HBA result cannot be established, do not claim acceptance; perform
+the targeted rollback below and keep the pilot disabled.
+
+On any failure after editing, first restore `scout_pilot` to NOLOGIN and close
+only sessions owned by `scout_pilot`; never terminate other roles' sessions.
+Re-read the main and included-file hashes. If the exact expected postimage
+remains and no unrelated file changed, remove only the
+marked block, restore the recorded owner/group/mode (and ACL if applicable),
+validate `pg_hba_file_rules`, and reload once. Read back the original hash and
+the unchanged include chain. If any hash or ownership differs, do not restore a
+stale whole-file snapshot over concurrent changes; stop for DBA reconciliation.
+Preserve every unrelated rule and do not restart PostgreSQL, Odoo, Caddy,
+DSH/queue/tunnel or the Scout pilot.
 
 Run the existing migration runner once as a release step, never in `ExecStart`.
 Initial upstream migrations create vector and later migration0010 intentionally
-drops the retired document index and vector extension. Use only the new empty
-Scout database and review the entire pinned journal, including0068–0071 and any
-later release entries. Vector availability on the host does not mean the final
-Scout database should retain that extension. Do not modify Odoo's extensions.
+drops the retired document index and vector extension. Use only
+`scout_owned_pilot` after verifying it is empty and Scout-owned; review the
+entire pinned journal, including0068–0071 and any later release entries.
+Vector availability on the host does not mean the final Scout database should
+retain that extension. Do not modify Odoo's extensions.
 
 A DBA-owned local-peer migration invocation can avoid any persistent superuser
 password in the app. After verifying the actual socket is `/var/run/postgresql`,

@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Database } from "../../db/client";
 import { createOdooJson2CredentialResolver } from "./odoo-credentials";
 import { createOdooJson2ProjectTaskReader } from "./odoo-json2";
+import { createOdooJson2CustomerTaskReader } from "./odoo-json2-customer";
 import { ModelPolicyError, readProtectedModelFile } from "./policy";
 import type { ProjectTaskContextPort } from "./record-context";
 import { createProjectTaskContextStore } from "./record-context-store";
@@ -74,20 +75,26 @@ export function createOwnedOdooContextAdapters(
     encryptionKey,
     source.sourceInstanceId,
   );
-  const reader = createOdooJson2ProjectTaskReader({
+  const options = {
     instanceId: source.sourceInstanceId,
     baseUrl: source.baseUrl,
     database: source.database,
     credentials,
     ...(fetch ? { fetch } : {}),
-  });
+  };
+  const reader = createOdooJson2ProjectTaskReader(options);
+  const customer = createOdooJson2CustomerTaskReader(options);
   return {
     sourceInstanceId: source.sourceInstanceId,
     recordContext: createProjectTaskContextStore(
       database,
       source.sourceInstanceId,
-      reader,
+      {
+        readProjectTask: reader.readProjectTask,
+        readCustomerProjectTask: customer.readProjectTask,
+      },
     ),
     verifyUserProjectScope: reader.verifyUserProjectScope,
+    verifyCustomerProjectScope: customer.verifyUserProjectScope,
   };
 }

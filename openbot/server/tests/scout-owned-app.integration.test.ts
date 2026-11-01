@@ -60,6 +60,8 @@ let odooMapRevision = 1;
 let changeMembershipOnLookup = false;
 let changeOdooMapOnLookup = false;
 let odooMapActive = true;
+let customerOdooIdentity = false;
+let customerCollaboration = true;
 const member = (userId: string, tenantId: string) => ({
   userId,
   tenantId,
@@ -91,6 +93,7 @@ const odooPolicy = () => ({
       active: odooMapActive,
       expiresAt: "2099-01-01T00:00:00Z",
       sourceUid: 101,
+      ...(customerOdooIdentity ? { identityClass: "customer" } : {}),
       companyIds: [1],
     },
   ],
@@ -404,10 +407,19 @@ beforeAll(async () => {
             const body = JSON.parse(String(init?.body ?? "{}")) as {
               group_ext_id?: string;
             };
-            return Response.json(body.group_ext_id === "base.group_user");
+            return Response.json(
+              body.group_ext_id ===
+                (customerOdooIdentity
+                  ? "base.group_portal"
+                  : "base.group_user"),
+            );
           }
           if (path === "/json/2/project.project/search_read")
-            return Response.json([{ id: 501, company_id: [1, "Fixture"] }]);
+            return Response.json(
+              customerOdooIdentity && !customerCollaboration
+                ? []
+                : [{ id: 501, company_id: [1, "Fixture"] }],
+            );
           if (path === "/json/2/project.task/search_read") {
             if (revokeOdooMapOnTaskRead) {
               odooMapActive = false;
@@ -447,6 +459,8 @@ beforeEach(async () => {
   changeMembershipOnLookup = false;
   changeOdooMapOnLookup = false;
   odooMapActive = true;
+  customerOdooIdentity = false;
+  customerCollaboration = true;
   if (process.platform === "linux" && fixtureDirectory) await writeOdooPolicy();
 });
 afterAll(async () => {
@@ -672,6 +686,58 @@ describe("owned composition through the actual Scout app", () => {
       });
     }
   });
+  test.skipIf(process.platform !== "linux")(
+    "same configured app admits protected customer task context only after qualification and explicit release, and stops on collaboration withdrawal",
+    async () => {
+      customerOdooIdentity = true;
+      await writeOdooPolicy();
+      expect(
+        (
+          await requestConfiguredGrant(
+            "POST",
+            "/api/scout/odoo/context-grants",
+            { apiKey: "synthetic-production-context-key" },
+          )
+        ).status,
+      ).toBe(201);
+      const selected = async () => {
+        const minted = await requestConfiguredGrant(
+          "POST",
+          "/api/threads/mint",
+          { agentId },
+        );
+        expect(minted.status).toBe(200);
+        const { threadId } = await minted.json();
+        return (
+          await requestConfiguredGrant(
+            "POST",
+            `/api/copilotkit/agent/${agentId}/run`,
+            {
+              ...input(threadId),
+              context: [{ description: "scout.project_task_id", value: "42" }],
+            },
+          )
+        ).text();
+      };
+      expect(await selected()).not.toContain("ODOO_MODEL_SYNTHETIC_OK");
+      expect(modelFixtureCalls).toBe(0);
+      expect(
+        (
+          await requestConfiguredGrant(
+            "POST",
+            "/api/scout/odoo/context-grants/release",
+            await releaseConsent(),
+          )
+        ).status,
+      ).toBe(201);
+      expect(await selected()).toContain("ODOO_MODEL_SYNTHETIC_OK");
+      expect(modelFixtureCalls).toBe(1);
+      customerCollaboration = false;
+      modelFixtureCalls = 0;
+      expect(await selected()).not.toContain("ODOO_MODEL_SYNTHETIC_OK");
+      expect(modelFixtureCalls).toBe(0);
+    },
+  );
   test.skipIf(process.platform !== "linux")(
     "configured Odoo grant routes authorize by native user and profile, and revoke the scoped key",
     async () => {

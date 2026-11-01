@@ -16,7 +16,7 @@ type Profile = NonNullable<Awaited<ReturnType<AgentProfileStore["get"]>>>;
 type Route =
   | { provider: "local"; model: string; baseUrl: string }
   | { provider: "openrouter"; model: string; apiKeyFile: string };
-function fixture() {
+function fixture(identityClass?: "customer", enroll = false) {
   const userId = "native-alice",
     deploymentId = "scout-test",
     tenantId = "tenant-a";
@@ -86,6 +86,7 @@ function fixture() {
         active: true,
         expiresAt: "2099-01-01T00:00:00Z",
         sourceUid: 101,
+        ...(identityClass ? { identityClass } : {}),
         companyIds: [1],
       },
     ],
@@ -93,6 +94,8 @@ function fixture() {
   let currentUser = userId,
     issued = 0,
     withdrawn = 0;
+  const qualified: string[] = [];
+  let afterQualification = () => {};
   let beforeConsent = () => {},
     afterStatus = () => {},
     afterModelRead = () => {};
@@ -146,9 +149,31 @@ function fixture() {
         database: "private_source_db",
       },
       verifyUserProjectScope: async () => {
+        if (enroll) {
+          qualified.push("employee");
+          afterQualification();
+          return [501];
+        }
         throw new Error("No Odoo calls in consent fixture");
       },
-      issueRecord: async () => {
+      verifyCustomerProjectScope: async (apiKey, uid, companyIds) => {
+        expect(apiKey).toBe("synthetic-key");
+        expect(uid).toBe(101);
+        expect(companyIds).toEqual([1]);
+        if (enroll) {
+          qualified.push("customer");
+          afterQualification();
+          return [501];
+        }
+        throw new Error("No Odoo calls in consent fixture");
+      },
+      issueRecord: async (input) => {
+        if (enroll) {
+          expect(input.binding.identityClass).toBe(identityClass);
+          expect(input.principal.userId).toBe(userId);
+          expect(input.allowedProjectIds).toEqual([501]);
+          return { revision: 1, projectCount: 1 };
+        }
         throw new Error("No credential enrollment in consent fixture");
       },
       readModelPolicy: async (principal) => {
@@ -217,6 +242,19 @@ function fixture() {
     model,
     membership,
     source,
+    qualified,
+    afterQualification: (work: () => void) => {
+      afterQualification = work;
+    },
+    enroll: (body: unknown = { apiKey: "synthetic-key" }) =>
+      app.request("/api/scout/odoo/context-grants", {
+        method: "POST",
+        headers: {
+          "x-fixture-session": "valid",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+      }),
     request,
     challenge,
     issued: () => issued,
@@ -237,6 +275,41 @@ function fixture() {
 }
 
 describe("owned Odoo consent binds the route actually displayed", () => {
+  test("existing enrollment UI selects customer qualification only from protected source mapping", async () => {
+    for (const kind of [undefined, "customer"] as const) {
+      const f = fixture(kind, true);
+      expect((await f.enroll()).status).toBe(201);
+      expect(f.qualified).toEqual([kind ?? "employee"]);
+      expect(
+        (
+          await f.enroll({
+            apiKey: "synthetic-key",
+            identityClass: "customer",
+            companyIds: [2],
+            partnerId: 1,
+          })
+        ).status,
+      ).toBe(400);
+      expect(f.qualified).toHaveLength(1);
+    }
+  });
+  test("customer qualification cannot write a grant after mapping, membership or session changes", async () => {
+    for (const change of [
+      (f: ReturnType<typeof fixture>) => {
+        f.source.bindings[0].active = false;
+      },
+      (f: ReturnType<typeof fixture>) => {
+        f.membership.memberships[0].active = false;
+      },
+      (f: ReturnType<typeof fixture>) => {
+        f.currentUser("native-bob");
+      },
+    ]) {
+      const f = fixture("customer", true);
+      f.afterQualification(() => change(f));
+      expect((await f.enroll()).status).toBe(403);
+    }
+  });
   test("status exposes only public route fields and the matching challenge issues consent", async () => {
     const f = fixture();
     const response = await f.request("GET");

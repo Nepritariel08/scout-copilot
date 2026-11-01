@@ -125,6 +125,27 @@ task_b_other_company = make_task(
     "Scout qualification second-company task", project_b_other_company, employee_b
 )
 
+# Separate same-company portal customers. These projects are invited-only and
+# have no employee A/B membership, preserving the existing employee fixture.
+customer_projects = {}
+customer_tasks = {}
+customer_collaborators = {}
+for label, customer in (("portalA", portal_a), ("portalB", portal_b)):
+    project = make_project("Scout qualification " + label + " project", main_company, admin)
+    project.write({"privacy_visibility": "invited_users"})
+    collaborator = env["project.collaborator"].sudo().create({
+        "project_id": project.id,
+        "partner_id": customer.partner_id.id,
+        "access_mode": "view",
+    })
+    task = make_task("Scout qualification " + label + " task", project, admin)
+    # Follower access is intentionally retained during collaboration withdrawal:
+    # the Scout customer adapter must still require current project access.
+    task.message_subscribe(partner_ids=customer.partner_id.ids)
+    customer_projects[label] = project.id
+    customer_tasks[label] = task.id
+    customer_collaborators[label] = collaborator.id
+
 
 def make_key(user, label):
     expiry = datetime.now() + timedelta(days=3)
@@ -164,12 +185,15 @@ metadata = {
         "employeeA": project_a.id,
         "employeeB": project_b_same_company.id,
         "secondCompany": project_b_other_company.id,
+        **customer_projects,
     },
     "tasks": {
         "employeeA": task_a.id,
         "employeeB": task_b_same_company.id,
         "secondCompany": task_b_other_company.id,
+        **customer_tasks,
     },
+    "collaborators": customer_collaborators,
 }
 
 env.cr.commit()

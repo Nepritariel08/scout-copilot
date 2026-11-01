@@ -46,6 +46,11 @@ type OwnedOdooGrants = {
     expectedUid: number,
     companyIds: number[],
   ): Promise<number[]>;
+  verifyCustomerProjectScope?(
+    apiKey: string,
+    expectedUid: number,
+    companyIds: number[],
+  ): Promise<number[]>;
   issueRecord(input: {
     principal: ProjectTaskContextPrincipal;
     binding: OdooGrantBinding;
@@ -206,7 +211,12 @@ export function createOwnedRuntimeRoutes(deps: {
     const admission = await depsGrants.admit(contextPrincipal(before));
     const sourceUid = admission.binding.sourceUid;
     const companyIds = [...admission.binding.companyIds];
-    const allowedProjectIds = await depsGrants.verifyUserProjectScope(
+    const qualify =
+      admission.binding.identityClass === "customer"
+        ? depsGrants.verifyCustomerProjectScope
+        : depsGrants.verifyUserProjectScope;
+    if (!qualify) throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+    const allowedProjectIds = await qualify(
       parsed.data.apiKey,
       sourceUid,
       companyIds,
@@ -223,6 +233,9 @@ export function createOwnedRuntimeRoutes(deps: {
             sourceUid,
             companyIds,
             bindingExpiresAt: admission.expiresAt,
+            ...(admission.binding.identityClass
+              ? { identityClass: admission.binding.identityClass }
+              : {}),
           },
           apiKey: parsed.data.apiKey,
           allowedProjectIds,

@@ -24,6 +24,7 @@ export type OdooGrantBinding = {
   sourceUid: number;
   companyIds: number[];
   bindingExpiresAt: string;
+  identityClass?: "customer";
 };
 
 function validPrincipal(value: ProjectTaskContextPrincipal) {
@@ -223,6 +224,8 @@ export function createOwnedOdooGrantService(
     }) {
       validPrincipal(input.principal);
       if (
+        (input.binding.identityClass !== undefined &&
+          input.binding.identityClass !== "customer") ||
         !Number.isSafeInteger(input.binding.sourceUid) ||
         input.binding.sourceUid <= 1 ||
         !Array.isArray(input.binding.companyIds) ||
@@ -274,6 +277,9 @@ export function createOwnedOdooGrantService(
         const metadata = {
           sourceInstanceId,
           uid: input.binding.sourceUid,
+          ...(input.binding.identityClass
+            ? { sourceIdentityClass: input.binding.identityClass }
+            : {}),
           ownerNativeUserId: input.principal.userId,
           ownerTenantId: input.principal.tenantId,
           ownerDeploymentId: input.principal.deploymentId,
@@ -343,6 +349,9 @@ export function createOwnedOdooGrantService(
             payload: {
               sourceInstanceId,
               revision,
+              ...(input.binding.identityClass
+                ? { identityClass: input.binding.identityClass }
+                : {}),
               companyCount: input.binding.companyIds.length,
               projectCount: input.allowedProjectIds.length,
               expiresAt: expiresAt.toISOString(),

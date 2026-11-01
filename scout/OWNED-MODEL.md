@@ -297,8 +297,11 @@ carry that selector only in tab memory, and the server rechecks grants, model
 consent, binding and Odoo visibility before each read. The persistence tests use
 synthetic data and mock Odoo transport, not a live service.
 
-These controls apply only to a staff member's own pre-bound internal Odoo
-identity. They do not enable customer access, shared customer conversations,
+The existing reader applies only to a staff member's own pre-bound internal Odoo
+identity and retains portal refusal. The separately selected
+[invited-customer task reader](CUSTOMER-CONTEXT.md) requires explicit protected
+classification, its own mapped portal identity and freshly qualified grants.
+Neither adapter enables shared customer conversations,
 general Odoo search, or arbitrary business actions. The source configuration
 alone does not create or authorize a user, project, or provider-release grant.
 
