@@ -1,7 +1,7 @@
 import { ModelPolicyError } from "./policy";
 import type { ProjectTaskReadRequest } from "./record-context";
 
-const taskFields = [
+export const taskFields = [
   "id",
   "name",
   "stage_id",
@@ -75,7 +75,7 @@ function configuredDatabase(value: string): string {
   return value;
 }
 
-function configuredInstanceId(value: string): string {
+export function configuredInstanceId(value: string): string {
   if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(value))
     return denied();
   return value;
@@ -97,7 +97,7 @@ function hasCredentialWhitespaceOrControl(value: string): boolean {
   );
 }
 
-function projectIds(
+export function projectIds(
   request: ProjectTaskReadRequest,
   expectedInstanceId: string,
 ): number[] {
@@ -166,7 +166,10 @@ function projectIds(
   return [...projectScope[2]];
 }
 
-function credentialKey(value: OdooUserApiKey | null, uid: number): string {
+export function credentialKey(
+  value: OdooUserApiKey | null,
+  uid: number,
+): string {
   if (
     !value ||
     value.uid !== uid ||
@@ -242,23 +245,19 @@ async function boundedJson(
   }
 }
 
-/**
- * Creates the fixed, read-only JSON-2 task reader. Every call first asks Odoo for
- * the identity derived from the API key, then performs the exact search_read as
- * that same user with the grant's allowed-company context so Odoo ACLs, record
- * rules and field permissions remain active. UID 1 is denied as a defense in
- * depth; grant provisioning must also require an internal Odoo user.
- */
-export function createOdooJson2ProjectTaskReader(
-  options: OdooJson2ProjectTaskReaderOptions,
+/** Fixed read-only transport shared by independently selected employee and customer adapters. */
+export function createOdooJson2ReadTransport(
+  options: Pick<
+    OdooJson2ProjectTaskReaderOptions,
+    "baseUrl" | "database" | "timeoutMs" | "fetch"
+  >,
 ) {
-  const instanceId = configuredInstanceId(options.instanceId);
   const origin = configuredOrigin(options.baseUrl);
   const database = configuredDatabase(options.database);
   const timeoutMs = validTimeout(options.timeoutMs ?? defaultTimeoutMs);
   const transport = options.fetch ?? fetch;
 
-  const post = async (
+  return async (
     model: "res.users" | "project.task" | "project.project",
     method: "context_get" | "has_group" | "search_read",
     apiKey: string,
@@ -294,6 +293,17 @@ export function createOdooJson2ProjectTaskReader(
     }
     return boundedJson(response, maxResponseBytes);
   };
+}
+
+/**
+ * Employee reader: portal users remain refused. Each request uses the mapped user's
+ * own key and Odoo ACLs; the separate customer adapter is never selected from input.
+ */
+export function createOdooJson2ProjectTaskReader(
+  options: OdooJson2ProjectTaskReaderOptions,
+) {
+  const instanceId = configuredInstanceId(options.instanceId);
+  const post = createOdooJson2ReadTransport(options);
 
   const assertCurrentUserIsInternalNonAdministrator = async (
     apiKey: string,
@@ -475,12 +485,12 @@ export function createOdooJson2ProjectTaskReader(
   };
 }
 
-function configuredOdooUserUid(value: number): number {
+export function configuredOdooUserUid(value: number): number {
   if (!Number.isSafeInteger(value) || value <= 1) return denied();
   return value;
 }
 
-function configuredCompanyIds(value: number[]): number[] {
+export function configuredCompanyIds(value: number[]): number[] {
   if (
     !Array.isArray(value) ||
     value.length < 1 ||

@@ -25,6 +25,8 @@ const bindingSchema = z.strictObject({
   active: z.boolean(),
   expiresAt: z.iso.datetime(),
   sourceUid: positiveId.refine((uid) => uid > 1),
+  // Missing retains the existing employee-only path. Only protected operator policy opts in.
+  identityClass: z.literal("customer").optional(),
   companyIds: z
     .array(positiveId)
     .min(1)
@@ -224,7 +226,12 @@ export function bindOwnedOdooContext(
         ) !== JSON.stringify(admission.binding.companyIds)
       )
         throw denied();
-      const value = await port.readProjectTask({
+      const read =
+        admission.binding.identityClass === "customer"
+          ? port.readCustomerProjectTask
+          : port.readProjectTask;
+      if (!read) throw denied();
+      const value = await read({
         ...request,
         principal: admission.principal,
       });

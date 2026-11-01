@@ -253,6 +253,8 @@ export async function createOwnedApplication(
             database: odooContextSource.database,
           },
           verifyUserProjectScope: odooContextAdapters.verifyUserProjectScope,
+          verifyCustomerProjectScope:
+            odooContextAdapters.verifyCustomerProjectScope,
           ...odooGrantService,
           ...(readOdooModelPolicy
             ? {

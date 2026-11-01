@@ -23,7 +23,7 @@ import { membershipFixture } from "./scout-membership.test";
 const actor = { id: "scout-fixture-alice" };
 const sourceInstanceId = "odoo-community";
 const modelFingerprint = "f".repeat(64);
-const odooPolicy = () => ({
+const odooPolicy = (identityClass?: "customer") => ({
   version: 1,
   deploymentId: "scout-test",
   sourceInstanceId,
@@ -35,13 +35,14 @@ const odooPolicy = () => ({
       active: true,
       expiresAt: "2099-01-01T00:00:00Z",
       sourceUid: 11,
+      ...(identityClass ? { identityClass } : {}),
       companyIds: [1, 2],
     },
   ],
 });
-function fixture() {
+function fixture(identityClass?: "customer") {
   const memberships = membershipFixture();
-  const mapping = odooPolicy();
+  const mapping = odooPolicy(identityClass);
   const membership = async () =>
     parseScoutMembership(memberships, actor, "scout-test");
   const principal = async () => {
@@ -62,6 +63,7 @@ function fixture() {
   const records = new Map<string, ProjectTaskContextGrant>();
   const releases = new Map<string, ProjectTaskContextReleaseGrant>();
   const calls: string[] = [];
+  const readerClasses: string[] = [];
   let afterGrantRead: (() => void) | undefined;
   let afterTaskRead: (() => void) | undefined;
   const store: ProjectTaskContextPort = {
@@ -77,6 +79,7 @@ function fixture() {
       return releases.get(scope.bindingFingerprint) ?? null;
     },
     readProjectTask: async (request) => {
+      readerClasses.push("employee");
       calls.push(request.principal.bindingFingerprint);
       afterTaskRead?.();
       return [
@@ -89,6 +92,11 @@ function fixture() {
         },
       ];
     },
+  };
+  store.readCustomerProjectTask = async (request) => {
+    const value = await store.readProjectTask(request);
+    readerClasses[readerClasses.length - 1] = "customer";
+    return value;
   };
   const port = bindOwnedOdooContext(store, admit);
   const seed = async () => {
@@ -139,6 +147,7 @@ function fixture() {
     records,
     releases,
     calls,
+    readerClasses,
     seed,
     resolve,
     afterGrantRead: (callback: () => void) => {
@@ -151,6 +160,74 @@ function fixture() {
 }
 
 describe("independent protected Odoo identity and saved context admission", () => {
+  test("only explicit protected customer classification selects the separate adapter; old bindings retain employee reader", async () => {
+    for (const identityClass of [undefined, "customer"] as const) {
+      const f = fixture(identityClass);
+      await f.seed();
+      const context = await f.resolve();
+      expect(context.prompt).toContain("Synthetic mapped task");
+      expect(f.readerClasses).toEqual([identityClass ?? "employee"]);
+      f.releases.clear();
+      await expect(f.resolve()).rejects.toThrow("MODEL_ACCESS_DENIED");
+      expect(f.readerClasses).toHaveLength(1);
+    }
+  });
+  test("customer classification rotates grant/credential scope and cannot reuse employee grants or outlive mapping/membership revocation", async () => {
+    const f = fixture();
+    await f.seed();
+    const native = await f.principal();
+    const employee = await f.resolve();
+    const before = await f.admit(await f.principal());
+    f.mapping.bindings[0].identityClass = "customer";
+    expect(
+      (await f.admit(await f.principal())).principal.bindingFingerprint,
+    ).not.toBe(before.principal.bindingFingerprint);
+    await expect(f.resolve()).rejects.toThrow("MODEL_ACCESS_DENIED");
+    await expect(
+      employee.assertCurrent(await f.principal(), "local"),
+    ).rejects.toThrow("MODEL_ACCESS_DENIED");
+    await f.seed();
+    const customer = await f.resolve();
+    f.mapping.bindings[0].active = false;
+    await expect(
+      customer.assertCurrent(await f.principal(), "local"),
+    ).rejects.toThrow("MODEL_ACCESS_DENIED");
+    f.mapping.bindings[0].active = true;
+    f.memberships.memberships[0].active = false;
+    await expect(customer.assertCurrent(native, "local")).rejects.toThrow(
+      "MODEL_ACCESS_DENIED",
+    );
+  });
+  test("customer mapping fails closed when an unadapted context port has no customer reader", async () => {
+    const f = fixture("customer");
+    const unadapted = bindOwnedOdooContext(
+      { ...f.port, readCustomerProjectTask: undefined },
+      f.admit,
+    );
+    await expect(
+      unadapted.readProjectTask({
+        principal: await f.principal(),
+        sourceIdentity: {
+          instanceId: sourceInstanceId,
+          uid: 11,
+          role: "user",
+          qualification: "qualified",
+          qualificationExpiresAt: "2099-01-01T00:00:00Z",
+          companyIds: [1, 2],
+          credentialRef: "00000000-0000-4000-8000-000000000101",
+        },
+        model: "project.task",
+        domain: [
+          ["id", "=", 42],
+          ["project_id", "in", [501]],
+        ],
+        fields: ["id", "name", "stage_id", "date_deadline", "company_id"],
+        limit: 1,
+        maxBytes: 4096,
+      }),
+    ).rejects.toThrow("MODEL_ACCESS_DENIED");
+    expect(f.readerClasses).toEqual([]);
+  });
   test("requires exact deployment, tenant, native subject and fixed source; expired/revoked/absent mappings deny", async () => {
     const f = fixture(),
       principal = await f.principal();
@@ -186,6 +263,14 @@ describe("independent protected Odoo identity and saved context admission", () =
     for (const value of [
       { ...f.mapping, command: ["python"] },
       { ...f.mapping, bindings: [{ ...f.mapping.bindings[0], sourceUid: 1 }] },
+      {
+        ...f.mapping,
+        bindings: [{ ...f.mapping.bindings[0], identityClass: "portal" }],
+      },
+      {
+        ...f.mapping,
+        bindings: [{ ...f.mapping.bindings[0], identityClass: true }],
+      },
       {
         ...f.mapping,
         bindings: [{ ...f.mapping.bindings[0], apiKeyFile: "/unused" }],

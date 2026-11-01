@@ -10,7 +10,10 @@ import type {
   ProjectTaskContextProvider,
 } from "./record-context";
 
-type ProjectTaskReader = Pick<ProjectTaskContextPort, "readProjectTask">;
+type ProjectTaskReader = Pick<
+  ProjectTaskContextPort,
+  "readProjectTask" | "readCustomerProjectTask"
+>;
 
 function iso(value: Date) {
   return value.toISOString();
@@ -129,5 +132,10 @@ export function createProjectTaskContextStore(
       };
     },
     readProjectTask: (request) => reader.readProjectTask(request),
+    ...(reader.readCustomerProjectTask
+      ? {
+          readCustomerProjectTask: reader.readCustomerProjectTask.bind(reader),
+        }
+      : {}),
   };
 }

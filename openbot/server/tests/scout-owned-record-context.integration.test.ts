@@ -213,165 +213,184 @@ describe("owned Odoo grant persistence and credential resolution", () => {
       expect(checks).toBe(3);
     }
   });
-  test("provisions encrypted record access, records explicit release consent, and revokes both atomically", async () => {
-    const grantPrincipal = {
-      ...principal,
-      userId: `${prefix}-provisioning-user`,
-      bindingFingerprint: "c".repeat(64),
-    };
-    const provisioningSourceId = `${sourceInstanceId}-${randomUUID()}`;
-    const service = createOwnedOdooGrantService(
-      database,
-      encryptionKey,
-      provisioningSourceId,
-    );
-    let taps = 0;
-    const removeTap = addAuditTap(() => {
-      taps += 1;
-    });
-    try {
-      const issued = await service.issueRecord({
-        principal: grantPrincipal,
-        binding: {
-          sourceUid: 201,
-          companyIds: [1, 2],
-          bindingExpiresAt: "2099-01-01T00:00:00.000Z",
-        },
-        apiKey: "synthetic-new-api-key",
-        allowedProjectIds: [501, 502],
-      });
-      expect(issued).toMatchObject({ revision: 1, projectCount: 2 });
-      const [record] = await database
-        .select()
-        .from(scoutOdooRecordAccessGrants)
-        .where(
-          eq(scoutOdooRecordAccessGrants.nativeUserId, grantPrincipal.userId),
-        );
-      expect(record).toMatchObject({
-        active: true,
-        revision: 1,
-        sourceUid: 201,
-        qualification: "verified_nonadmin",
-      });
-      expect(Array.from(record!.companyIds)).toEqual([1, 2]);
-      expect(Array.from(record!.allowedProjectIds)).toEqual([501, 502]);
-      const [storedSecret] = await database
-        .select({ encryptedValue: credentials.encryptedValue })
-        .from(credentials)
-        .where(eq(credentials.id, record!.credentialRef));
-      expect(storedSecret?.encryptedValue).not.toContain(
-        "synthetic-new-api-key",
-      );
-      const resolver = createOdooJson2CredentialResolver(
+  test.each([undefined, "customer"] as const)(
+    "provisions %s encrypted record access, records explicit release consent, and revokes both atomically",
+    async (identityClass) => {
+      const grantPrincipal = {
+        ...principal,
+        userId: `${prefix}-provisioning-${identityClass ?? "employee"}`,
+        bindingFingerprint: "c".repeat(64),
+      };
+      const provisioningSourceId = `${sourceInstanceId}-${randomUUID()}`;
+      const service = createOwnedOdooGrantService(
         database,
         encryptionKey,
         provisioningSourceId,
       );
-      await expect(
-        resolver.resolveForUid(201, record!.credentialRef, grantPrincipal),
-      ).resolves.toEqual({ uid: 201, apiKey: "synthetic-new-api-key" });
-
-      const consent = await service.consentRelease({
-        assertCurrent: async () => {},
-        principal: grantPrincipal,
-        bindingExpiresAt: "2099-01-01T00:00:00.000Z",
-        modelPolicyExpiresAt: "2099-01-01T00:00:00.000Z",
-        provider: "openrouter",
-        modelPolicyFingerprint,
+      let taps = 0;
+      const removeTap = addAuditTap(() => {
+        taps += 1;
       });
-      expect(consent).toMatchObject({ revision: 1, provider: "openrouter" });
-      await expect(
-        service.status(grantPrincipal, "openrouter", modelPolicyFingerprint),
-      ).resolves.toMatchObject({
-        provider: "openrouter",
-        record: {
+      try {
+        const issued = await service.issueRecord({
+          principal: grantPrincipal,
+          binding: {
+            sourceUid: 201,
+            ...(identityClass ? { identityClass } : {}),
+            companyIds: [1, 2],
+            bindingExpiresAt: "2099-01-01T00:00:00.000Z",
+          },
+          apiKey: "synthetic-new-api-key",
+          allowedProjectIds: [501, 502],
+        });
+        expect(issued).toMatchObject({ revision: 1, projectCount: 2 });
+        const [record] = await database
+          .select()
+          .from(scoutOdooRecordAccessGrants)
+          .where(
+            eq(scoutOdooRecordAccessGrants.nativeUserId, grantPrincipal.userId),
+          );
+        expect(record).toMatchObject({
           active: true,
-          credentialStored: true,
           revision: 1,
-          projectCount: 2,
-        },
-        release: { active: true, revision: 1, provider: "openrouter" },
-      });
-      // The grant ledger is append-only. Model elapsed time with a later
-      // immutable revision whose expiry has passed instead of mutating history.
-      const expiredAt = new Date(Date.now() - 1000);
-      await database.insert(scoutOdooRecordAccessGrants).values({
-        deploymentId: record!.deploymentId,
-        tenantId: record!.tenantId,
-        nativeUserId: record!.nativeUserId,
-        bindingFingerprint: record!.bindingFingerprint,
-        revision: record!.revision + 1,
-        active: true,
-        sourceInstanceId: record!.sourceInstanceId,
-        sourceUid: record!.sourceUid,
-        qualification: record!.qualification,
-        qualificationExpiresAt: expiredAt,
-        companyIds: record!.companyIds,
-        allowedProjectIds: record!.allowedProjectIds,
-        credentialRef: record!.credentialRef,
-        expiresAt: expiredAt,
-      });
-      await expect(
-        service.status(grantPrincipal, "openrouter", modelPolicyFingerprint),
-      ).resolves.toMatchObject({
-        record: { active: false, credentialStored: true, revision: 2 },
-      });
-      expect(await service.revokeAll(grantPrincipal)).toEqual({
-        recordGrantRevoked: true,
-        recordGrantsRevoked: 1,
-        releaseGrantsRevoked: 1,
-        localCredentialRevoked: true,
-        odooKeyRevokedUpstream: false,
-      });
-      const recordRevisions = await database
-        .select()
-        .from(scoutOdooRecordAccessGrants)
-        .where(
-          eq(scoutOdooRecordAccessGrants.nativeUserId, grantPrincipal.userId),
-        )
-        .orderBy(desc(scoutOdooRecordAccessGrants.revision));
-      expect(recordRevisions[0]).toMatchObject({ active: false, revision: 3 });
-      const releaseRevisions = await database
-        .select()
-        .from(scoutContextReleaseGrants)
-        .where(
-          eq(scoutContextReleaseGrants.nativeUserId, grantPrincipal.userId),
-        )
-        .orderBy(desc(scoutContextReleaseGrants.revision));
-      expect(releaseRevisions[0]).toMatchObject({ active: false, revision: 2 });
-      await expect(
-        service.status(grantPrincipal, "openrouter", modelPolicyFingerprint),
-      ).resolves.toMatchObject({
-        record: {
+          sourceUid: 201,
+          qualification: "verified_nonadmin",
+        });
+        expect(Array.from(record!.companyIds)).toEqual([1, 2]);
+        expect(Array.from(record!.allowedProjectIds)).toEqual([501, 502]);
+        const [storedSecret] = await database
+          .select({
+            encryptedValue: credentials.encryptedValue,
+            metadata: credentials.metadata,
+          })
+          .from(credentials)
+          .where(eq(credentials.id, record!.credentialRef));
+        expect(storedSecret?.encryptedValue).not.toContain(
+          "synthetic-new-api-key",
+        );
+        expect(storedSecret?.metadata?.sourceIdentityClass).toBe(identityClass);
+        const resolver = createOdooJson2CredentialResolver(
+          database,
+          encryptionKey,
+          provisioningSourceId,
+        );
+        await expect(
+          resolver.resolveForUid(201, record!.credentialRef, grantPrincipal),
+        ).resolves.toEqual({ uid: 201, apiKey: "synthetic-new-api-key" });
+
+        const consent = await service.consentRelease({
+          assertCurrent: async () => {},
+          principal: grantPrincipal,
+          bindingExpiresAt: "2099-01-01T00:00:00.000Z",
+          modelPolicyExpiresAt: "2099-01-01T00:00:00.000Z",
+          provider: "openrouter",
+          modelPolicyFingerprint,
+        });
+        expect(consent).toMatchObject({ revision: 1, provider: "openrouter" });
+        await expect(
+          service.status(grantPrincipal, "openrouter", modelPolicyFingerprint),
+        ).resolves.toMatchObject({
+          provider: "openrouter",
+          record: {
+            active: true,
+            credentialStored: true,
+            revision: 1,
+            projectCount: 2,
+          },
+          release: { active: true, revision: 1, provider: "openrouter" },
+        });
+        // The grant ledger is append-only. Model elapsed time with a later
+        // immutable revision whose expiry has passed instead of mutating history.
+        const expiredAt = new Date(Date.now() - 1000);
+        await database.insert(scoutOdooRecordAccessGrants).values({
+          deploymentId: record!.deploymentId,
+          tenantId: record!.tenantId,
+          nativeUserId: record!.nativeUserId,
+          bindingFingerprint: record!.bindingFingerprint,
+          revision: record!.revision + 1,
+          active: true,
+          sourceInstanceId: record!.sourceInstanceId,
+          sourceUid: record!.sourceUid,
+          qualification: record!.qualification,
+          qualificationExpiresAt: expiredAt,
+          companyIds: record!.companyIds,
+          allowedProjectIds: record!.allowedProjectIds,
+          credentialRef: record!.credentialRef,
+          expiresAt: expiredAt,
+        });
+        await expect(
+          service.status(grantPrincipal, "openrouter", modelPolicyFingerprint),
+        ).resolves.toMatchObject({
+          record: { active: false, credentialStored: true, revision: 2 },
+        });
+        expect(await service.revokeAll(grantPrincipal)).toEqual({
+          recordGrantRevoked: true,
+          recordGrantsRevoked: 1,
+          releaseGrantsRevoked: 1,
+          localCredentialRevoked: true,
+          odooKeyRevokedUpstream: false,
+        });
+        const recordRevisions = await database
+          .select()
+          .from(scoutOdooRecordAccessGrants)
+          .where(
+            eq(scoutOdooRecordAccessGrants.nativeUserId, grantPrincipal.userId),
+          )
+          .orderBy(desc(scoutOdooRecordAccessGrants.revision));
+        expect(recordRevisions[0]).toMatchObject({
           active: false,
-          credentialStored: false,
           revision: 3,
-        },
-        release: { active: false, revision: 2 },
-      });
-      await expect(
-        resolver.resolveForUid(201, record!.credentialRef, grantPrincipal),
-      ).resolves.toBeNull();
-      expect(taps).toBe(0);
-      const events = await database
-        .select({
-          eventType: auditEvents.eventType,
-          payload: auditEvents.payload,
-        })
-        .from(auditEvents)
-        .where(eq(auditEvents.actorUserId, grantPrincipal.userId));
-      expect(events.map((event) => event.eventType).sort()).toEqual(
-        [
-          "scout.odoo_context_grant.issued",
-          "scout.odoo_context_grant.revoked",
-          "scout.odoo_context_release.consent_recorded",
-        ].sort(),
-      );
-      expect(JSON.stringify(events)).not.toContain("synthetic-new-api-key");
-    } finally {
-      removeTap();
-    }
-  });
+        });
+        const releaseRevisions = await database
+          .select()
+          .from(scoutContextReleaseGrants)
+          .where(
+            eq(scoutContextReleaseGrants.nativeUserId, grantPrincipal.userId),
+          )
+          .orderBy(desc(scoutContextReleaseGrants.revision));
+        expect(releaseRevisions[0]).toMatchObject({
+          active: false,
+          revision: 2,
+        });
+        await expect(
+          service.status(grantPrincipal, "openrouter", modelPolicyFingerprint),
+        ).resolves.toMatchObject({
+          record: {
+            active: false,
+            credentialStored: false,
+            revision: 3,
+          },
+          release: { active: false, revision: 2 },
+        });
+        await expect(
+          resolver.resolveForUid(201, record!.credentialRef, grantPrincipal),
+        ).resolves.toBeNull();
+        expect(taps).toBe(0);
+        const events = await database
+          .select({
+            eventType: auditEvents.eventType,
+            payload: auditEvents.payload,
+          })
+          .from(auditEvents)
+          .where(eq(auditEvents.actorUserId, grantPrincipal.userId));
+        expect(events.map((event) => event.eventType).sort()).toEqual(
+          [
+            "scout.odoo_context_grant.issued",
+            "scout.odoo_context_grant.revoked",
+            "scout.odoo_context_release.consent_recorded",
+          ].sort(),
+        );
+        expect(JSON.stringify(events)).not.toContain("synthetic-new-api-key");
+        expect(
+          events.find(
+            (event) => event.eventType === "scout.odoo_context_grant.issued",
+          )?.payload.identityClass,
+        ).toBe(identityClass);
+      } finally {
+        removeTap();
+      }
+    },
+  );
 
   test("record revocation is isolated by tenant and binding when one Odoo UID is reused", async () => {
     const sharedUserId = `${prefix}-shared-user`;

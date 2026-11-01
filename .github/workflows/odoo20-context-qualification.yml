@@ -6,6 +6,7 @@ on:
     paths:
       - .github/workflows/odoo20-context-qualification.yml
       - openbot/server/src/scout/owned-model/odoo-json2.ts
+      - openbot/server/src/scout/owned-model/odoo-json2-customer.ts
       - openbot/server/tests/fixtures/odoo20-qualification-seed.py
       - openbot/server/tests/fixtures/run-odoo20-context-qualification.sh
       - openbot/server/tests/odoo20-context-qualification.integration.test.ts

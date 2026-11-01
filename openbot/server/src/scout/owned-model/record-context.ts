@@ -118,6 +118,8 @@ export type ProjectTaskContextPort = {
   ): Promise<unknown>;
   getGrant(principal: ProjectTaskContextPrincipal): Promise<unknown>;
   readProjectTask(request: ProjectTaskReadRequest): Promise<unknown>;
+  /** Internal seam only: the protected admission wrapper selects this; browser input never does. */
+  readCustomerProjectTask?(request: ProjectTaskReadRequest): Promise<unknown>;
 };
 
 export type ResolvedProjectTaskContext = {

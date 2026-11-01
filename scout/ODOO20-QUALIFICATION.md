@@ -13,10 +13,14 @@ accounts, and the administrator in a synthetic two-company database. It checks
 employee project visibility under each allowed-company context, exact
 `project.task` field/domain arguments, inability to read another employee's
 task, refusal of both portal users and an administrator before project/task
-reads, an Odoo UID/API-key mismatch, source-record deletion followed by a fresh
-read, and live removal of an employee's internal group. Portal access remains
-explicitly denied by the current source boundary. Passing this test does not
-complete customer access or establish a production connection.
+reads in the employee adapter, an Odoo UID/API-key mismatch, source-record deletion followed by a fresh
+read, and live removal of an employee's internal group. A separately selected
+[customer adapter](CUSTOMER-CONTEXT.md) now adds positive reads for two invited
+portal customers in separate projects of the same company, cross-customer
+denial, live collaboration withdrawal with retained followers, and refusal
+after portal-to-internal classification changes. The original employee adapter
+continues to deny these portal keys. Passing this test does not complete general
+customer access or establish a production connection.
 
 ## Pinned images and external contracts
 
@@ -59,6 +63,6 @@ not a signed or production qualification record.
 No local Docker qualification is claimed. A successful run of the dedicated
 workflow establishes that this fixed reader interoperates with the pinned
 synthetic Odoo 20 Community release and observes the listed Odoo ACL, group,
-company, and record-state behaviors. It does not validate customer access,
+company, customer task-slice and record-state behaviors. It does not validate complete customer access,
 production credentials, live directory memberships, model-egress policy, or
 deployment readiness.

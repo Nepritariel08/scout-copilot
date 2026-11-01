@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFile, writeFile } from "node:fs/promises";
 import { createOdooJson2ProjectTaskReader } from "../src/scout/owned-model/odoo-json2";
+import { createOdooJson2CustomerTaskReader } from "../src/scout/owned-model/odoo-json2-customer";
 import type { ProjectTaskReadRequest } from "../src/scout/owned-model/record-context";
 
 type Fixture = {
@@ -12,8 +13,15 @@ type Fixture = {
     number
   >;
   groups: { internal: number; portal: number; projectUser: number };
-  projects: { employeeA: number; employeeB: number; secondCompany: number };
-  tasks: { employeeA: number; employeeB: number; secondCompany: number };
+  projects: Record<
+    "employeeA" | "employeeB" | "secondCompany" | "portalA" | "portalB",
+    number
+  >;
+  tasks: Record<
+    "employeeA" | "employeeB" | "secondCompany" | "portalA" | "portalB",
+    number
+  >;
+  collaborators: Record<"portalA" | "portalB", number>;
 };
 
 type Credentials = Record<
@@ -150,6 +158,22 @@ describe.skipIf(!configured)(
             // For the deliberate mismatch case return the expected UID paired with
             // another user's real key. Odoo's context_get must catch the mismatch.
             return { uid, apiKey: credentials[account] };
+          },
+        },
+        fetch: transport,
+      });
+      const customerReader = createOdooJson2CustomerTaskReader({
+        instanceId: fixture.sourceInstanceId,
+        baseUrl,
+        database: fixture.database,
+        credentials: {
+          resolveForUid: async (uid, credentialRef) => {
+            const portal = (["portalA", "portalB"] as const).find(
+              (user) =>
+                credentialRef === credentialRefs[user] &&
+                fixture.users[user] === uid,
+            );
+            return portal ? { uid, apiKey: credentials[portal] } : null;
           },
         },
         fetch: transport,
@@ -295,6 +319,127 @@ describe.skipIf(!configured)(
         ).toBe(false);
       }
 
+      // Positive customer access uses the separate portal adapter. The original
+      // employee reader above still rejects the same keys before source reads.
+      for (const portal of ["portalA", "portalB"] as const) {
+        expect(
+          await customerReader.verifyUserProjectScope(
+            credentials[portal],
+            fixture.users[portal],
+            [fixture.companies.a],
+          ),
+        ).toEqual([fixture.projects[portal]]);
+        const own = await customerReader.readProjectTask(
+          makeRequest(
+            fixture,
+            portal,
+            fixture.tasks[portal],
+            fixture.projects[portal],
+            [fixture.companies.a],
+          ),
+        );
+        if (!Array.isArray(own))
+          throw new Error("Expected customer task result array");
+        expect(own).toHaveLength(1);
+        expect(own[0]).toMatchObject({
+          id: fixture.tasks[portal],
+          name: `Scout qualification ${portal} task`,
+          date_deadline: null,
+          company_id: [fixture.companies.a, "Scout Qualification Company A"],
+        });
+        expect(Object.keys(own[0]).sort()).toEqual([...taskFields].sort());
+        expect(
+          own[0].stage_id === null ||
+            (Array.isArray(own[0].stage_id) && own[0].stage_id.length === 2),
+        ).toBe(true);
+        const other = portal === "portalA" ? "portalB" : "portalA";
+        expect(
+          await customerReader.readProjectTask(
+            makeRequest(
+              fixture,
+              portal,
+              fixture.tasks[other],
+              fixture.projects[portal],
+              [fixture.companies.a],
+            ),
+          ),
+        ).toEqual([]);
+        // Even a forged wider local scope cannot bypass authoritative Odoo
+        // project/task ACLs for another customer within the same company.
+        await expect(
+          customerReader.readProjectTask(
+            makeRequest(
+              fixture,
+              portal,
+              fixture.tasks[other],
+              fixture.projects[other],
+              [fixture.companies.a],
+            ),
+          ),
+        ).rejects.toThrow();
+      }
+
+      const withdrawCustomer = await jsonRequest(
+        new URL("/json/2/project.collaborator/unlink", baseUrl),
+        fixture.database,
+        credentials.admin,
+        { ids: [fixture.collaborators.portalA] },
+      );
+      expect(withdrawCustomer.ok).toBe(true);
+      await withdrawCustomer.arrayBuffer();
+      await expect(
+        customerReader.readProjectTask(
+          makeRequest(
+            fixture,
+            "portalA",
+            fixture.tasks.portalA,
+            fixture.projects.portalA,
+            [fixture.companies.a],
+          ),
+        ),
+      ).rejects.toThrow();
+      // Customer B remains usable after customer A's relationship is withdrawn.
+      expect(
+        await customerReader.readProjectTask(
+          makeRequest(
+            fixture,
+            "portalB",
+            fixture.tasks.portalB,
+            fixture.projects.portalB,
+            [fixture.companies.a],
+          ),
+        ),
+      ).toHaveLength(1);
+
+      const promoteCustomer = await jsonRequest(
+        new URL("/json/2/res.users/write", baseUrl),
+        fixture.database,
+        credentials.admin,
+        {
+          ids: [fixture.users.portalB],
+          vals: {
+            group_ids: [
+              [6, 0, [fixture.groups.internal, fixture.groups.projectUser]],
+            ],
+          },
+        },
+      );
+      expect(promoteCustomer.ok).toBe(true);
+      await promoteCustomer.arrayBuffer();
+      calls.length = 0;
+      await expect(
+        customerReader.verifyUserProjectScope(
+          credentials.portalB,
+          fixture.users.portalB,
+          [fixture.companies.a],
+        ),
+      ).rejects.toThrow();
+      expect(
+        calls.some(
+          (call) => call.path === "/json/2/project.project/search_read",
+        ),
+      ).toBe(false);
+
       calls.length = 0;
       await expect(
         reader.readProjectTask(
@@ -389,6 +534,10 @@ describe.skipIf(!configured)(
           "second-company task hidden when request context allows only company A",
           "exact task fields and Odoo project/task record rule despite wider request scope",
           "portal A and portal B denied before project/task read",
+          "separate portal customer adapter permits each invited customer's exact task summary",
+          "same-company portal customers cannot read each other's projects/tasks",
+          "live customer collaboration withdrawal denies old grants despite task-follower relationship",
+          "customer-to-internal identity change denied by customer adapter before project read",
           "administrator denied before task read",
           "Odoo UID/key mismatch denied before task read",
           "deleted source task not returned on re-read",
