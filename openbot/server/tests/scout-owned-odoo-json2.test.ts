@@ -49,7 +49,10 @@ function reader(fetchImplementation: typeof fetch) {
 
 function capture() {
   const requests: CapturedRequest[] = [];
-  const { subject, resolved } = reader((async (input, init) => {
+  const { subject, resolved } = reader((async (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ) => {
     requests.push({ url: new URL(String(input)), init: init ?? {} });
     if (requests.length === 1)
       return json({ uid: 401, lang: "en_US", tz: "UTC" });
@@ -61,7 +64,7 @@ function capture() {
         date_deadline: false,
       },
     ]);
-  }) as typeof fetch);
+  }) as unknown as typeof fetch);
   return { subject, requests, resolved };
 }
 
@@ -114,10 +117,10 @@ describe("owned Odoo JSON-2 project-task transport", () => {
       credentials: {
         resolveForUid: async () => ({ uid: 401, apiKey: key }),
       },
-      fetch: (async (input) => {
+      fetch: (async (input: RequestInfo | URL) => {
         requests.push(new URL(String(input)).pathname);
         return json({ uid: 402, lang: "en_US", tz: "UTC" });
-      }) as typeof fetch,
+      }) as unknown as typeof fetch,
     });
     await expect(subject.readProjectTask(request)).rejects.toThrow(
       "MODEL_ACCESS_DENIED",
@@ -142,7 +145,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
         fetch: (async () => {
           calls += 1;
           return json({ uid: 401 });
-        }) as typeof fetch,
+        }) as unknown as typeof fetch,
       });
       await expect(subject.readProjectTask(request)).rejects.toThrow(
         "MODEL_ACCESS_DENIED",
@@ -166,7 +169,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
       fetch: (async () => {
         calls += 1;
         return json({ uid: 1 });
-      }) as typeof fetch,
+      }) as unknown as typeof fetch,
     });
     await expect(
       subject.readProjectTask({
@@ -218,7 +221,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
     const { subject } = reader((async () => {
       calls += 1;
       return json({ uid: 401 });
-    }) as typeof fetch);
+    }) as unknown as typeof fetch);
     const widened = {
       ...request,
       domain: [
@@ -240,7 +243,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
       credentials: {
         resolveForUid: async (uid) => ({ uid, apiKey: key }),
       },
-      fetch: (async (input, init) => {
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
         requests.push({ url: new URL(String(input)), init: init ?? {} });
         return requests.length === 1
           ? json({ uid: 401 })
@@ -248,7 +251,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
               status: 403,
               headers: { "content-type": "application/json" },
             });
-      }) as typeof fetch,
+      }) as unknown as typeof fetch,
     });
     let failure: unknown;
     try {
@@ -294,7 +297,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
         fetch: (async () => {
           calls += 1;
           return calls === 1 ? json({ uid: 401 }) : failureResponse;
-        }) as typeof fetch,
+        }) as unknown as typeof fetch,
       });
       await expect(subject.readProjectTask(request)).rejects.toThrow(
         "MODEL_UNAVAILABLE",
@@ -333,7 +336,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
         fetch: (async () => {
           calls += 1;
           return calls === 1 ? json({ uid: 401 }) : rejectedResponse;
-        }) as typeof fetch,
+        }) as unknown as typeof fetch,
       });
       await expect(subject.readProjectTask(request)).rejects.toThrow(
         "MODEL_UNAVAILABLE",
@@ -350,7 +353,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
       credentials: {
         resolveForUid: async (uid) => ({ uid, apiKey: key }),
       },
-      fetch: (async (input, init) => {
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
         requests.push({ url: new URL(String(input)), init: init ?? {} });
         return requests.length === 1
           ? json({ uid: 401 })
@@ -361,7 +364,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
                 "content-type": "application/json",
               },
             });
-      }) as typeof fetch,
+      }) as unknown as typeof fetch,
     });
     await expect(subject.readProjectTask(request)).rejects.toThrow(
       "MODEL_UNAVAILABLE",
@@ -378,7 +381,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
       credentials: {
         resolveForUid: async (uid) => ({ uid, apiKey: key }),
       },
-      fetch: (async (_input, init) => {
+      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
         calls += 1;
         if (calls === 1) return json({ uid: 401 });
         return new Promise<Response>((_resolve, reject) => {
@@ -387,7 +390,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
             once: true,
           });
         });
-      }) as typeof fetch,
+      }) as unknown as typeof fetch,
     });
     await expect(subject.readProjectTask(request)).rejects.toThrow(
       "MODEL_UNAVAILABLE",
