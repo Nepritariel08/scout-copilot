@@ -2,9 +2,11 @@
 
 This is a source foundation on the owner's CopilotKit/OpenDuet fork. It is
 stacked on the qualified DSH requester port at
-`53f797167dd676e8d0945982a5f65bc65cbbc740`. The existing platform bootstrap, UI,
-Intelligence configuration and learning services are unchanged. Nothing here
-activates a shared installation or contacts a model, identity vendor or Odoo.
+`53f797167dd676e8d0945982a5f65bc65cbbc740`. At the qualified foundation commit,
+platform bootstrap, UI and Intelligence/learning configuration were unchanged.
+The subsequent [explicit owned composition](OWNED-RUNTIME.md) integrates the
+same Scout app. The foundation itself does not activate shared access or
+contact a model, identity vendor or Odoo.
 
 The public MIT `AgentRunner` extension in `@copilotkit/runtime` 1.77.0 supports
 an application-owned store. This adapter uses that API and AG-UI 1.0.1's public
@@ -72,8 +74,8 @@ Mount both under the platform's real `createRequireUser` and
 `createSameOriginGuard`. Disable cached membership decisions for shared access.
 The integration test composes these real middleware and the actual SDK Fetch
 handler; its session issuer, agent and all data are synthetic. It does not
-validate the company's live identity provider. The existing app does not yet
-mount these factories.
+validate the company's live identity provider. The later explicit owned
+composition mounts these factories through the existing app.
 
 ## Qualification and remaining work
 

@@ -28,6 +28,7 @@ import {
 } from "@/lib/channels/first-day";
 import { useMarkOpenChannelRead } from "@/lib/channels/mark-read";
 import { localDateOf } from "@/lib/channels/morning-brief";
+import { deploymentCapabilitiesQueryOptions } from "@/lib/deployment/queries";
 import { client } from "@/lib/client";
 import { ONGOING_SEARCH_LIMIT, ongoingChannel } from "@/lib/channels/ongoing";
 import {
@@ -137,12 +138,16 @@ function OngoingChat({
    * person asked for nothing, and the claim is given back for the next open to try.
    */
   const me = useQuery(currentUserQueryOptions());
+  const capabilities = useQuery(deploymentCapabilitiesQueryOptions());
   const [today] = useState(() => localDateOf(new Date()));
   /** The person has typed, or started a turn, since Chat opened. */
   const spoke = useRef(false);
   useMorningBrief({
     claimKey:
-      me.isPending || channel.lastMessageAt === null
+      me.isPending ||
+      capabilities.isPending ||
+      capabilities.data?.serverTurns === false ||
+      channel.lastMessageAt === null
         ? null
         : `${me.data?.id ?? "unknown"}:${bot.id}:${today}`,
     clear: () => !spoke.current,
@@ -280,13 +285,17 @@ function FirstMessage({
   };
 
   const gmail = useQuery(botAppQueryOptions(bot.id, GOOGLE_WORKSPACE));
+  const capabilities = useQuery(deploymentCapabilitiesQueryOptions());
   const canReadMail = gmail.data?.state === "ready";
 
   useFirstDayGreeting({
     // Whose first day, with which Bot. Waits for the account and for whether the Bot can read their
     // mail; an account that failed to load still greets, and a state that failed reads as no mail.
     claimKey:
-      me.isPending || gmail.isPending
+      me.isPending ||
+      gmail.isPending ||
+      capabilities.isPending ||
+      capabilities.data?.serverTurns === false
         ? null
         : `${me.data?.id ?? "unknown"}:${bot.id}`,
     clear: () => !begun.current && !typed.current,

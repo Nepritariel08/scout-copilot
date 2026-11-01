@@ -5,4 +5,12 @@
  */
 import "eventsource";
 
-await import("./index");
+const mode = process.env.SCOUT_RUNTIME_MODE?.trim() || "intelligence";
+if (mode === "owned") {
+  const { startOwnedScout } = await import("./scout/owned/start");
+  await startOwnedScout();
+} else if (mode === "intelligence") {
+  await import("./index");
+} else {
+  throw new Error("SCOUT_RUNTIME_MODE must be intelligence or owned.");
+}

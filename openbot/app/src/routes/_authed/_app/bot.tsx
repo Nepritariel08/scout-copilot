@@ -1,4 +1,4 @@
-import { CopilotChat } from "@copilotkit/react-core/v2";
+import { CopilotChat, useAgent } from "@copilotkit/react-core/v2";
 import { IconPlus } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
@@ -17,6 +17,8 @@ import { tryClient } from "@/lib/client";
 import { useActiveBot } from "@/lib/copilot/active-bot";
 import { useBotThread } from "@/lib/copilot/bot-thread";
 import { useStoppedTurn } from "@/lib/copilot/stopped-turn";
+import { currentUserQueryOptions } from "@/lib/auth/queries";
+import { deploymentCapabilitiesQueryOptions } from "@/lib/deployment/queries";
 import { searchTextEntry } from "@/lib/search-text";
 
 export const Route = createFileRoute("/_authed/_app/bot")({
@@ -149,7 +151,13 @@ function BotChat({ agentId, name }: { agentId: string; name: string }) {
    * page can say so instead of letting the Bot answer as if nothing were missing. `startNew`
    * mints another fresh thread on demand for the New chat control below.
    */
-  const { threadId, history, startNew } = useBotThread(agentId);
+  const capabilities = useQuery(deploymentCapabilitiesQueryOptions());
+  const person = useQuery(currentUserQueryOptions());
+  const { threadId, history, startNew } = useBotThread(agentId, {
+    enabled: capabilities.isSuccess && person.isSuccess && Boolean(person.data),
+    requireServerMint: capabilities.data?.mode !== "intelligence",
+    ownerId: capabilities.data?.mode === "owned" ? person.data?.id : undefined,
+  });
   /*
    * A turn that ends without an answer has to be said out loud here, because the packaged chat says
    * nothing. It reports a failed run to an `onError` prop and otherwise carries on as though the
@@ -216,7 +224,9 @@ function BotChat({ agentId, name }: { agentId: string; name: string }) {
             data-testid="bot-chat-history-unavailable"
             role="alert"
           >
-            Couldn't load earlier messages. The Bot is answering without them.
+            {threadId
+              ? "Couldn't load earlier messages. Try again before continuing."
+              : "Couldn't open a conversation. Try New chat again."}
           </p>
         ) : null}
         {/*
@@ -246,7 +256,14 @@ function BotChat({ agentId, name }: { agentId: string; name: string }) {
            * old id. A key that omits the thread would leave the previous conversation on screen
            * under a composer that silently posts to the new one.
            */}
-          {threadId ? (
+          {threadId && capabilities.data?.mode === "owned" && person.data ? (
+            <OwnedBotConversation
+              agentId={agentId}
+              ownerId={person.data.id}
+              threadId={threadId}
+              key={JSON.stringify([person.data.id, agentId, threadId])}
+            />
+          ) : threadId ? (
             <CopilotChat
               agentId={agentId}
               key={`${agentId}:${threadId}`}
@@ -256,5 +273,34 @@ function BotChat({ agentId, name }: { agentId: string; name: string }) {
         </div>
       </div>
     </DetailPanel>
+  );
+}
+
+/** A public SDK thread-scoped instance prevents a previous chat's in-memory transcript from carrying over. */
+function OwnedBotConversation({
+  agentId,
+  ownerId,
+  threadId,
+}: {
+  agentId: string;
+  ownerId: string;
+  threadId: string;
+}) {
+  const localId = JSON.stringify(["scout-owned", ownerId, agentId, threadId]);
+  const { isReady } = useAgent({
+    agentId: localId,
+    runtimeAgentId: agentId,
+    threadId,
+  });
+  const stopped = useStoppedTurn(localId);
+  return (
+    <>
+      {stopped ? (
+        <p className="px-6 py-2 text-destructive text-sm" role="alert">
+          {stopped}
+        </p>
+      ) : null}
+      {isReady ? <CopilotChat agentId={localId} threadId={threadId} /> : null}
+    </>
   );
 }

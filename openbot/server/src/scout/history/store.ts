@@ -246,41 +246,58 @@ export function createHistoryStore(
     return run;
   }
 
+  async function mintWithin(
+    tx: Transaction,
+    principal: HistoryPrincipal,
+    input: { agentId: string; channelId?: string },
+    id: string,
+  ) {
+    if (
+      !input.agentId ||
+      input.agentId.length > 200 ||
+      (input.channelId !== undefined &&
+        (!input.channelId || input.channelId.length > 200))
+    )
+      throw new HistoryError("HISTORY_INPUT_INVALID");
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["scout-history-mint", principal.userId, principal.tenantId])}, 0))`,
+    );
+    const [total] = await tx
+      .select({ count: count() })
+      .from(threads)
+      .where(owned(principal));
+    if (total.count >= limits.maxThreads)
+      throw new HistoryError("HISTORY_LIMIT");
+    const [thread] = await tx
+      .insert(threads)
+      .values({
+        id,
+        ownerUserId: principal.userId,
+        tenantId: principal.tenantId,
+        agentId: input.agentId,
+        channelId: input.channelId ?? null,
+      })
+      .returning(metadata);
+    return thread;
+  }
+
   return {
     limits,
-    async mint(
+    mint(
       principal: HistoryPrincipal,
       input: { agentId: string; channelId?: string },
     ) {
-      if (
-        !input.agentId ||
-        input.agentId.length > 200 ||
-        (input.channelId !== undefined &&
-          (!input.channelId || input.channelId.length > 200))
-      )
-        throw new HistoryError("HISTORY_INPUT_INVALID");
-      return database.transaction(async (tx) => {
-        await tx.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["scout-history-mint", principal.userId, principal.tenantId])}, 0))`,
-        );
-        const [total] = await tx
-          .select({ count: count() })
-          .from(threads)
-          .where(owned(principal));
-        if (total.count >= limits.maxThreads)
-          throw new HistoryError("HISTORY_LIMIT");
-        const [thread] = await tx
-          .insert(threads)
-          .values({
-            id: randomUUID(),
-            ownerUserId: principal.userId,
-            tenantId: principal.tenantId,
-            agentId: input.agentId,
-            channelId: input.channelId ?? null,
-          })
-          .returning(metadata);
-        return thread;
-      });
+      return database.transaction((tx) =>
+        mintWithin(tx, principal, input, randomUUID()),
+      );
+    },
+    /** Internal channel-creation port: ID is minted by the server and committed with its native mapping. */
+    mintForChannel(
+      tx: Transaction,
+      principal: HistoryPrincipal,
+      input: { id: string; agentId: string; channelId: string },
+    ) {
+      return mintWithin(tx, principal, input, input.id);
     },
     get(principal: HistoryPrincipal, threadId: string) {
       return locked(principal, threadId, async (_tx, thread) => thread);
