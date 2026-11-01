@@ -21,8 +21,11 @@ The [JSON-2 controller](https://github.com/odoo/odoo/blob/20.0/addons/rpc/contro
 uses bearer authentication and calls the selected public method in that user's
 environment. Scout sends the individual's mapped API key and only fixed
 read-only methods/fields, leaving Odoo ACLs, field access and record rules in
-force. It uses no administrator fallback, sudo, portal access-token URL or
-source-side permission changes. API-key issuance, supported JSON-2 access and
+force. Business reads use no administrator fallback, sudo or portal access-token
+URL. A narrowly scoped [own-identity attestation addon](odoo-addons/scout_own_identity/README.md)
+is now required for exact portal classification; it reads only the authenticated
+user's fixed group facts with sudo and changes no permissions. API-key issuance,
+addon installation, supported JSON-2 access and
 the actual installed Odoo build still need independent qualification.
 
 Portal users cannot create their own keys through Odoo's native key UI:
@@ -38,7 +41,12 @@ a production issuance tool or evidence that a live key has been provisioned.
 Scout deliberately requires **current project collaboration**, even where Odoo
 task-follower rules alone would permit a task. The new adapter positively checks
 `base.group_portal` and refuses internal, system and settings-administrator
-groups, using literal boolean responses. It verifies the key's actual UID,
+groups, using literal boolean responses in the strict versioned own attestation.
+Stock `has_group` is insufficient: Odoo 20 filters the group relation for portal
+users without `res.groups` read access. Missing or malformed attestation denies;
+all-false stock results and `share`/email/company hints never establish portal.
+The addon bypasses only own-group visibility, never business ACLs, and avoids
+the stock user-ID-only membership cache. It verifies the key's actual UID,
 derives visible projects under trusted allowed-company context, and intersects
 that result with the saved grant. It repeats identity/classification and project
 access after reading the task. Removing collaboration therefore denies an old
@@ -51,7 +59,10 @@ its positive internal-user requirement and portal/admin refusal.
    exact native issuer/OID mapping. Current protected native membership is an
    independent prerequisite; neither a guest invitation nor an Odoo key admits
    the user to Scout.
-2. Independently verify the customer's own nonadministrator portal UID, source
+2. Independently install/qualify the exact own-identity addon through the Odoo
+   deployment owner, with the installed build and rollback scope verified. No
+   live installation or permission change is performed by this source work.
+   Independently verify the customer's own nonadministrator portal UID, source
    instance and company scope. In that user's existing protected
    `SCOUT_ODOO_BINDINGS_FILE` entry, explicitly add
    `"identityClass": "customer"`. Unknown classification values fail closed.

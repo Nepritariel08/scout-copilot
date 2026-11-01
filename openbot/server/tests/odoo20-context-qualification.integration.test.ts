@@ -307,32 +307,14 @@ describe.skipIf(!configured)(
         ),
       ).resolves.toEqual([]);
 
-      for (const portal of ["portalA", "portalB"] as const) {
-        calls.length = 0;
-        await expect(
-          reader.verifyUserProjectScope(
-            credentials[portal],
-            fixture.users[portal],
-            [fixture.companies.a],
-          ),
-        ).rejects.toThrow();
-        expect(
-          calls.some(
-            (call) => call.path === "/json/2/project.project/search_read",
-          ),
-        ).toBe(false);
-        expect(
-          calls.some(
-            (call) => call.path === "/json/2/project.task/search_read",
-          ),
-        ).toBe(false);
-      }
-
-      // Positive customer access uses the separate portal adapter. The original
-      // employee reader above still rejects the same keys before source reads.
+      // Positive customer access uses the separate portal adapter. Exercise
+      // ordinary caller ACLs before any stock portal has_group diagnostic can
+      // populate an empty UID-only membership cache in the Odoo web process.
       const classificationReports: ReturnType<
         typeof customerClassificationReport
       >[] = [];
+      const attestations: { portal: "portalA" | "portalB"; value: unknown }[] =
+        [];
       for (const portal of ["portalA", "portalB"] as const) {
         const seedReport = customerClassificationReport(
           portal,
@@ -346,34 +328,49 @@ describe.skipIf(!configured)(
           database: fixture.database,
           fetch: transport,
         });
-        const currentGroups: Record<string, unknown> = {};
-        for (const [group] of customerGroupExpectations) {
-          try {
-            currentGroups[group] = await post(
-              "res.users",
-              "has_group",
-              credentials[portal],
-              { ids: [fixture.users[portal]], group_ext_id: group },
-              1024,
-            );
-          } catch {
-            // A failed diagnostic request is unknown, never a passing boolean.
-            // Continue collecting both customers' reports without logging the exception.
-            currentGroups[group] = null;
-          }
-        }
-        const rpcReport = customerClassificationReport(
-          portal,
-          "json2",
-          currentGroups,
+        const attestation = await post(
+          "res.users",
+          "scout_own_identity_v1",
+          credentials[portal],
+          {},
+          2048,
         );
-        console.log(JSON.stringify(rpcReport));
-        classificationReports.push(rpcReport);
+        attestations.push({ portal, value: attestation });
+        const attestationReport = customerClassificationReport(
+          portal,
+          "attestation",
+          attestation &&
+            typeof attestation === "object" &&
+            !Array.isArray(attestation)
+            ? (attestation as Record<string, unknown>).groups
+            : null,
+        );
+        console.log(JSON.stringify(attestationReport));
+        classificationReports.push(attestationReport);
       }
-      // Collect all four reports before failing any exact classification check.
-      // Seed/environment/cache differences remain observable for both customers.
+      // Collect both customers' four seed/attestation reports before asserting.
       for (const report of classificationReports)
         expect(customerClassificationMatches(report)).toBe(true);
+      for (const { portal, value } of attestations)
+        expect(value).toEqual({
+          contract: "scout-own-identity-v1",
+          uid: fixture.users[portal],
+          groups: Object.fromEntries(customerGroupExpectations),
+        });
+      for (const body of [
+        { ids: [fixture.users.portalB] },
+        { uid: fixture.users.portalB },
+        { group_ext_id: "base.group_system" },
+      ]) {
+        const response = await jsonRequest(
+          new URL("/json/2/res.users/scout_own_identity_v1", baseUrl),
+          fixture.database,
+          credentials.portalA,
+          body,
+        );
+        expect(response.status).toBe(422);
+        await response.arrayBuffer();
+      }
 
       for (const portal of ["portalA", "portalB"] as const) {
         expect(
@@ -464,6 +461,57 @@ describe.skipIf(!configured)(
           ),
         ),
       ).toHaveLength(1);
+
+      // Preserve the employee contract for the SAME keys, but perform these
+      // stock has_group calls after all positive customer ACL reads. Odoo may
+      // cache a filtered relation across requests; Scout never clears that cache
+      // or substitutes attestation for business ACLs. The addon transaction test
+      // separately reproduces a cold/poisoned cache within one transaction.
+      for (const portal of ["portalA", "portalB"] as const) {
+        calls.length = 0;
+        await expect(
+          reader.verifyUserProjectScope(
+            credentials[portal],
+            fixture.users[portal],
+            [fixture.companies.a],
+          ),
+        ).rejects.toThrow();
+        expect(
+          calls.some(
+            (call) => call.path === "/json/2/project.project/search_read",
+          ),
+        ).toBe(false);
+        expect(
+          calls.some(
+            (call) => call.path === "/json/2/project.task/search_read",
+          ),
+        ).toBe(false);
+        const post = createOdooJson2ReadTransport({
+          baseUrl,
+          database: fixture.database,
+          fetch: transport,
+        });
+        const currentGroups: Record<string, unknown> = {};
+        for (const [group] of customerGroupExpectations) {
+          try {
+            currentGroups[group] = await post(
+              "res.users",
+              "has_group",
+              credentials[portal],
+              { ids: [fixture.users[portal]], group_ext_id: group },
+              1024,
+            );
+          } catch {
+            currentGroups[group] = null;
+          }
+        }
+        // Diagnostic only. Warm/cold cache differences supply no authority.
+        console.log(
+          JSON.stringify(
+            customerClassificationReport(portal, "json2", currentGroups),
+          ),
+        );
+      }
 
       const promoteCustomer = await jsonRequest(
         new URL("/json/2/res.users/write", baseUrl),
@@ -589,6 +637,7 @@ describe.skipIf(!configured)(
           "exact task fields and Odoo project/task record rule despite wider request scope",
           "portal A and portal B denied before project/task read",
           "separate portal customer adapter permits each invited customer's exact task summary",
+          "own-identity attestation returns exact current portal groups and refuses caller-selected UID/group/record IDs",
           "same-company portal customers cannot read each other's projects/tasks",
           "live customer collaboration withdrawal denies old grants despite task-follower relationship",
           "customer-to-internal identity change denied by customer adapter before project read",

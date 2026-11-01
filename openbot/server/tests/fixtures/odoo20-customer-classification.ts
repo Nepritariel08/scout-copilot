@@ -8,7 +8,7 @@ export const customerGroupExpectations = [
 
 export function customerClassificationReport(
   customer: "portalA" | "portalB",
-  phase: "seed" | "json2",
+  phase: "seed" | "json2" | "attestation",
   input: unknown,
 ) {
   const values =

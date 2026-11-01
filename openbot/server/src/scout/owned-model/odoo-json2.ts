@@ -259,7 +259,11 @@ export function createOdooJson2ReadTransport(
 
   return async (
     model: "res.users" | "project.task" | "project.project",
-    method: "context_get" | "has_group" | "search_read",
+    method:
+      | "context_get"
+      | "has_group"
+      | "scout_own_identity_v1"
+      | "search_read",
     apiKey: string,
     body: Record<string, unknown>,
     maxResponseBytes: number,
