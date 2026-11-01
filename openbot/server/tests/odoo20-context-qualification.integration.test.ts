@@ -160,10 +160,13 @@ describe.skipIf(!configured)(
       });
       expect(versionResponse.ok).toBe(true);
       const version = (await versionResponse.json()) as {
-        server_version?: unknown;
+        version?: unknown;
+        version_info?: unknown[];
       };
-      expect(typeof version.server_version).toBe("string");
-      expect(String(version.server_version).startsWith("20.")).toBe(true);
+      expect(version.version).toBe("20.0");
+      expect(Array.isArray(version.version_info)).toBe(true);
+      expect(version.version_info?.[0]).toBe(20);
+      expect(version.version_info?.[1]).toBe(0);
 
       const aProjects = await reader.verifyUserProjectScope(
         credentials.employeeA,
@@ -377,7 +380,7 @@ describe.skipIf(!configured)(
       const report = {
         qualification: "passed",
         source: {
-          serverVersion: version.server_version,
+          serverVersion: version.version,
           imageRef: process.env.SCOUT_ODOO20_IMAGE_REF ?? "unspecified",
         },
         fixture: "synthetic-disposable-two-company",
