@@ -61,6 +61,8 @@ let contextGrantReads = 0;
 let contextReleaseGrantReads = 0;
 let contextReadCount = 0;
 let revokeOnGrantRead: number | undefined;
+let revokeAfterTaskRead: number | undefined;
+let changeRequesterAfterTaskRead: number | undefined;
 let hideTaskOnRead: number | undefined;
 let contextRecordRows: unknown = [];
 let capturedContextRead: ProjectTaskReadRequest | undefined;
@@ -165,10 +167,13 @@ function syntheticContextGrant(
     revision,
     expiresAt: "2099-01-01T00:00:00.000Z",
     sourceIdentity: {
+      instanceId: "odoo-test",
       uid: 101,
       role: "user",
       qualification: "qualified",
+      qualificationExpiresAt: "2099-01-01T00:00:00.000Z",
       companyIds: [1],
+      credentialRef: "00000000-0000-4000-8000-000000000101",
     },
     allowedProjectIds: [501],
   };
@@ -176,21 +181,29 @@ function syntheticContextGrant(
 function syntheticContextReleaseGrant(
   principal: ProjectTaskContextPrincipal,
   provider: ProjectTaskContextReleaseGrant["provider"] = "local",
+  modelPolicyFingerprint: string,
 ): ProjectTaskContextReleaseGrant {
   return {
     principal,
     active: true,
     revision: 1,
     expiresAt: "2099-01-01T00:00:00.000Z",
+    sourceInstanceId: "odoo-test",
     dataClass: "odoo.project_task_summary.v1",
     provider,
+    modelPolicyFingerprint,
   };
 }
 const recordContext: ProjectTaskContextPort = {
-  getReleaseGrant: async (principal, provider) => {
+  sourceInstanceId: "odoo-test",
+  getReleaseGrant: async (principal, provider, modelPolicyFingerprint) => {
     contextReleaseGrantReads++;
     return contextReleaseGrantEnabled
-      ? syntheticContextReleaseGrant(principal, provider)
+      ? syntheticContextReleaseGrant(
+          principal,
+          provider,
+          modelPolicyFingerprint,
+        )
       : null;
   },
   getGrant: async (principal) => {
@@ -202,6 +215,10 @@ const recordContext: ProjectTaskContextPort = {
   readProjectTask: async (request) => {
     contextReadCount++;
     capturedContextRead = request;
+    if (revokeAfterTaskRead === contextReadCount)
+      revokeOnGrantRead = contextGrantReads + 1;
+    if (changeRequesterAfterTaskRead === contextReadCount)
+      aliceRequesterUid = 301;
     return hideTaskOnRead === contextReadCount ? [] : contextRecordRows;
   },
 };
@@ -381,6 +398,8 @@ beforeEach(async () => {
   contextReleaseGrantReads = 0;
   contextReadCount = 0;
   revokeOnGrantRead = undefined;
+  revokeAfterTaskRead = undefined;
+  changeRequesterAfterTaskRead = undefined;
   hideTaskOnRead = undefined;
   contextRecordRows = [];
   capturedContextRead = undefined;
@@ -695,6 +714,7 @@ describe("owned model: real SQL and SDK chat-completions", () => {
         name: "Synthetic selected task",
         stage_id: [9, "Synthetic stage"],
         date_deadline: "2026-12-15",
+        company_id: [1, "Synthetic company"],
       },
     ];
     const response = await selectedRun([
@@ -713,7 +733,7 @@ describe("owned model: real SQL and SDK chat-completions", () => {
         ["id", "=", 700],
         ["project_id", "in", [501]],
       ],
-      fields: ["id", "name", "stage_id", "date_deadline"],
+      fields: ["id", "name", "stage_id", "date_deadline", "company_id"],
       limit: 1,
       maxBytes: 4096,
     });
@@ -778,6 +798,7 @@ describe("owned model: real SQL and SDK chat-completions", () => {
         name: "Synthetic selected task",
         stage_id: [9, "Synthetic stage"],
         date_deadline: "2026-12-15",
+        company_id: [1, "Synthetic company"],
       },
     ];
     const guessed = await selectedRun([
@@ -795,6 +816,7 @@ describe("owned model: real SQL and SDK chat-completions", () => {
         name: "é".repeat(3500),
         stage_id: [9, "y".repeat(400)],
         date_deadline: "2026-12-15",
+        company_id: [1, "Synthetic company"],
       },
     ];
     const oversized = await selectedRun([
@@ -813,6 +835,7 @@ describe("owned model: real SQL and SDK chat-completions", () => {
         name: "Synthetic selected task",
         stage_id: [9, "Synthetic stage"],
         date_deadline: "2026-12-15",
+        company_id: [1, "Synthetic company"],
       },
     ];
     const response = await selectedRun([
@@ -821,6 +844,48 @@ describe("owned model: real SQL and SDK chat-completions", () => {
     await response.text();
     expect(contextGrantReads).toBe(2);
     expect(capturedContextRead).toBeDefined();
+    expect(providerCalls).toBe(0);
+    expect(await rows()).toHaveLength(0);
+  });
+  test("a grant revoked during the final task read cannot reach the provider", async () => {
+    contextGrantEnabled = true;
+    contextReleaseGrantEnabled = true;
+    revokeAfterTaskRead = 4;
+    contextRecordRows = [
+      {
+        id: 700,
+        name: "Synthetic selected task",
+        stage_id: [9, "Synthetic stage"],
+        date_deadline: "2026-12-15",
+        company_id: [1, "Synthetic company"],
+      },
+    ];
+    const response = await selectedRun([
+      { description: PROJECT_TASK_SELECTION_MARKER, value: "700" },
+    ]);
+    await response.text();
+    expect(contextReadCount).toBe(4);
+    expect(providerCalls).toBe(0);
+    expect(await rows()).toHaveLength(0);
+  });
+  test("a native binding change during the final task read cannot reach the provider", async () => {
+    contextGrantEnabled = true;
+    contextReleaseGrantEnabled = true;
+    changeRequesterAfterTaskRead = 4;
+    contextRecordRows = [
+      {
+        id: 700,
+        name: "Synthetic selected task",
+        stage_id: [9, "Synthetic stage"],
+        date_deadline: "2026-12-15",
+        company_id: [1, "Synthetic company"],
+      },
+    ];
+    const response = await selectedRun([
+      { description: PROJECT_TASK_SELECTION_MARKER, value: "700" },
+    ]);
+    await response.text();
+    expect(aliceRequesterUid).toBe(301);
     expect(providerCalls).toBe(0);
     expect(await rows()).toHaveLength(0);
   });
@@ -834,6 +899,7 @@ describe("owned model: real SQL and SDK chat-completions", () => {
         name: "Synthetic selected task",
         stage_id: [9, "Synthetic stage"],
         date_deadline: "2026-12-15",
+        company_id: [1, "Synthetic company"],
       },
     ];
     const response = await selectedRun([

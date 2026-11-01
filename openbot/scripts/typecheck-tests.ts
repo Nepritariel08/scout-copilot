@@ -95,7 +95,7 @@ function parse(output: string): Diagnostic[] {
     // messages (TS6142 names the resolved file). Strip the checkout prefix so the baseline is
     // the same on a laptop, in a worktree and on CI.
     const key = `${file}: error ${code}: ${message}`.replaceAll(
-      `${repoRoot}/`,
+      `${repoRoot.replaceAll("\\", "/")}/`,
       "",
     );
     errors.push({ key, line: Number(line) });

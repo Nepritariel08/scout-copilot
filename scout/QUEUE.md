@@ -7,7 +7,8 @@ company sign-in, shared-access or mobile installation acceptance receipt.
 
 ## Authority and activation
 
-Resolve Intelligence persistence and verified native sign-in first. Setting
+Resolve owned conversation persistence and backup/restore qualification, plus
+verified native sign-in, first. Setting
 `SCOUT_QUEUE_BINDINGS_FILE` activates the adapter only with verified sign-in;
 the server refuses unauthenticated single-user mode. An absent setting leaves
 the API unmounted. Apply migration `0068_scout_queue_requester.sql` through the

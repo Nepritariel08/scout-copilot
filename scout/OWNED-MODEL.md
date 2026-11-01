@@ -215,9 +215,10 @@ existing Scout/DSH queue binding is not an Odoo record or context-release grant.
 
 The typed adapter request fixes the model to `project.task`, the domain to the
 selected ID plus the grant's allowed project IDs, the fields to `id`, `name`,
-`stage_id` and `date_deadline`, the result limit to one, and the byte cap to
-4,096. Server context contains only `name`, `stage_id` and `date_deadline`,
-along with source, provenance and freshness metadata. It rejects mismatched
+`stage_id`, `date_deadline` and `company_id`, the result limit to one, and the
+byte cap to 4,096. `company_id` is checked against the grant but is never
+released to the model. Server context contains only `name`, `stage_id` and
+`date_deadline`, along with source, provenance and freshness metadata. It rejects mismatched
 rows, extra fields, oversized data, malformed selections, missing grants and
 grant changes before model egress. Immediately before egress it rechecks both
 grants and re-reads the same bounded task under the same source identity; loss
@@ -234,16 +235,31 @@ bounded. Odoo's standard ACLs, record rules and field permissions remain the
 final enforcement point for reads
 ([Odoo JSON-2 API](https://www.odoo.com/documentation/20.0/developer/reference/external_api.html)).
 
-This source reader is not yet a production port: caller-provided `qualified`
-status does not prove nonadmin membership, so the future provisioning path
-must independently qualify the Odoo group membership and deny all system
-admins. A persistent native grant and context-release store, protected
-per-user key resolver, approved UID/ACL readback, Odoo test database, and
-production composition are still absent. No
-live Odoo schema, credential or business record was used by the mocked
-transport tests. A selected task therefore continues to fail closed in
-production. Before enabling JSON-2 on the self-hosted Community build, verify
-the endpoint against that exact installed build and its available API route.
+The source now includes append-only per-user record and context-release grant
+tables, a latest-revision store, and an opaque credential-reference resolver
+over OpenBot's encrypted credential vault. These components are implemented
+but are not yet covered by a PostgreSQL-backed test run or production
+composition. The resolver binds each key row to the exact source instance,
+UID, provider and credential ID; grants store only that opaque credential ID.
+
+Qualification remains a hard live gate. The stored `verified_nonadmin`
+attestation can become stale if an Odoo user's groups change, and the current
+reader verifies the API-key UID but does not independently re-check admin
+group membership. Before production composition, prove live group-change
+revocation or implement a server-verified privilege check on every read.
+Provisioning must also verify that every granted project belongs to the
+approved company/customer scope; independent ID arrays alone do not establish
+that relationship. The selected task's company is now checked against the
+grant's company IDs, but project/customer ownership still needs trusted
+provisioning evidence. Add same-company customer isolation and cross-company
+project tests. The PostgreSQL-backed grant/resolver integration suite now
+exists but has not run because this checkout has no verified disposable test
+database. An Odoo 20 Community test database, live UID/ACL readback,
+qualification-change tests, and production composition remain absent. No live
+Odoo schema, credential or business record was used by the mocked transport
+tests. A selected task continues to fail closed in production. Before enabling
+JSON-2 on the self-hosted Community build, verify the endpoint against that
+exact installed build and its available API route.
 On 2026-11-01, a loopback read of the target Linode returned HTTP 200 for
 `/web/version`; an unauthenticated JSON-2 `res.users/context_get` request
 returned HTTP 401. This proves only that the route is present and demands

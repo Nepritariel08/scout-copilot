@@ -5,17 +5,20 @@ import type { ProjectTaskReadRequest } from "../src/scout/owned-model/record-con
 const key = "synthetic-odoo-api-key";
 const request: ProjectTaskReadRequest = {
   sourceIdentity: {
+    instanceId: "odoo-test",
     uid: 401,
     role: "user",
     qualification: "qualified",
+    qualificationExpiresAt: "2099-01-01T00:00:00.000Z",
     companyIds: [7],
+    credentialRef: "00000000-0000-4000-8000-000000000401",
   },
   model: "project.task",
   domain: [
     ["id", "=", 700],
     ["project_id", "in", [31]],
   ],
-  fields: ["id", "name", "stage_id", "date_deadline"],
+  fields: ["id", "name", "stage_id", "date_deadline", "company_id"],
   limit: 1,
   maxBytes: 4096,
 };
@@ -34,6 +37,7 @@ function json(value: unknown) {
 function reader(fetchImplementation: typeof fetch) {
   const resolved: number[] = [];
   const subject = createOdooJson2ProjectTaskReader({
+    instanceId: "odoo-test",
     baseUrl: "http://127.0.0.1:8069",
     database: "synthetic_odoo",
     credentials: {
@@ -62,6 +66,7 @@ function capture() {
         name: "Synthetic task",
         stage_id: false,
         date_deadline: false,
+        company_id: [7, "Synthetic company"],
       },
     ]);
   }) as unknown as typeof fetch);
@@ -77,6 +82,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
         name: "Synthetic task",
         stage_id: null,
         date_deadline: null,
+        company_id: [7, "Synthetic company"],
       },
     ]);
     expect(fake.resolved).toEqual([401]);
@@ -94,7 +100,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
         ["project_id", "in", [31]],
       ],
       context: { allowed_company_ids: [7] },
-      fields: ["id", "name", "stage_id", "date_deadline"],
+      fields: ["id", "name", "stage_id", "date_deadline", "company_id"],
       limit: 1,
     });
     for (const call of fake.requests) {
@@ -112,6 +118,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
   test("denies a credential whose Odoo-reported UID differs from the qualified grant", async () => {
     const requests: string[] = [];
     const subject = createOdooJson2ProjectTaskReader({
+      instanceId: "odoo-test",
       baseUrl: "http://localhost:8069",
       database: "synthetic_odoo",
       credentials: {
@@ -137,6 +144,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
     ]) {
       let calls = 0;
       const subject = createOdooJson2ProjectTaskReader({
+        instanceId: "odoo-test",
         baseUrl: "http://127.0.0.1:8069",
         database: "synthetic_odoo",
         credentials: {
@@ -158,6 +166,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
     let resolved = 0;
     let calls = 0;
     const subject = createOdooJson2ProjectTaskReader({
+      instanceId: "odoo-test",
       baseUrl: "http://127.0.0.1:8069",
       database: "synthetic_odoo",
       credentials: {
@@ -191,6 +200,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
     ]) {
       expect(() =>
         createOdooJson2ProjectTaskReader({
+          instanceId: "odoo-test",
           baseUrl,
           database: "synthetic_odoo",
           credentials: {
@@ -208,6 +218,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
     ]) {
       expect(() =>
         createOdooJson2ProjectTaskReader({
+          instanceId: "odoo-test",
           baseUrl: "http://127.0.0.1:8069",
           database: database as string,
           credentials: {
@@ -238,6 +249,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
   test("fails closed on HTTP errors without reflecting the response or API key", async () => {
     const requests: CapturedRequest[] = [];
     const subject = createOdooJson2ProjectTaskReader({
+      instanceId: "odoo-test",
       baseUrl: "https://odoo.example.com",
       database: "synthetic_odoo",
       credentials: {
@@ -289,6 +301,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
     for (const failureResponse of responses) {
       let calls = 0;
       const subject = createOdooJson2ProjectTaskReader({
+        instanceId: "odoo-test",
         baseUrl: "http://127.0.0.1:8069",
         database: "synthetic_odoo",
         credentials: {
@@ -328,6 +341,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
       );
       let calls = 0;
       const subject = createOdooJson2ProjectTaskReader({
+        instanceId: "odoo-test",
         baseUrl: "http://127.0.0.1:8069",
         database: "synthetic_odoo",
         credentials: {
@@ -348,6 +362,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
   test("does not follow redirects", async () => {
     const requests: CapturedRequest[] = [];
     const subject = createOdooJson2ProjectTaskReader({
+      instanceId: "odoo-test",
       baseUrl: "https://odoo.example.com",
       database: "synthetic_odoo",
       credentials: {
@@ -375,6 +390,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
   test("uses a bounded timeout for each Odoo request", async () => {
     let calls = 0;
     const subject = createOdooJson2ProjectTaskReader({
+      instanceId: "odoo-test",
       baseUrl: "http://127.0.0.1:8069",
       database: "synthetic_odoo",
       timeoutMs: 500,

@@ -6,7 +6,13 @@ export const PROJECT_TASK_SELECTION_MARKER = "scout.project_task_id";
 const MAX_RECORD_BYTES = 4096;
 const MAX_NAME_CHARS = 3500;
 const MAX_STAGE_NAME_CHARS = 400;
-const fields = ["id", "name", "stage_id", "date_deadline"] as const;
+const fields = [
+  "id",
+  "name",
+  "stage_id",
+  "date_deadline",
+  "company_id",
+] as const;
 
 export type ProjectTaskSelection =
   | { kind: "none" }
@@ -57,10 +63,14 @@ export type ProjectTaskContextGrant = {
   revision: number;
   expiresAt: string;
   sourceIdentity: {
+    instanceId: string;
     uid: number;
     role: "user";
     qualification: "qualified";
+    qualificationExpiresAt: string;
     companyIds: number[];
+    /** Opaque reference to an encrypted credentials-table row; never key material. */
+    credentialRef: string;
   };
   allowedProjectIds: number[];
 };
@@ -73,8 +83,11 @@ export type ProjectTaskContextReleaseGrant = {
   active: boolean;
   revision: number;
   expiresAt: string;
+  sourceInstanceId: string;
   dataClass: "odoo.project_task_summary.v1";
   provider: ProjectTaskContextProvider;
+  /** Hash of the exact protected model policy observed when consent was granted. */
+  modelPolicyFingerprint: string;
 };
 
 export type ProjectTaskReadRequest = {
@@ -94,9 +107,12 @@ export type ProjectTaskReadRequest = {
  * construct one until a qualified nonadmin source identity and credential path are approved.
  */
 export type ProjectTaskContextPort = {
+  /** Trusted source identity from deployment config, not from the grant or request. */
+  sourceInstanceId: string;
   getReleaseGrant(
     principal: ProjectTaskContextPrincipal,
     provider: ProjectTaskContextProvider,
+    modelPolicyFingerprint: string,
   ): Promise<unknown>;
   getGrant(principal: ProjectTaskContextPrincipal): Promise<unknown>;
   readProjectTask(request: ProjectTaskReadRequest): Promise<unknown>;
@@ -111,7 +127,7 @@ export type ResolvedProjectTaskContext = {
 };
 
 const positiveIds = z
-  .array(z.number().int().positive().max(Number.MAX_SAFE_INTEGER))
+  .array(z.number().int().positive().max(2_147_483_647))
   .min(1)
   .max(100)
   .refine((values) => new Set(values).size === values.length);
@@ -127,10 +143,13 @@ const grantSchema = z.strictObject({
   revision: z.number().int().positive(),
   expiresAt: z.iso.datetime(),
   sourceIdentity: z.strictObject({
+    instanceId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
     uid: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     role: z.literal("user"),
     qualification: z.literal("qualified"),
+    qualificationExpiresAt: z.iso.datetime(),
     companyIds: positiveIds,
+    credentialRef: z.uuid(),
   }),
   allowedProjectIds: positiveIds,
 });
@@ -139,8 +158,10 @@ const releaseGrantSchema = z.strictObject({
   active: z.boolean(),
   revision: z.number().int().positive(),
   expiresAt: z.iso.datetime(),
+  sourceInstanceId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
   dataClass: z.literal("odoo.project_task_summary.v1"),
   provider: z.enum(["openrouter", "local"]),
+  modelPolicyFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
 });
 
 function deny(): never {
@@ -169,7 +190,9 @@ function currentGrant(
     !parsed.success ||
     !parsed.data.active ||
     Date.parse(parsed.data.expiresAt) <= now ||
+    Date.parse(parsed.data.sourceIdentity.qualificationExpiresAt) <= now ||
     !samePrincipal(parsed.data.principal, principal) ||
+    parsed.data.sourceIdentity.uid === 1 ||
     parsed.data.sourceIdentity.role !== "user" ||
     parsed.data.sourceIdentity.qualification !== "qualified"
   )
@@ -181,6 +204,8 @@ function currentReleaseGrant(
   value: unknown,
   principal: ProjectTaskContextPrincipal,
   provider: ProjectTaskContextProvider,
+  sourceInstanceId: string,
+  modelPolicyFingerprint: string,
   now: number,
 ): ProjectTaskContextReleaseGrant {
   const parsed = releaseGrantSchema.safeParse(value);
@@ -189,8 +214,10 @@ function currentReleaseGrant(
     !parsed.data.active ||
     Date.parse(parsed.data.expiresAt) <= now ||
     !samePrincipal(parsed.data.principal, principal) ||
+    parsed.data.sourceInstanceId !== sourceInstanceId ||
     parsed.data.dataClass !== "odoo.project_task_summary.v1" ||
-    parsed.data.provider !== provider
+    parsed.data.provider !== provider ||
+    parsed.data.modelPolicyFingerprint !== modelPolicyFingerprint
   )
     return deny();
   return parsed.data;
@@ -215,16 +242,27 @@ function validDeadline(value: unknown): value is string {
   );
 }
 
-function projectTaskRow(value: unknown, recordId: number) {
+function projectTaskRow(
+  value: unknown,
+  recordId: number,
+  allowedCompanyIds: number[],
+) {
   if (!Array.isArray(value) || value.length !== 1) return deny();
   const [row] = value as Record<string, unknown>[];
   if (
     !row ||
-    Object.keys(row).sort().join(",") !== "date_deadline,id,name,stage_id" ||
+    Object.keys(row).sort().join(",") !==
+      "company_id,date_deadline,id,name,stage_id" ||
     Buffer.byteLength(safeJson(row), "utf8") > MAX_RECORD_BYTES ||
     row.id !== recordId ||
     typeof row.name !== "string" ||
     row.name.length > MAX_NAME_CHARS ||
+    !Array.isArray(row.company_id) ||
+    row.company_id.length !== 2 ||
+    !Number.isSafeInteger(row.company_id[0]) ||
+    !allowedCompanyIds.includes(Number(row.company_id[0])) ||
+    typeof row.company_id[1] !== "string" ||
+    row.company_id[1].length > MAX_STAGE_NAME_CHARS ||
     (row.stage_id !== null &&
       (!Array.isArray(row.stage_id) ||
         row.stage_id.length !== 2 ||
@@ -250,6 +288,7 @@ export async function resolveProjectTaskContext(
   principal: ProjectTaskContextPrincipal,
   recordId: number,
   provider: ProjectTaskContextProvider,
+  modelPolicyFingerprint: string,
   now: () => number = Date.now,
 ): Promise<ResolvedProjectTaskContext> {
   if (!Number.isSafeInteger(recordId) || recordId < 1) return deny();
@@ -258,12 +297,16 @@ export async function resolveProjectTaskContext(
   try {
     // Context release permission is checked before looking up the record-read grant or data.
     releaseGrant = currentReleaseGrant(
-      await port.getReleaseGrant(principal, provider),
+      await port.getReleaseGrant(principal, provider, modelPolicyFingerprint),
       principal,
       provider,
+      port.sourceInstanceId,
+      modelPolicyFingerprint,
       now(),
     );
     grant = currentGrant(await port.getGrant(principal), principal, now());
+    if (grant.sourceIdentity.instanceId !== port.sourceInstanceId)
+      return deny();
   } catch {
     return deny();
   }
@@ -273,10 +316,13 @@ export async function resolveProjectTaskContext(
     current: ProjectTaskContextGrant,
   ): ProjectTaskReadRequest => ({
     sourceIdentity: {
+      instanceId: current.sourceIdentity.instanceId,
       uid: current.sourceIdentity.uid,
       role: "user",
       qualification: "qualified",
+      qualificationExpiresAt: current.sourceIdentity.qualificationExpiresAt,
       companyIds: [...current.sourceIdentity.companyIds],
+      credentialRef: current.sourceIdentity.credentialRef,
     },
     model: "project.task",
     domain: [
@@ -291,6 +337,7 @@ export async function resolveProjectTaskContext(
     projectTaskRow(
       await port.readProjectTask(requestForGrant(current)),
       recordId,
+      current.sourceIdentity.companyIds,
     );
   let selected: ReturnType<typeof projectTaskRow>;
   try {
@@ -319,9 +366,15 @@ export async function resolveProjectTaskContext(
         return deny();
       try {
         const latestReleaseGrant = currentReleaseGrant(
-          await port.getReleaseGrant(currentPrincipal, currentProvider),
+          await port.getReleaseGrant(
+            currentPrincipal,
+            currentProvider,
+            modelPolicyFingerprint,
+          ),
           currentPrincipal,
           currentProvider,
+          port.sourceInstanceId,
+          modelPolicyFingerprint,
           now(),
         );
         if (safeJson(latestReleaseGrant) !== releaseGrantSnapshot)
@@ -331,9 +384,37 @@ export async function resolveProjectTaskContext(
           currentPrincipal,
           now(),
         );
+        if (latest.sourceIdentity.instanceId !== port.sourceInstanceId)
+          return deny();
         if (safeJson(latest) !== grantSnapshot) return deny();
         const latestSelected = await readSelectedTask(latest);
         if (safeJson(latestSelected) !== selectedSnapshot) return deny();
+
+        // Odoo I/O can outlive either grant. Read both ledgers again after the
+        // final source read, as close as possible to model dispatch.
+        const finalReleaseGrant = currentReleaseGrant(
+          await port.getReleaseGrant(
+            currentPrincipal,
+            currentProvider,
+            modelPolicyFingerprint,
+          ),
+          currentPrincipal,
+          currentProvider,
+          port.sourceInstanceId,
+          modelPolicyFingerprint,
+          now(),
+        );
+        const finalGrant = currentGrant(
+          await port.getGrant(currentPrincipal),
+          currentPrincipal,
+          now(),
+        );
+        if (
+          finalGrant.sourceIdentity.instanceId !== port.sourceInstanceId ||
+          safeJson(finalGrant) !== grantSnapshot ||
+          safeJson(finalReleaseGrant) !== releaseGrantSnapshot
+        )
+          return deny();
       } catch {
         return deny();
       }
