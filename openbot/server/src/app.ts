@@ -63,7 +63,7 @@ import type { ComputerGateway } from "./computer/gateway";
 import type { PageFrameStore } from "./computer/page-frames";
 import type { PolicyStore } from "./computer/policy-store";
 import { createComputerRoutes } from "./computer/routes";
-import { configuredAuthProviders, type DeploymentConfig } from "./config";
+import { type AnyDeploymentConfig, configuredAuthProviders } from "./config";
 import {
   type CredentialAdminService,
   type CredentialInput,
@@ -234,7 +234,7 @@ async function recordPersonEvent(
 }
 
 export function createApp(
-  config: DeploymentConfig,
+  config: AnyDeploymentConfig,
   auth?: AuthService,
   roleRepository?: RoleRepository,
   auditReader?: AuditReader,
@@ -437,6 +437,9 @@ export function createApp(
     memory?: { store: MemoryStore; ingestion: MemoryIngestion };
     proactive?: { store: ProactiveStore; engine: ProactiveEngine };
     scout?: ScoutService;
+    scoutOwned?: {
+      requireTenant: MiddlewareHandler<{ Variables: AppVariables }>;
+    };
     responsibilities?: {
       store: ResponsibilityStore;
       engine: ResponsibilityEngine;
@@ -509,6 +512,7 @@ export function createApp(
     context.json({
       mode: config.runtime.mode,
       durableHistory: config.runtime.durableHistory,
+      serverTurns: config.runtime.mode === "intelligence",
       /*
        * Whether a Bot may answer with an interface it wrote itself.
        *
@@ -667,6 +671,11 @@ export function createApp(
     : auth && roleRepository
       ? createRequireUser(auth, roleRepository)
       : authenticationUnavailable;
+  if (config.runtime.mode === "owned") {
+    if (!coworker?.scoutOwned)
+      throw new Error("Owned runtime requires its native tenant guard.");
+    app.use("/api/*", coworker.scoutOwned.requireTenant);
+  }
   // Enterprise controls: capability switches and the model allowlist in front of the routes they
   // govern, the admin screen's API, and the SCIM verbs the GET/POST auth handler above does not take.
   app.use("/api/*", createEnterpriseGate(requireUser));
@@ -1556,6 +1565,7 @@ export function createApp(
         auditStore,
         coworker?.proactive?.engine.startFirstDay,
         coworker?.proactive?.engine.startMorningBrief,
+        config.runtime.mode === "intelligence",
       ),
     );
   }
@@ -2002,7 +2012,7 @@ export function createApp(
     );
   }
 
-  if (threadIdentity) {
+  if (threadIdentity && config.runtime.mode === "intelligence") {
     app.route(
       "/api/threads",
       createThreadRoutes(

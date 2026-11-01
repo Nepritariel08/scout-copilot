@@ -32,7 +32,6 @@ import type { AgentActor, AgentProfile } from "../agents/profile-types";
 import { type AuditStore, recordAuditEvent } from "../audit";
 import type { AppVariables } from "../auth/guards";
 import type { Database } from "../db/client";
-import { parsePageLimit } from "../paging";
 import {
   agentProfiles,
   channelAgents,
@@ -43,15 +42,16 @@ import {
   openduetTasks,
   workItems,
 } from "../db/schema";
+import { parsePageLimit } from "../paging";
+import { replyEnding } from "../proactive/engine";
+import { WORK_OFFERED_TOPIC } from "../work/queue";
 import type { ChannelActivityEvent, ChannelEventHub } from "./events";
+import { FIRST_DAY_KIND } from "./first-day";
+import { briefDate, MORNING_BRIEF_KIND } from "./morning-brief";
 import {
   announceChannelActivity,
   MAX_CHANNEL_EVENT_TEXT_BYTES,
 } from "./notifications";
-import { replyEnding } from "../proactive/engine";
-import { WORK_OFFERED_TOPIC } from "../work/queue";
-import { FIRST_DAY_KIND } from "./first-day";
-import { briefDate, MORNING_BRIEF_KIND } from "./morning-brief";
 import { upgradeWebSocket } from "./socket";
 import { oneLine } from "./text";
 import type { ThreadIdentity } from "./thread-identity";
@@ -390,6 +390,15 @@ export function createChannelStore(
   database: Database,
   profileStore: AgentProfileStore,
   threadIdentity: ThreadIdentity,
+  provisionThread?: (
+    transaction: ChannelTransaction,
+    input: {
+      actor: AgentActor;
+      channelId: string;
+      threadId: string;
+      agentIds: string[];
+    },
+  ) => Promise<void>,
 ): ChannelStore {
   /**
    * Making a channel, on a transaction the caller already holds.
@@ -447,6 +456,14 @@ export function createChannelStore(
       userId: actor.id,
       channelId: id,
       threadId,
+    });
+
+    // Owned mode persists the same server-minted thread on this transaction, before it is visible.
+    await provisionThread?.(transaction, {
+      actor,
+      channelId: id,
+      threadId,
+      agentIds,
     });
 
     return { id, name, agentIds, threadId, active: true, lastMessageAt: null };
@@ -1284,6 +1301,7 @@ export function createChannelRoutes(
   startFirstDay?: () => void,
   /** Runs a morning brief this replica just queued now, rather than at the next sweep. */
   startMorningBrief?: () => void,
+  automaticTurns = true,
 ) {
   const routes = new Hono<{ Variables: AppVariables }>();
 
@@ -1409,6 +1427,25 @@ export function createChannelRoutes(
     const which = firstDayChoice(body.greeting);
     if (which === null)
       return context.json({ error: "A first-day greeting is required." }, 400);
+    if (!automaticTurns) {
+      if (which !== undefined)
+        return context.json(
+          { error: "Automatic greetings are unavailable in this deployment." },
+          409,
+        );
+      try {
+        return context.json({
+          start: {
+            channel: channelDto(
+              await store.direct(context.var.actor, body.agentId),
+            ),
+            claimed: false,
+          },
+        });
+      } catch (error) {
+        return mapStoreError(context, error);
+      }
+    }
     /*
      * The person's local date, which the first day takes as its brief, within a day of the server's
      * as the brief's own date is (`briefDate`). A date further out is a wrong clock, and taken it
@@ -1448,6 +1485,11 @@ export function createChannelRoutes(
    * browser to do, because the server runs the turn and the conversation picks up the reply.
    */
   routes.post("/morning-brief", requireUser, async (context) => {
+    if (!automaticTurns)
+      return context.json(
+        { error: "Automatic briefs are unavailable in this deployment." },
+        409,
+      );
     const body = await context.req.json().catch(() => null);
     if (typeof body?.agentId !== "string" || !body.agentId.trim())
       return context.json({ error: "A Bot is required." }, 400);

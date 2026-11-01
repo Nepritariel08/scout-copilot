@@ -15,6 +15,7 @@
 - Use Bun 1.4.3 and frozen lockfiles. Run focused existing checks for material
   changes; distinguish configuration checks, mocked upstream tests, real
   integration, exact-head CI, deployment, live behavior and human acceptance.
-- Intelligence is a required licensed dependency in this source. Never bypass
-  entitlements or claim that a fork provides a fully local production runtime.
+- Preserve the licensed Intelligence composition and its entitlements. Scout's
+  explicit owned mode uses the public MIT runner and its own PostgreSQL store;
+  never emulate vendor entitlements or claim production acceptance from source.
 - Physical PC-off testing is deferred. No timers/countdowns are authorized now.

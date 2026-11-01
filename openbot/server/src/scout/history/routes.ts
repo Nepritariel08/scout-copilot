@@ -10,7 +10,7 @@ const mintInput = z.strictObject({
   channelId: z.string().min(1).max(200).optional(),
 });
 const stopInput = z.strictObject({ runId: z.string().min(1).max(200) });
-const statuses = {
+export const historyErrorStatuses = {
   HISTORY_ACCESS_DENIED: 403,
   HISTORY_NOT_FOUND: 404,
   HISTORY_INPUT_INVALID: 400,
@@ -21,7 +21,7 @@ const statuses = {
 
 /** Mount under the existing same-origin guard and native authentication, never by tenant headers. */
 export function createHistoryRoutes(
-  forActor: (actor: AuthenticatedActor) => BoundHistory,
+  forActor: (actor: AuthenticatedActor, request: Request) => BoundHistory,
   requireUser: MiddlewareHandler<{ Variables: AppVariables }>,
 ) {
   const routes = new Hono<{ Variables: AppVariables }>();
@@ -32,11 +32,13 @@ export function createHistoryRoutes(
   routes.use("*", requireUser, bodyLimit({ maxSize: 4000 }));
   routes.onError((error, context) =>
     error instanceof HistoryError
-      ? context.json({ code: error.code }, statuses[error.code])
+      ? context.json({ code: error.code }, historyErrorStatuses[error.code])
       : context.json({ code: "HISTORY_UNAVAILABLE" }, 503),
   );
   routes.get("/", async (context) =>
-    context.json({ threads: await forActor(context.var.actor).list() }),
+    context.json({
+      threads: await forActor(context.var.actor, context.req.raw).list(),
+    }),
   );
   routes.post("/", async (context) => {
     const body = mintInput.safeParse(
@@ -44,19 +46,25 @@ export function createHistoryRoutes(
     );
     if (!body.success) throw new HistoryError("HISTORY_INPUT_INVALID");
     return context.json(
-      { thread: await forActor(context.var.actor).mint(body.data) },
+      {
+        thread: await forActor(context.var.actor, context.req.raw).mint(
+          body.data,
+        ),
+      },
       201,
     );
   });
   routes.get("/:threadId/messages", async (context) =>
     context.json(
-      await forActor(context.var.actor).snapshot(context.req.param("threadId")),
+      await forActor(context.var.actor, context.req.raw).snapshot(
+        context.req.param("threadId"),
+      ),
     ),
   );
   routes.get("/:threadId/events", async (context) => {
     const after = Number(context.req.query("after") ?? "0");
     return context.json(
-      await forActor(context.var.actor).page(
+      await forActor(context.var.actor, context.req.raw).page(
         context.req.param("threadId"),
         after,
       ),
@@ -68,7 +76,7 @@ export function createHistoryRoutes(
     );
     if (!body.success) throw new HistoryError("HISTORY_INPUT_INVALID");
     return context.json({
-      stopped: await forActor(context.var.actor).stop(
+      stopped: await forActor(context.var.actor, context.req.raw).stop(
         context.req.param("threadId"),
         body.data.runId,
       ),

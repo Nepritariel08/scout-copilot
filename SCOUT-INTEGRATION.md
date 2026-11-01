@@ -40,7 +40,8 @@ by the existing DSH queue.
 | Existing Odoo Community queue / DSH | Durable delegated work, leases, cancellation, draft results and human acceptance. Keep executable queue contract `dba1dab16dcaa32c03984229c628cd866e02e712`; no duplicate submission or background executor. |
 | OpenRouter / optional local inference | Approved model route, data-release policy, output/context caps, budgets and usage receipts. Owning the UI does not confer model ownership. |
 | Existing Scout MatePad/phone shell | Device consent, narrow native actions and receipts. Remote content must not inherit a trusted JavaScript bridge. Validate WebView/browser login/reconnect before installing/replacing a client. |
-| Intelligence | Required thread persistence and optional entitled memory/learning; resolve ownership, data handling, license, availability and restore before real staff/customer data. |
+| Owned conversation storage | Public MIT runner, our PostgreSQL events/snapshots and native owner/tenant grants. Explicit owned mode integrates the same app; production model policy remains pending. |
+| Intelligence | Optional licensed composition for entitled memory/learning/managed Channels; retain its contract and assess cost/deployment separately. |
 
 The queue port at `openbot/server/src/scout` and the conversation's Delegated
 drafts panel now implement the source/fixture path. See [setup, invariants and
@@ -59,9 +60,11 @@ and accepted task5/client-crash task7 receipts remain in
 The separately reviewed [owned PostgreSQL persistence foundation](scout/PERSISTENCE.md)
 uses the public MIT AgentRunner extension. It now has synthetic real-SDK/SQL
 qualification for native user/tenant isolation, durable replay, fenced producer
-recovery, interrupted resume and exact-run cancellation. It is not yet wired
-into the platform bootstrap/UI; the original Intelligence requirements below
-still describe the runnable app. Licensed Intelligence features remain distinct.
+recovery, interrupted resume and exact-run cancellation. The subsequent explicit
+[owned runtime integration](scout/OWNED-RUNTIME.md) wires the same app, native
+sign-in, channel creation and UI readers to that store. Production inference
+remains unavailable pending its approved model/policy port. The requirements
+below describe the unchanged default licensed composition.
 
 Upstream `server/src/config.ts` requires Intelligence API, WebSocket and key
 settings. A local memory table fallback does not make durable threads optional.

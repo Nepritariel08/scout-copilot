@@ -10,7 +10,7 @@ import { eq, sql } from "drizzle-orm";
 import { createEnterpriseStore } from "../admin/settings-store";
 import type { AuditEventInput, AuditStore } from "../audit";
 import { recordAuditEvent } from "../audit";
-import type { DeploymentConfig } from "../config";
+import type { AnyDeploymentConfig } from "../config";
 import type { Database } from "../db/client";
 import {
   accounts,
@@ -161,7 +161,7 @@ export function mapEntraProfile(profile: Record<string, unknown>) {
 }
 
 export function createAuth(
-  config: DeploymentConfig,
+  config: AnyDeploymentConfig,
   database: Database,
   /**
    * Whether an administrator has removed this address.

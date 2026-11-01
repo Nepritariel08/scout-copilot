@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-01T02:48:44.468Z",
+  "branch": "scout/owned-runtime-20261101",
+  "base": "e87a349320bf26e0ad15c8a5df7da46aa5bda42d",
+  "requesterBase": "53f797167dd676e8d0945982a5f65bc65cbbc740",
+  "runtime": {
+    "bun": "1.4.3",
+    "platform": "Windows",
+    "mode": "owned",
+    "productionInferenceEnabled": false,
+    "sharedAccessEnabled": false
+  },
+  "fixture": {
+    "image": "pgvector/pgvector@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8",
+    "postgresMajor": 17,
+    "loopbackPort": 25433,
+    "memoryMiB": 384,
+    "cpus": 1,
+    "pids": 128,
+    "fullPlatformMigrationsApplied": true
+  },
+  "passed": {
+    "backendOwnedAndHistory": 46,
+    "uiOwnedAndExisting": 21,
+    "nativeChannelAndOrganizationRegression": 28,
+    "ownedLauncherRefusal": 1,
+    "earlierConfigAndSameOriginRegression": 164,
+    "serverProductionTypecheck": true,
+    "appProductionTypecheck": true,
+    "scopedBiome": true
+  },
+  "processRestart": {
+    "actualProductionEntry": true,
+    "nativeOrganizationTicketAndCookie": true,
+    "restoredLocalHistoryAfterRestart": true,
+    "sameEmailForeignSubjectDenied": true,
+    "revokedAuthoritySessionDenied": true,
+    "physicalPcOff": false
+  },
+  "pending": [
+    "exact-head CI including build and frozen test-type baseline",
+    "approved model/context/tool policy and durable usage limits",
+    "shared app-record tenant partitioning and shared/multi-agent history",
+    "queue provenance and private host/device qualification"
+  ],
+  "safety": {
+    "syntheticDataOnly": true,
+    "providerKeyReadOrCreated": false,
+    "liveModelOrOdooCalled": false,
+    "hostOrDeviceChanged": false,
+    "duplicateWorkSchedulerStarted": false,
+    "entitlementEmulated": false
+  },
+  "sourceHashNormalization": "UTF-8 text with CRLF replaced by LF; receipt excludes itself",
+  "sourceSha256Lf": {
+    "AGENTS.md": "9867ce7b988535f4379f35519b7f944110d762f90d8b421cea0dbedcef810b71",
+    "SCOUT-INTEGRATION.md": "7605311864b8f30616c6215d67caf4bac038a2514ac4291f37f7a76bef958123",
+    "openbot/app/src/components/shell/chat-screen.tsx": "e4971dc53fc18078d0355d57745ff49ed749da1c8d80e47f7984ab4c6b965f6a",
+    "openbot/app/src/lib/copilot/bot-thread-state.ts": "dbd8c447dc388d506b64d8e811028c75d1ca116ac8b7f95402f7df33a7190e79",
+    "openbot/app/src/lib/copilot/bot-thread.ts": "5dbf76faac111ff5144919f6dea81bbd075a783a165fc650118ca3b44a811382",
+    "openbot/app/src/lib/copilot/provider.tsx": "9907f2f931421589fc74f0226e3bbee26aee0d1e38ec265b5fc656b4a5de77a2",
+    "openbot/app/src/lib/deployment/queries.ts": "4afbc729346d1cb9b352418aa18aa4006b6266327ce68d57aa510136d0ff2b7e",
+    "openbot/app/src/routes/_authed/_app/bot.tsx": "37c6e10571b84f1bf27c3a2cbee8edcf058da13cedf3d857c567bfbe8a81583c",
+    "openbot/app/tests/scout-owned-bot-thread.test.tsx": "8a8a2845c5f37f4f78087fafc120c5c743c4cefb72bc9f927b4ed7d77f7e76df",
+    "openbot/docker/s6/s6-rc.d/api/run": "6665b0a97189ce8dacb2c55359cdbde3acae4c0408a0ace63f176efe4262ad9a",
+    "openbot/scripts/start-restart-guard.test.ts": "02adbf326da6d2285c7299a7721325da6ac7d1a5f4c410b97a16caf553a26b41",
+    "openbot/scripts/start.sh": "6e2e89d4ab840e5e53f4313e73b6b2094807cdf040416d6da08dcf268ac6d450",
+    "openbot/server/package.json": "632fdde6af436ffadcc09a22b4e62c164cbfcf782b575ae236d6242ba468b5a6",
+    "openbot/server/src/app.ts": "61ccba292d1c51c62af77a82459d007e4bfd732fdcb6b4f0d8d1609c49073bac",
+    "openbot/server/src/auth/index.ts": "1254a3a2f32e0c3014e850cc3d2f3a642a9540677372a404eab3c148110b16a1",
+    "openbot/server/src/auth/organization-store.ts": "78eb248ae7a839fa3f9e5d0c9ed40090b46f44f31f36c3b2d51caa9588343022",
+    "openbot/server/src/channels/routes.ts": "e785d37dfc5fcb9f77e7b414ed319390c269dc9dfe5e56026a14b417343ef618",
+    "openbot/server/src/config.ts": "3b059f984f5b4c80ed065898d25a2cf3673b3a4b32d98f101519d72ea95e92ff",
+    "openbot/server/src/http-server.ts": "7eb3d8f4aeeb9ba1c122e4f08f6fb35e6274afc6266c669d20e5631e86f08a78",
+    "openbot/server/src/production-entry.ts": "52d911f5ddc44481460e7cc253ee6aec5478cef5dbe6a9ac23b1e92f43e7b03b",
+    "openbot/server/src/scout/history/routes.ts": "f0acf0da51184173e1381d523b3b8794e4d89a929fd1c1bda757ff0461eb6589",
+    "openbot/server/src/scout/history/store.ts": "29a8cdc789017638f71b8528127d0c66604b61e72c3ce762e82949c4f49e77ea",
+    "openbot/server/src/scout/owned/application.ts": "2d0efafb20939985cd5c015fb51fcbccf48884097b188f16cef42622153bca50",
+    "openbot/server/src/scout/owned/authority.ts": "d9ef3d66b9a445c1d30750acdf29aab516498ee13b2415363d97ea195e07a904",
+    "openbot/server/src/scout/owned/routes.ts": "e7aa37da40075651b4c77a35d4583afd3ca422adbe8bd1252d7fba4264611f26",
+    "openbot/server/src/scout/owned/start.ts": "f6ddb7986db66b7e52de3590e6f4c3b36cec428557c352164f0dbace0a140525",
+    "openbot/server/tests/scout-owned-app.integration.test.ts": "0dd9a9cd7b9ce4fdcddaea50d7c2c67f9e6e353692d036188cc0093af075b9ab",
+    "openbot/server/tests/scout-owned-config.test.ts": "bb7ea84d21325c5cad52c476727526a886f9b1a49b362c951b081661e06a96bb",
+    "scout/OWNED-RUNTIME.md": "6c02dcc28a22e9fc68b9cb48635af76cf08bdfbc2a45badbc681db6d94a604f7",
+    "scout/PERSISTENCE.md": "25e2385cd06985ae1f6e4cea90576c4c12f9c2008026da3f6ac4c1d608df73e8",
+    "scout/owned.env.example": "0677ce8a720e117bbc882de74e50d1b1006395561212f9065a102228e0185141"
+  },
+  "localLogSha256": {
+    "copilot-owned-app-01a19336.log": "bc4c4f95e9877053b619d76959d9c354294de4da538671bcc55562dd2f03c1ab",
+    "copilot-owned-ui-01a19336.log": "dec6c4ff3809b0ec108166e225e46b805da113496f21eb5da97b58159a980138",
+    "copilot-owned-native-regression-01a19336.log": "54d2868265193d2553726c27ae0492c83f0d0f00e6f026fcc1c952b08fa0f74a",
+    "copilot-owned-start-01a19336.log": "3f696b5adde31ad579473cec516017ef41744be1604f52f5e4eb12cae0016fc7",
+    "copilot-owned-tsc-01a19336.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "copilot-owned-app-tsc-01a19336.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "copilot-owned-migration-01a19336.log": "d45906130046f6766f712cbbb48ef4e5a09f9bbf5c73e87ec0118c7bf35ce95e"
+  }
+}

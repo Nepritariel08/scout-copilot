@@ -8,7 +8,7 @@
     "build": "tsc --noEmit",
     "db:generate": "bun --env-file=../.env drizzle-kit generate --config=drizzle.config.ts",
     "db:migrate": "bun --env-file=../.env scripts/migrate.ts",
-    "dev": "bun --env-file=../.env --watch src/index.ts",
+    "dev": "bun --env-file=../.env --watch src/production-entry.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

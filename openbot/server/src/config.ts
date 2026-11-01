@@ -1,7 +1,7 @@
 /**
- * What the runtime can do. There is exactly one answer because CopilotKit Intelligence is required
- * for durable threads and memory. Configuration the product cannot function without belongs at the
- * boot boundary.
+ * Explicit runtime contracts: the default licensed Intelligence composition and Scout's owned
+ * PostgreSQL/public-SDK composition. Validate each at boot; neither may silently fall back to
+ * anonymous or transient storage.
  */
 
 import { networkInterfaces } from "node:os";
@@ -29,11 +29,15 @@ import type { BrokerProvider } from "./plugins/access";
 import { type VoiceConfig, voiceConfig } from "./voice/config";
 import { type WebBotAuth, webBotAuthFromEnv } from "./web-bot-auth";
 
-export type RuntimeCapabilities = {
+export type IntelligenceRuntimeCapabilities = {
   mode: "intelligence";
   durableHistory: true;
   intelligence: IntelligenceSettings;
 };
+export type OwnedRuntimeCapabilities = { mode: "owned"; durableHistory: true };
+export type RuntimeCapabilities =
+  | IntelligenceRuntimeCapabilities
+  | OwnedRuntimeCapabilities;
 
 /**
  * The Intelligence contract. Three values are required; see runtimeCapabilities.
@@ -179,7 +183,9 @@ export type HandoffCaps = {
   maxPerRun: number;
 };
 
-export type DeploymentConfig = {
+export type DeploymentConfig<
+  Runtime extends RuntimeCapabilities = IntelligenceRuntimeCapabilities,
+> = {
   /** Optional environment default. A saved Admin setting takes precedence. */
   learning?: LearningTarget;
   /**
@@ -316,7 +322,7 @@ export type DeploymentConfig = {
   tenantPackageDirectory: string;
   /** Optional protected native-user/requester bindings; verified sign-in is mandatory. */
   scoutQueueBindingsFile?: string;
-  runtime: RuntimeCapabilities;
+  runtime: Runtime;
   /**
    * How long a Bot's stream may say nothing before this deployment ends the turn, in milliseconds.
    *
@@ -992,7 +998,9 @@ function oktaAuth(
  * for a token the platform had stopped handing out. It is still read and still forwarded when a
  * deployment sets one, which is what a self-hosted Intelligence with its own licence needs.
  */
-function runtimeCapabilities(environment: Environment): RuntimeCapabilities {
+function runtimeCapabilities(
+  environment: Environment,
+): IntelligenceRuntimeCapabilities {
   const settings = {
     apiUrl: url(environment, "INTELLIGENCE_API_URL"),
     gatewayWsUrl: url(environment, "INTELLIGENCE_GATEWAY_WS_URL"),
@@ -1362,6 +1370,42 @@ export function loadConfig(
   /** This machine's network interfaces, for {@link listenAddresses}. A test passes its own. */
   interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
 ): DeploymentConfig {
+  return readDeploymentConfig(environment, interfaces, () =>
+    runtimeCapabilities(environment),
+  );
+}
+
+export type AnyDeploymentConfig = DeploymentConfig<RuntimeCapabilities>;
+export type OwnedDeploymentConfig = DeploymentConfig<OwnedRuntimeCapabilities>;
+
+/** An explicit public-SDK composition; never supplies fabricated Intelligence credentials. */
+export function loadOwnedConfig(
+  environment: Environment = process.env,
+  interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
+): OwnedDeploymentConfig {
+  if (environment.SCOUT_RUNTIME_MODE?.trim() !== "owned")
+    throw new Error("Owned runtime requires SCOUT_RUNTIME_MODE=owned.");
+  const config = readDeploymentConfig(
+    environment,
+    interfaces,
+    () => ({ mode: "owned", durableHistory: true }) as const,
+  );
+  if (config.singleUser || (!config.auth && !config.organizationAuthUrl))
+    throw new Error(
+      "Owned Scout requires verified organization sign-in; single-user mode is refused.",
+    );
+  if (!config.scoutQueueBindingsFile)
+    throw new Error(
+      "Owned Scout requires SCOUT_QUEUE_BINDINGS_FILE for current tenant/requester policy.",
+    );
+  return { ...config, learningAutoAssign: false, selfHostBanner: false };
+}
+
+function readDeploymentConfig<Runtime extends RuntimeCapabilities>(
+  environment: Environment,
+  interfaces: ReturnType<typeof networkInterfaces>,
+  resolveRuntime: () => Runtime,
+): DeploymentConfig<Runtime> {
   const google = oauthClient(environment, "GOOGLE");
   const auth = authConfig(environment, google);
   const organizationAuthValue = optional(
@@ -1413,7 +1457,7 @@ export function loadConfig(
     )?.replace(/\/+$/, ""),
     tenantPackageDirectory:
       optional(environment, "TENANT_PACKAGE_DIR") ?? "../examples/openduet",
-    runtime: runtimeCapabilities(environment),
+    runtime: resolveRuntime(),
     learning: learningDefault(environment),
     learningAutoAssign: learningAutoAssignEnabled(environment),
     ...learningSetupCredential(environment),

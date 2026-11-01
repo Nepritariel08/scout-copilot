@@ -1,6 +1,7 @@
 import { CopilotKitProvider } from "@copilotkit/react-core/v2";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import { currentUserQueryOptions } from "@/lib/auth/queries";
 import { deploymentCapabilitiesQueryOptions } from "@/lib/deployment/queries";
 import { a2uiProviderOptions } from "./a2ui";
 import { SignInTool } from "./sign-in-tool";
@@ -54,9 +55,16 @@ export function inspectorEnabled(
  */
 export function CopilotProvider({ children }: { children: ReactNode }) {
   const { data: capabilities } = useQuery(deploymentCapabilitiesQueryOptions());
+  const { data: person } = useQuery(currentUserQueryOptions());
+  // The SDK holds agent messages in memory. An owned session switch must discard
+  // the old core before mounting another person's conversation.
+  if (capabilities?.mode === "owned" && !person) return null;
 
   return (
     <CopilotKitProvider
+      key={
+        capabilities?.mode === "owned" ? `owned:${person?.id}` : "intelligence"
+      }
       runtimeUrl="/api/copilotkit"
       credentials="include"
       enableInspector={inspectorEnabled()}
