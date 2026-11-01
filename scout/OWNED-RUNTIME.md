@@ -99,6 +99,15 @@ controls are not evidence that every enterprise workflow has been qualified.
 
 ## Platform ownership and identity administration
 
+The [owned Auth0 adapter](OWNED-AUTH0.md) can reuse the existing company issuer
+and exact Scout callback through native authorization-code authentication.
+Enrollment is closed: provision the exact issuer/subject/native-user account
+before login, then assign native role, platform owner and current tenant grants
+separately. Fresh signed verified email, state, PKCE and nonce remain mandatory;
+matching an email or presenting proxy headers never establishes this mapping.
+Source/fixture qualification does not establish the live application's consent,
+credentials, HTTPS ingress or owner acceptance.
+
 `SCOUT_PLATFORM_OWNER_IDS` is a comma-separated list of exact verified native
 subject IDs, not email addresses, domains, display names or roles. Whitespace
 around entries is trimmed; empty entries are discarded. The list allows at most

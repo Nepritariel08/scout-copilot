@@ -100,10 +100,16 @@ export type ComputerConfig =
  * has Google or Entra or Okta and is not going to acquire another, so the shape here is a set of
  * optional providers rather than one required one, and the deployment turns on whichever it has.
  */
-export type AuthProviderId = "google" | "microsoft" | "okta";
+export type AuthProviderId = "google" | "microsoft" | "okta" | "auth0";
 
 /** An OAuth client, as every provider here needs one. */
 export type OAuthClient = { clientId: string; clientSecret: string };
+
+/** Protected native OIDC registration; user/account enrollment is operator-only. */
+export type ScoutAuth0Config = OAuthClient & {
+  issuer: string;
+  redirectURI: string;
+};
 
 export type GithubAppConfig = {
   clientId: string;
@@ -131,6 +137,7 @@ export type AuthConfig = {
   microsoft?: OAuthClient & { tenantId: string };
   /** Okta is an OIDC provider rather than a named one, so it is identified by its issuer. */
   okta?: OAuthClient & { issuer: string };
+  auth0?: ScoutAuth0Config;
 };
 
 /**
@@ -148,6 +155,7 @@ export function configuredAuthProviders(
   if (auth.google) providers.push("google");
   if (auth.microsoft) providers.push("microsoft");
   if (auth.okta) providers.push("okta");
+  if (auth.auth0) providers.push("auth0");
   return providers;
 }
 
@@ -738,7 +746,7 @@ function managedAgentConfig(
 
 function oauthClient(
   environment: Environment,
-  provider: "GOOGLE" | "MICROSOFT" | "OKTA",
+  provider: "GOOGLE" | "MICROSOFT" | "OKTA" | "AUTH0",
 ): OAuthClient | undefined {
   const clientId = optional(environment, `${provider}_OAUTH_CLIENT_ID`);
   const clientSecret = optional(environment, `${provider}_OAUTH_CLIENT_SECRET`);
@@ -819,11 +827,12 @@ function authConfig(
 ): AuthConfig | undefined {
   const microsoft = microsoftAuth(environment);
   const okta = oktaAuth(environment);
+  const auth0 = scoutAuth0Config(environment);
 
   const secret = optional(environment, "BETTER_AUTH_SECRET");
   const baseUrl = url(environment, "BETTER_AUTH_URL");
 
-  if (!google && !microsoft && !okta) {
+  if (!google && !microsoft && !okta && !auth0) {
     if (secret || baseUrl) {
       throw new Error(
         "BETTER_AUTH_SECRET or BETTER_AUTH_URL is set but no identity provider is. Configure GOOGLE_OAUTH_*, MICROSOFT_OAUTH_* or OKTA_OAUTH_*, or unset both",
@@ -840,6 +849,10 @@ function authConfig(
   if (!baseUrl) {
     throw new Error("Sign-in requires BETTER_AUTH_URL");
   }
+  if (auth0 && new URL(baseUrl).origin !== new URL(auth0.redirectURI).origin)
+    throw new Error(
+      "AUTH0_OAUTH_REDIRECT_URI must share BETTER_AUTH_URL's origin.",
+    );
 
   /*
    * Somebody has to be an administrator, and only this says who.
@@ -937,7 +950,48 @@ function authConfig(
     ...(google ? { google } : {}),
     ...(microsoft ? { microsoft } : {}),
     ...(okta ? { okta } : {}),
+    ...(auth0 ? { auth0 } : {}),
   };
+}
+
+/** The initial Auth0 adapter is qualified only in Scout's explicit owned composition. */
+function scoutAuth0Config(
+  environment: Environment,
+): ScoutAuth0Config | undefined {
+  const client = oauthClient(environment, "AUTH0");
+  const issuer = optional(environment, "AUTH0_OAUTH_ISSUER");
+  const redirectURI = optional(environment, "AUTH0_OAUTH_REDIRECT_URI");
+  if (!client && !issuer && !redirectURI) return undefined;
+  if (environment.SCOUT_RUNTIME_MODE?.trim() !== "owned")
+    throw new Error(
+      "Auth0 sign-in currently requires SCOUT_RUNTIME_MODE=owned.",
+    );
+  if (!client || !issuer || !redirectURI)
+    throw new Error(
+      "Auth0 sign-in requires AUTH0_OAUTH_CLIENT_ID, AUTH0_OAUTH_CLIENT_SECRET, AUTH0_OAUTH_ISSUER and AUTH0_OAUTH_REDIRECT_URI together.",
+    );
+  let authority: URL;
+  let callback: URL;
+  try {
+    authority = new URL(issuer);
+    callback = new URL(redirectURI);
+  } catch {
+    throw new Error("Auth0 issuer and callback must be canonical HTTPS URLs.");
+  }
+  if (
+    authority.protocol !== "https:" ||
+    authority.username ||
+    authority.password ||
+    issuer !== `${authority.origin}/` ||
+    callback.protocol !== "https:" ||
+    callback.username ||
+    callback.password ||
+    redirectURI !== `${callback.origin}/oauth2/callback`
+  )
+    throw new Error(
+      "Auth0 issuer must be a canonical HTTPS origin ending in /; callback must be its application's canonical HTTPS /oauth2/callback URL.",
+    );
+  return { ...client, issuer, redirectURI };
 }
 
 /**

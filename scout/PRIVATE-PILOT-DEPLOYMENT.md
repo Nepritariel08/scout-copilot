@@ -83,11 +83,15 @@ Before activation the deployment record must supply:
 - The exact HTTPS private origin, DNS/TLS custody and ingress restriction to
   the owner. `scout-pilot.example.invalid` below is deliberately unusable.
   No DNS, certificate or public distribution is implied.
-- A verified native IdP route: configured Google/Microsoft/Okta native auth, or
+- A verified native IdP route: configured Google/Microsoft/Okta native auth,
+  the closed [owned Auth0 adapter](OWNED-AUTH0.md), or
   a specifically approved OpenBot organization authority. The latter implements
   its own `/api/me` and ticket/cookie handoff; an arbitrary Odoo/OIDC URL is not
   an interchangeable authority. Issuer, audience, callbacks, subject and revocation
-  must be tested. The live IdP/configuration choice remains unresolved here.
+  must be tested. The existing Auth0 issuer and Scout callback are the current
+  reuse candidate; application allowlist/credentials, exact owner subject and
+  live HTTPS/login remain unverified. No additional identity service is needed
+  to qualify that candidate.
 - Exact native owner subject, native admin role, tenant/deployment and current
   protected membership/requester mapping. `SCOUT_PLATFORM_OWNER_IDS` alone never
   elevates a user; email/domain/header claims do not substitute for the subject.
