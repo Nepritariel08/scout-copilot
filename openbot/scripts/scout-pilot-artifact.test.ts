@@ -372,6 +372,32 @@ describe("retained Scout private pilot artifact", () => {
     await expect(g.run()).rejects.toThrow("Missing transitive");
   });
 
+  test("Vite preload-only CSS validates its fonts before packaging", async () => {
+    const f = await fixture();
+    const main = join(f.project, "app/dist/assets/main-fixture.js");
+    await writeFile(
+      main,
+      `${await readFile(main, "utf8")}const __vite__mapDeps=["assets/lazy.css"];`,
+    );
+    await put(
+      f.root,
+      "openbot/app/dist/assets/lazy.css",
+      '@font-face{font-family:Fixture;src:url("./missing.woff2")}',
+    );
+    await expect(f.run()).rejects.toThrow("Missing transitive");
+    await put(
+      f.root,
+      "openbot/app/dist/assets/missing.woff2",
+      "synthetic-font-fixture",
+    );
+    const result = await f.run();
+    expect(
+      result.manifest.archives["web.tar.gz"].files.some(
+        (file) => file.path === "assets/missing.woff2",
+      ),
+    ).toBe(true);
+  });
+
   test("rejects web hardlinks and extra output files", async () => {
     const f = await fixture();
     await link(

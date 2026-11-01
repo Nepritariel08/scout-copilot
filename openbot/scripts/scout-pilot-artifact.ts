@@ -498,7 +498,7 @@ function webCheck(entries: Entry[]) {
       for (const match of text.matchAll(
         /["'](assets\/[^"']+\.(?:js|css|woff2?|png|svg|webp))["']/g,
       ))
-        resolveAsset(match[1], path);
+        visit(resolveAsset(match[1], path));
     }
     if (path.endsWith(".css")) {
       for (const match of text.matchAll(
