@@ -239,6 +239,17 @@ beforeAll(async () => {
     for (const statement of migration.split("--> statement-breakpoint"))
       if (statement.trim()) await database.execute(sql.raw(statement));
   }
+  const [contextTable] = await database.execute<{ relation: string | null }>(
+    sql`select to_regclass('scout_history_context') as relation`,
+  );
+  if (!contextTable.relation) {
+    const migration = await readFile(
+      new URL("../drizzle/0074_scout_history_context.sql", import.meta.url),
+      "utf8",
+    );
+    for (const statement of migration.split("--> statement-breakpoint"))
+      if (statement.trim()) await database.execute(sql.raw(statement));
+  }
 });
 beforeEach(async () => {
   await Promise.all(engines.map((value) => value.close()));

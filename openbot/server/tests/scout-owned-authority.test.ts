@@ -55,6 +55,17 @@ function fixture() {
   };
 }
 describe("native history pins current membership throughout awaited authorization", () => {
+  test("an owned history resource cannot silently omit the provenance authority", async () => {
+    const f = fixture();
+    const principal = await f.history.principal();
+    await expect(
+      f.history.authorizeContext!(principal!, {
+        id: "thread",
+        agentId: "fixture",
+        channelId: null,
+      }),
+    ).rejects.toThrow("HISTORY_ACCESS_DENIED");
+  });
   test("same-tenant revision during profile lookup withholds a history grant", async () => {
     const f = fixture(),
       principal = await f.history.principal();

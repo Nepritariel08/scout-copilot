@@ -17,6 +17,11 @@ export type HistoryAuthority = {
     resource: HistoryResource,
     operation: HistoryOperation,
   ): Promise<boolean>;
+  /** Owned source-derived history only; no hook in the licensed/default composition. */
+  authorizeContext?(
+    principal: HistoryPrincipal,
+    resource: HistoryResource,
+  ): Promise<void>;
 };
 
 const same = (a: HistoryPrincipal, b: HistoryPrincipal) =>
@@ -37,18 +42,22 @@ export function createBoundHistory(
     scope: HistoryPrincipal,
     resource: HistoryResource,
     operation: HistoryOperation,
+    context = true,
   ) {
     if (
       !same(scope, await principal()) ||
       (await authority.authorize(scope, resource, operation)) !== true
     )
       throw new HistoryError("HISTORY_ACCESS_DENIED");
+    if (context && operation !== "stop")
+      await authority.authorizeContext?.(scope, resource);
   }
   async function access<T>(
     threadId: string,
     operation: HistoryOperation,
     work: (scope: HistoryPrincipal, thread: HistoryThread) => Promise<T>,
     agentId?: string,
+    context = true,
   ) {
     const scope = await principal();
     const thread = await store.get(scope, threadId);
@@ -59,10 +68,10 @@ export function createBoundHistory(
       agentId: agentId ?? thread.agentId,
       channelId: thread.channelId,
     };
-    await permitted(scope, resource, operation);
+    await permitted(scope, resource, operation, context);
     const result = await work(scope, thread);
     // Withhold a result when membership changed while storage was being read.
-    await permitted(scope, resource, operation);
+    await permitted(scope, resource, operation, context);
     return result;
   }
   async function forLease<T>(
@@ -79,6 +88,7 @@ export function createBoundHistory(
         return operation(scope);
       },
       agentId,
+      false,
     );
   }
   return {

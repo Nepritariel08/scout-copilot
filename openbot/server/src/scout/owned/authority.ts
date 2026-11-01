@@ -9,7 +9,7 @@ import {
 } from "../../auth/guards";
 import type { ChannelStore } from "../../channels/routes";
 import { HistoryError } from "../history/protocol";
-import type { HistoryAuthority } from "../history/service";
+import type { HistoryAuthority, HistoryResource } from "../history/service";
 import type { MembershipReader } from "../membership";
 
 /** Revalidate native identity and membership on every call; no mutable global current user. */
@@ -19,6 +19,7 @@ export function createOwnedAuthority(deps: {
   binding: MembershipReader;
   profiles: Pick<AgentProfileStore, "get">;
   channels: Pick<ChannelStore, "get">;
+  authorizeContext?(request: Request, resource: HistoryResource): Promise<void>;
 }) {
   async function actor(request: Request): Promise<AuthenticatedActor> {
     const session = await deps.auth.api.getSession({
@@ -62,6 +63,22 @@ export function createOwnedAuthority(deps: {
         principal: async () => {
           const { person, policy } = await current();
           return { userId: person.id, tenantId: policy.tenantId };
+        },
+        authorizeContext: async (scope, resource) => {
+          if (!resource.id) return;
+          if (!deps.authorizeContext)
+            throw new HistoryError("HISTORY_ACCESS_DENIED");
+          try {
+            await deps.authorizeContext(request, resource);
+            const { person, policy } = await current();
+            if (
+              scope.userId !== person.id ||
+              scope.tenantId !== policy.tenantId
+            )
+              throw new HistoryError("HISTORY_ACCESS_DENIED");
+          } catch {
+            throw new HistoryError("HISTORY_ACCESS_DENIED");
+          }
         },
         authorize: async (scope, resource) => {
           const { person, policy } = await current();

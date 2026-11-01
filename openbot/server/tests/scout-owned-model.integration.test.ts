@@ -61,9 +61,13 @@ let contextGrantReads = 0;
 let contextReleaseGrantReads = 0;
 let contextReadCount = 0;
 let revokeOnGrantRead: number | undefined;
-let revokeAfterTaskRead: number | undefined;
-let changeMembershipAfterTaskRead: number | undefined;
+let grantRevokedAt: number | undefined;
 let hideTaskOnRead: number | undefined;
+let taskHiddenAt: number | undefined;
+let finalTaskChange: "grant" | "membership" | undefined;
+let dispatchBoundary:
+  | { id: string; status: "dispatched"; fired: boolean }
+  | undefined;
 let contextRecordRows: unknown = [];
 let capturedContextRead: ProjectTaskReadRequest | undefined;
 let captured:
@@ -199,18 +203,27 @@ const recordContext: ProjectTaskContextPort = {
   },
   getGrant: async (principal) => {
     contextGrantReads++;
+    if (
+      revokeOnGrantRead !== undefined &&
+      contextGrantReads >= revokeOnGrantRead
+    ) {
+      contextGrantEnabled = false;
+      grantRevokedAt ??= contextGrantReads;
+    }
     if (!contextGrantEnabled) return null;
-    const revoked = revokeOnGrantRead === contextGrantReads;
-    return syntheticContextGrant(principal, !revoked, revoked ? 2 : 1);
+    return syntheticContextGrant(principal);
   },
   readProjectTask: async (request) => {
     contextReadCount++;
     capturedContextRead = request;
-    if (revokeAfterTaskRead === contextReadCount)
-      revokeOnGrantRead = contextGrantReads + 1;
-    if (changeMembershipAfterTaskRead === contextReadCount)
-      aliceMembershipRevision = 2;
-    return hideTaskOnRead === contextReadCount ? [] : contextRecordRows;
+    if (dispatchBoundary && !dispatchBoundary.fired && finalTaskChange) {
+      dispatchBoundary.fired = true;
+      if (finalTaskChange === "grant") contextGrantEnabled = false;
+      else aliceMembershipRevision = 2;
+    }
+    if (hideTaskOnRead !== undefined && contextReadCount >= hideTaskOnRead)
+      taskHiddenAt ??= contextReadCount;
+    return taskHiddenAt !== undefined ? [] : contextRecordRows;
   },
 };
 async function run(userId = alice): Promise<ModelRun> {
@@ -222,6 +235,24 @@ async function run(userId = alice): Promise<ModelRun> {
 }
 async function rows() {
   return database.select().from(calls).where(eq(calls.deploymentId, prefix));
+}
+async function revokeOnFirstDispatchedTaskRead(
+  change: "grant" | "membership",
+  work: () => Promise<void>,
+) {
+  const originalDispatch = app.modelCalls.dispatch;
+  app.modelCalls.dispatch = async (...args) => {
+    await originalDispatch(...args);
+    const receipt = (await rows()).find((row) => row.id === args[1].id);
+    expect(receipt?.status).toBe("dispatched");
+    dispatchBoundary = { id: args[1].id, status: "dispatched", fired: false };
+    finalTaskChange = change;
+  };
+  try {
+    await work();
+  } finally {
+    app.modelCalls.dispatch = originalDispatch;
+  }
 }
 function model(
   scope: ModelRun,
@@ -391,9 +422,11 @@ beforeEach(async () => {
   contextReleaseGrantReads = 0;
   contextReadCount = 0;
   revokeOnGrantRead = undefined;
-  revokeAfterTaskRead = undefined;
-  changeMembershipAfterTaskRead = undefined;
+  grantRevokedAt = undefined;
   hideTaskOnRead = undefined;
+  taskHiddenAt = undefined;
+  finalTaskChange = undefined;
+  dispatchBoundary = undefined;
   contextRecordRows = [];
   capturedContextRead = undefined;
   await database.delete(calls).where(eq(calls.deploymentId, prefix));
@@ -835,7 +868,8 @@ describe("owned model: real SQL and SDK chat-completions", () => {
       { description: PROJECT_TASK_SELECTION_MARKER, value: "700" },
     ]);
     await response.text();
-    expect(contextGrantReads).toBe(2);
+    expect(grantRevokedAt).toBe(2);
+    expect(contextGrantEnabled).toBe(false);
     expect(capturedContextRead).toBeDefined();
     expect(providerCalls).toBe(0);
     expect(await rows()).toHaveLength(0);
@@ -843,7 +877,6 @@ describe("owned model: real SQL and SDK chat-completions", () => {
   test("a grant revoked during the final task read cannot reach the provider", async () => {
     contextGrantEnabled = true;
     contextReleaseGrantEnabled = true;
-    revokeAfterTaskRead = 4;
     contextRecordRows = [
       {
         id: 700,
@@ -853,20 +886,31 @@ describe("owned model: real SQL and SDK chat-completions", () => {
         company_id: [1, "Synthetic company"],
       },
     ];
-    const response = await selectedRun([
-      { description: PROJECT_TASK_SELECTION_MARKER, value: "700" },
-    ]);
-    await response.text();
-    expect(contextReadCount).toBe(4);
+    await revokeOnFirstDispatchedTaskRead("grant", async () => {
+      const response = await selectedRun([
+        { description: PROJECT_TASK_SELECTION_MARKER, value: "700" },
+      ]);
+      await response.text();
+    });
+    expect(dispatchBoundary).toMatchObject({
+      status: "dispatched",
+      fired: true,
+    });
+    expect(contextGrantEnabled).toBe(false);
     expect(providerCalls).toBe(0);
     expect(await rows()).toMatchObject([
-      { status: "uncertain", errorCode: "MODEL_ACCESS_DENIED" },
+      {
+        id: dispatchBoundary?.id,
+        status: "uncertain",
+        errorCode: "MODEL_ACCESS_DENIED",
+        outputBytes: 0,
+      },
     ]);
+    expect(await rows()).toHaveLength(1);
   });
   test("a native binding change during the final task read cannot reach the provider", async () => {
     contextGrantEnabled = true;
     contextReleaseGrantEnabled = true;
-    changeMembershipAfterTaskRead = 4;
     contextRecordRows = [
       {
         id: 700,
@@ -876,15 +920,27 @@ describe("owned model: real SQL and SDK chat-completions", () => {
         company_id: [1, "Synthetic company"],
       },
     ];
-    const response = await selectedRun([
-      { description: PROJECT_TASK_SELECTION_MARKER, value: "700" },
-    ]);
-    await response.text();
+    await revokeOnFirstDispatchedTaskRead("membership", async () => {
+      const response = await selectedRun([
+        { description: PROJECT_TASK_SELECTION_MARKER, value: "700" },
+      ]);
+      await response.text();
+    });
+    expect(dispatchBoundary).toMatchObject({
+      status: "dispatched",
+      fired: true,
+    });
     expect(aliceMembershipRevision).toBe(2);
     expect(providerCalls).toBe(0);
     expect(await rows()).toMatchObject([
-      { status: "uncertain", errorCode: "MODEL_ACCESS_DENIED" },
+      {
+        id: dispatchBoundary?.id,
+        status: "uncertain",
+        errorCode: "MODEL_ACCESS_DENIED",
+        outputBytes: 0,
+      },
     ]);
+    expect(await rows()).toHaveLength(1);
   });
   test("changed ACL visibility under an unchanged grant prevents model egress", async () => {
     contextGrantEnabled = true;
@@ -903,9 +959,9 @@ describe("owned model: real SQL and SDK chat-completions", () => {
       { description: PROJECT_TASK_SELECTION_MARKER, value: "700" },
     ]);
     await response.text();
-    expect(contextGrantReads).toBe(2);
-    expect(contextReleaseGrantReads).toBe(2);
-    expect(contextReadCount).toBe(2);
+    expect(taskHiddenAt).toBe(2);
+    expect(contextGrantEnabled).toBe(true);
+    expect(contextReleaseGrantEnabled).toBe(true);
     expect(providerCalls).toBe(0);
     expect(await rows()).toHaveLength(0);
   });
