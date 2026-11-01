@@ -57,6 +57,27 @@ async function insertCredential(input: {
   return id;
 }
 
+async function wasRefusedAsAppendOnly(
+  work: () => PromiseLike<unknown>,
+): Promise<boolean> {
+  try {
+    await work();
+    return false;
+  } catch (error) {
+    let current: unknown = error;
+    for (let depth = 0; depth < 5 && current; depth++) {
+      if (
+        String((current as { message?: string }).message ?? "").includes(
+          "append-only",
+        )
+      )
+        return true;
+      current = (current as { cause?: unknown }).cause;
+    }
+    return false;
+  }
+}
+
 beforeAll(async () => {
   await insertCredential({ uid: 101, id: credentialRef });
   await insertCredential({ uid: 102, encryptedValue: "invalid-envelope" });
@@ -201,19 +222,25 @@ describe("owned Odoo grant persistence and credential resolution", () => {
       ["scout_odoo_record_access_grants", recordGrantId],
       ["scout_context_release_grants", releaseGrantId],
     ] as const) {
-      await expect(
-        database.execute(
-          sql`UPDATE ${sql.identifier(table)} SET active = false WHERE id = ${id}::uuid`,
+      expect(
+        await wasRefusedAsAppendOnly(() =>
+          database.execute(
+            sql`UPDATE ${sql.identifier(table)} SET active = false WHERE id = ${id}::uuid`,
+          ),
         ),
-      ).rejects.toThrow("append-only");
-      await expect(
-        database.execute(
-          sql`DELETE FROM ${sql.identifier(table)} WHERE id = ${id}::uuid`,
+      ).toBe(true);
+      expect(
+        await wasRefusedAsAppendOnly(() =>
+          database.execute(
+            sql`DELETE FROM ${sql.identifier(table)} WHERE id = ${id}::uuid`,
+          ),
         ),
-      ).rejects.toThrow("append-only");
-      await expect(
-        database.execute(sql`TRUNCATE TABLE ${sql.identifier(table)}`),
-      ).rejects.toThrow("append-only");
+      ).toBe(true);
+      expect(
+        await wasRefusedAsAppendOnly(() =>
+          database.execute(sql`TRUNCATE TABLE ${sql.identifier(table)}`),
+        ),
+      ).toBe(true);
     }
   });
 });
