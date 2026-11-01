@@ -12,6 +12,24 @@ const environment = {
   OPENBOT_HOST: "127.0.0.1",
 };
 describe("explicit owned runtime configuration", () => {
+  test("delegated drafts require explicit valid admission after live queue qualification", () => {
+    expect(loadOwnedConfig(environment).scoutDelegatedDraftsEnabled).toBe(
+      false,
+    );
+    for (const value of ["true", "1", "false", "0"])
+      expect(
+        loadOwnedConfig({
+          ...environment,
+          SCOUT_DELEGATED_DRAFTS_ENABLED: value,
+        }).scoutDelegatedDraftsEnabled,
+      ).toBe(value === "true" || value === "1");
+    expect(() =>
+      loadOwnedConfig({
+        ...environment,
+        SCOUT_DELEGATED_DRAFTS_ENABLED: "ture",
+      }),
+    ).toThrow("SCOUT_DELEGATED_DRAFTS_ENABLED");
+  });
   test("platform owners are exact bounded native subjects and absent configuration grants none", () => {
     expect(loadOwnedConfig(environment).scoutPlatformOwnerIds).toEqual([]);
     expect(

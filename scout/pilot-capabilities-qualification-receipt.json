@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-01T04:19:46.494Z",
+  "branch": "scout/pilot-capabilities-20261101",
+  "base": "30472ae6281a8066270784f77171ee144369b6e1",
+  "runtime": {
+    "bun": "1.4.3",
+    "platform": "Windows",
+    "mode": "owned",
+    "productionInferenceTested": false,
+    "sharedAccessEnabled": false
+  },
+  "fixture": {
+    "container": "scout-copilot-model-01a19336",
+    "id": "124bf8031b460569e768300b5a7870e3d6a51901a195d3262b2880a42926cb9a",
+    "image": "pgvector/pgvector@sha256:2547711f871f5d4c02b2dfc7ff86f3eddc438d00a23854cd449513f4ef1af79b",
+    "postgresVersion": "18.6",
+    "loopbackPort": 25434,
+    "memoryMiB": 512,
+    "cpus": 1,
+    "pids": 128,
+    "tmpfsMiB": 512,
+    "fullPlatformMigrationsApplied": true,
+    "migrationsThrough": "0071_scout_tenant_scope",
+    "finalStatus": "exited",
+    "exitCode": 0,
+    "oomKilled": false,
+    "boundedWslHelperExited": 0,
+    "recoveredTransportFailure": "Initial inline cross-shell helper ended early and stopped fixture (137/OOMfalse), so SQL suites could not connect. Replaced with literal LF script and bounded helper28424, reapplied migrations, verified readiness and reran successfully. No source failure inferred from unavailable transport."
+  },
+  "passed": {
+    "uniqueFocusedTests": 212,
+    "uniqueFocusedFiles": 19,
+    "combinedAttempt": {
+      "passed": 211,
+      "failed": 1,
+      "assertions": 2298,
+      "reason": "Old test expected401 for now-unavailable default-off delegation. Auth checks retained on four admitted core routes; disabled delegation explicitly asserts503 for authenticated/anonymous callers."
+    },
+    "correctedNativeAppRerun": {
+      "passed": 9,
+      "failed": 0,
+      "assertions": 52
+    },
+    "newActualAppAdmissionSuite": {
+      "passed": 12,
+      "failed": 0,
+      "assertions": 616
+    },
+    "pureAdmission": {
+      "passed": 8,
+      "assertions": 538
+    },
+    "uiAndConfigurationContract": {
+      "passed": 25,
+      "files": 4,
+      "assertions": 594
+    },
+    "note": "Counts overlap. All212 distinct cases qualified after the corrected native-app rerun; no all-green combined rerun claimed.",
+    "serverProductionTypecheck": true,
+    "appProductionTypecheck": true,
+    "testProjectBaseline": {
+      "existingDiagnostics": 236,
+      "newDiagnostics": 0,
+      "removedDiagnostics": 0,
+      "windowsPathsNormalized": true
+    },
+    "scopedBiomeFiles": 12,
+    "dependencyChanges": false,
+    "schemaChanges": false
+  },
+  "qualification": {
+    "exactMethodAndPathApiAdmission": true,
+    "exactAuthProtocolAdmission": true,
+    "admissionBeforePublicAndFeatureHandlers": true,
+    "decodedStaticAliasRefusedThroughRealHttp": true,
+    "unknownFeatureHandlerAndNetworkRefusal": true,
+    "arbitrarySdkPrefixAndAuxiliaryRoutesRefused": true,
+    "qualifiedNativeUiAndPublicSdkFlowsRetained": true,
+    "tenantAndPlatformOwnerGrantsStillMandatory": true,
+    "delegatedDraftsDefaultFalse": true,
+    "explicitDelegationRetainsProtectedRequesterContract": true,
+    "disabledUiMakesNoQueueRequest": true,
+    "ownedMissingCapabilityDeniesAndLicensedCompatibilityRetained": true,
+    "directOnlyFirstDayWithoutNativeQueue": true,
+    "unavailableModelErrorContractRetained": true,
+    "privatePilotDeploymentPacketPrepared": true
+  },
+  "corrections": [
+    "Preserved existing MODEL_ROUTE_UNAVAILABLE response while adding capability admission; model13cases passed.",
+    "Independent raw-request and real-HTTP tests found Hono decoded an encoded capabilities path before late admission. Moved admission ahead of public/auth/feature registration;12cases passed.",
+    "Disabled delegation now returns503 before auth/dispatch. Existing native-app regression still checks401 on admitted core routes and403 on current membership loss."
+  ],
+  "infrastructure": {
+    "target": "Existing8GB/4vCPU Linode; no resize",
+    "privatePortCandidate": 31881,
+    "hostMutationPerformed": false,
+    "workItem75Claim": "Preview only; not validated/executed. Earlier18082preview is superseded by the concrete31881deployment packet; refresh values/time/identity/ownership before any claim.",
+    "deviceMutationPerformed": false,
+    "sourceAndRuntimeBoundary": "Source packet and isolated fixtures only; exact CI, origin/IdP/protected credentials, host claim and live readback remain required."
+  },
+  "limitations": [
+    "No Linode install, database/service/Caddy write, public/shared invitation or device installation.",
+    "No real provider credential read, provider spend, live companySSO, live Odoo delegation or business action.",
+    "Queue provenance/live contract still pending; SCOUT_DELEGATED_DRAFTS_ENABLED must stayfalse until accepted.",
+    "Record retrieval, qualified tools/approvals, shared-channel history and customer administration remain future adapters.",
+    "Second Android device/MatePad mapping and local-model execution/availability remain unverified; physical PC-off deferred/unarmed.",
+    "Exact-head CI belongs to draft PR and canonical checkpoint; this receipt does not imply current CI success."
+  ],
+  "sourceHashNormalization": "UTF-8 text, CRLF normalized to LF; receipt excludes itself; exact tested head recorded in PR",
+  "sourceHashes": {
+    "openbot/app/src/components/scout/drafts.tsx": "69d53c137bf0cd5ee3eb2874c76d434b9abb895d2e4f4c7caf099c76c380c8af",
+    "openbot/app/src/lib/deployment/queries.ts": "e268d33181f24a4a6bb9911adbddc0cca27ec4ea3fc0729fccd7a4b2114f4b67",
+    "openbot/app/tests/scout-delegation-capabilities.test.ts": "22fba63444026ab140b2588d047b96dbd33c0952231492c52e1284e440a3b8d3",
+    "openbot/app/tests/scout-drafts.test.tsx": "30fb69758063c3dd345fda57a9c52f7b7496738ee5e1d185aa1cd908fea5ecf9",
+    "openbot/server/src/app.ts": "f2f96b0afb28b66c3897dd2c7263e68733bdbde45ea0bc7b86c7a5fb8386405a",
+    "openbot/server/src/config.ts": "7eff60d85072503d349d9bd2e8eb76d4dcae39b4253f4da291805720d599c24c",
+    "openbot/server/src/scout/owned/application.ts": "3e341bedc20db75b30ca69c43c62c90a11c056b1f1f4314a5b3ee2c7ccdcb60a",
+    "openbot/server/src/scout/owned/capabilities.ts": "38311d9e28b15cf6ea9cf58bdfb2b35f5f1f41e3d6e389128792131d3ccd81ec",
+    "openbot/server/tests/scout-owned-app.integration.test.ts": "841bc4a897b07c6bc710e898cdca79f4add178492ae16599c54d595d78730c02",
+    "openbot/server/tests/scout-owned-capabilities.test.ts": "a337d3fdd3ffe4445f875ca7e2363c841ecfa43fd45761189007af4c8cae3c1f",
+    "openbot/server/tests/scout-owned-config.test.ts": "f4ff41a44b2f6919aee3fb44b63df094570c2b84016a51f532b3a2fc606ce764",
+    "openbot/server/tests/scout-pilot-capabilities.integration.test.ts": "7293324f215fad7dfc08e90e4efac023d2ca1a453650a9c213ee79c23524a859",
+    "scout/OWNED-RUNTIME.md": "ef04b9cf27291eff83ad5c8450fb3a030f6676f54522cb3174865dd943cfd656",
+    "scout/PRIVATE-PILOT-DEPLOYMENT.md": "d68fed6c766420c811e8e4698107840b8daec0d9a47a0eb1f3134415bd154c81",
+    "scout/owned.env.example": "213a0bdf5d8544e758c82cb52dc5ab6c2200e39af80390e023cd1ec8e51fd1d4"
+  }
+}

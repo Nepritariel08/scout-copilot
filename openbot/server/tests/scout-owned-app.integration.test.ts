@@ -246,7 +246,7 @@ describe("owned composition through the actual Scout app", () => {
     ).toBe(409);
     expect(
       (await request("/api/channels/morning-brief", { agentId })).status,
-    ).toBe(409);
+    ).toBe(503); // Unqualified automatic capability is refused before its native handler.
     const response = await request("/api/channels/first-day", { agentId });
     expect(response.status).toBe(200);
     const { start } = await response.json();
@@ -298,9 +298,14 @@ describe("owned composition through the actual Scout app", () => {
       "/api/agents",
       "/api/channels",
       "/api/copilotkit/info",
-      "/api/scout/tasks",
+      "/api/settings/instructions",
     ])
       expect((await request(path, undefined, "no-session")).status).toBe(401);
+    // Unqualified delegation is unavailable before identity or any requester handler runs.
+    for (const actor of [alice, "no-session"])
+      expect((await request("/api/scout/tasks", undefined, actor)).status).toBe(
+        503,
+      );
     expect((await request("/api/agents", undefined, outsider)).status).toBe(
       403,
     );

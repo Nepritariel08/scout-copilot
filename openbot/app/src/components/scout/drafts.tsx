@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { currentUserQueryOptions } from "@/lib/auth/queries";
+import { deploymentCapabilitiesQueryOptions } from "@/lib/deployment/queries";
 import {
   changeScoutDraft,
   scoutDrafts,
@@ -26,7 +27,19 @@ const states: Record<ScoutTaskView["state"], string> = {
 /** Explicit delegation, separate from sending a second ordinary chat turn. */
 export function ScoutDrafts({ channelId }: { channelId: string }) {
   const user = useQuery(currentUserQueryOptions());
-  if (!user.data) return null;
+  const capabilities = useQuery(deploymentCapabilitiesQueryOptions());
+  if (!user.data || !capabilities.data) return null;
+  if (capabilities.data.delegatedDrafts !== true)
+    return (
+      <details className="mx-3 my-2 rounded-lg border bg-card p-3 text-card-foreground">
+        <summary className="cursor-pointer font-medium">
+          Delegated drafts
+        </summary>
+        <p className="mt-3 text-sm text-muted-foreground">
+          Draft delegation is not available in this workspace yet.
+        </p>
+      </details>
+    );
   return (
     <Drafts
       key={`${user.data.id}:${channelId}`}
