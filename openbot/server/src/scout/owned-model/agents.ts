@@ -11,6 +11,7 @@ import { createUserInstructionsStore } from "../../user-instructions";
 import { createBoundHistory } from "../history/service";
 import type { HistoryStore } from "../history/store";
 import type { createOwnedAuthority } from "../owned/authority";
+import type { TenantScope } from "../owned/scope";
 import { OwnedTextModel } from "./model";
 import {
   createModelPolicyReader,
@@ -33,10 +34,16 @@ export function createOwnedModelAgents(deps: {
   history: HistoryStore;
   calls: ModelCallStore;
   transport?: typeof fetch;
+  scope?: TenantScope;
 }) {
-  const load = createRuntimeAgentLoader(deps.database);
+  const load = createRuntimeAgentLoader(
+    deps.database,
+    undefined,
+    undefined,
+    deps.scope,
+  );
   const policy = createModelPolicyReader(deps.policyFile);
-  const instructions = createUserInstructionsStore(deps.database);
+  const instructions = createUserInstructionsStore(deps.database, deps.scope);
   return async (
     actor: AuthenticatedActor,
     request: Request,

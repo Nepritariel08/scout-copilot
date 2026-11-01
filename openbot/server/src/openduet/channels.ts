@@ -34,6 +34,11 @@ import {
   intelligenceChannelMappings,
 } from "../db/schema";
 import { openduetChannels, openduetTasks } from "../db/schema/openduet";
+import type {
+  ScopeTransaction,
+  TenantPrincipal,
+  TenantScope,
+} from "../scout/owned/scope";
 
 /*
  * The person's channels: named workstreams, each a conversation with the Bot, with a look (an icon
@@ -145,15 +150,30 @@ export function createDuetChannelStore(deps: {
   /** Absent, a new channel opens silent. */
   hello?: ChannelHelloStarter;
   now?: () => Date;
+  scope?: TenantScope;
 }) {
   const { database } = deps;
   const now = deps.now ?? (() => new Date());
   /** Hellos still running, so a test or a shutdown can wait for them. */
   const greeting = new Set<Promise<unknown>>();
+  const channelScope = (principal: TenantPrincipal | undefined) =>
+    principal && deps.scope
+      ? and(
+          deps.scope.predicate(principal, "channel", channels.id),
+          sql`not exists (select 1 from ${channelAgents} where ${channelAgents.channelId} = ${channels.id} and not (${deps.scope.predicate(principal, "agent", channelAgents.agentId)}))`,
+        )
+      : undefined;
 
   /** The person's reachable, undeleted conversations that are not a task's, newest first. */
-  async function rows(ownerUserId: string, channelId?: string) {
-    return database
+  async function rows(
+    ownerUserId: string,
+    channelId?: string,
+    principal?: TenantPrincipal,
+    transaction?: ScopeTransaction,
+    lock = false,
+  ) {
+    principal ??= await deps.scope?.resolve(ownerUserId);
+    const query = (transaction ?? database)
       .select({
         id: channels.id,
         name: channels.name,
@@ -189,11 +209,15 @@ export function createDuetChannelStore(deps: {
         and(
           isNull(channels.deletedAt),
           NOT_A_TASK,
-          channelId ? eq(channels.id, channelId) : undefined,
+          channelId !== undefined ? eq(channels.id, channelId) : undefined,
+          channelScope(principal),
         ),
       )
       .orderBy(sql`${RECENCY} desc`, desc(channels.id))
-      .limit(channelId ? 1 : LIST_LIMIT);
+      .limit(channelId !== undefined ? 1 : LIST_LIMIT);
+    const result = await (lock ? query.for("update", { of: channels }) : query);
+    if (principal) await deps.scope?.assertCurrent(principal);
+    return result;
   }
 
   type Row = Awaited<ReturnType<typeof rows>>[number];
@@ -233,12 +257,30 @@ export function createDuetChannelStore(deps: {
   }
 
   /** The person's channel by id, refusing Everything and anything that is not theirs. */
-  async function channelToChange(ownerUserId: string, channelId: string) {
-    const [row] = await rows(ownerUserId, channelId);
+  async function channelToChange(
+    ownerUserId: string,
+    channelId: string,
+    principal?: TenantPrincipal,
+    transaction?: ScopeTransaction,
+  ) {
+    if (typeof channelId !== "string" || !channelId.trim())
+      throw new DuetChannelNotFoundError();
+    const [row] = await rows(
+      ownerUserId,
+      channelId,
+      principal,
+      transaction,
+      !!transaction,
+    );
     if (!row) throw new DuetChannelNotFoundError();
     if (!row.dressed && row.agentIds.length === 1) {
       const [botId] = row.agentIds as [string];
-      if (everythingOf(await rows(ownerUserId), botId)?.id === row.id)
+      if (
+        everythingOf(
+          await rows(ownerUserId, undefined, principal, transaction),
+          botId,
+        )?.id === row.id
+      )
         throw new ChannelRefusedError(
           "That's Everything, not a channel. Make a new channel instead.",
         );
@@ -257,6 +299,8 @@ export function createDuetChannelStore(deps: {
   }
 
   async function one(ownerUserId: string, channelId: string) {
+    if (typeof channelId !== "string" || !channelId.trim())
+      throw new DuetChannelNotFoundError();
     const [row] = await rows(ownerUserId, channelId);
     if (!row) throw new DuetChannelNotFoundError();
     return recordOf(row);
@@ -264,6 +308,8 @@ export function createDuetChannelStore(deps: {
 
   return {
     async list(ownerUserId: string, botId: string): Promise<ChannelList> {
+      if (typeof botId !== "string" || !botId.trim())
+        throw new ChannelRefusedError("Choose one of your Bots.");
       const list = await rows(ownerUserId);
       const everything = everythingOf(list, botId);
       return {
@@ -280,23 +326,39 @@ export function createDuetChannelStore(deps: {
      * arrive.
      */
     async create(actor: AgentActor, input: NewChannel): Promise<ChannelRecord> {
+      const principal = await deps.scope?.resolve(actor.id);
       // direct() and Everything exclude workstreams by this metadata row. Publish the channel
       // and its look together so neither reader can adopt a half-created workstream as Chat.
       const channel = await database.transaction(async (transaction) => {
+        if (principal) await deps.scope?.assertCurrent(principal);
         const channel = await deps.channels.create(
           actor,
           [input.botId],
           transaction,
         );
         const at = now();
-        await transaction
+        const [updated] = await transaction
           .update(channels)
           .set({
             name: input.name,
             description: input.purpose,
             updatedAt: at,
           })
-          .where(eq(channels.id, channel.id));
+          .where(
+            and(
+              eq(channels.id, channel.id),
+              principal
+                ? deps.scope?.predicate(
+                    principal,
+                    "channel",
+                    channels.id,
+                    "write",
+                  )
+                : undefined,
+            ),
+          )
+          .returning({ id: channels.id });
+        if (!updated) throw new DuetChannelNotFoundError();
         await transaction.insert(openduetChannels).values({
           channelId: channel.id,
           icon: input.icon,
@@ -304,6 +366,7 @@ export function createDuetChannelStore(deps: {
           createdAt: at,
           updatedAt: at,
         });
+        if (principal) await deps.scope?.assertCurrent(principal);
         return channel;
       });
       if (deps.hello) {
@@ -335,9 +398,16 @@ export function createDuetChannelStore(deps: {
       channelId: string,
       patch: ChannelPatch,
     ): Promise<ChannelRecord> {
-      const row = await channelToChange(ownerUserId, channelId);
+      const principal = await deps.scope?.resolve(ownerUserId);
       const at = now();
       await database.transaction(async (transaction) => {
+        if (principal) await deps.scope?.assertCurrent(principal);
+        const row = await channelToChange(
+          ownerUserId,
+          channelId,
+          principal,
+          transaction,
+        );
         if (patch.name !== undefined || patch.purpose !== undefined)
           await transaction
             .update(channels)
@@ -348,7 +418,19 @@ export function createDuetChannelStore(deps: {
                 : {}),
               updatedAt: at,
             })
-            .where(eq(channels.id, row.id));
+            .where(
+              and(
+                eq(channels.id, row.id),
+                principal
+                  ? deps.scope?.predicate(
+                      principal,
+                      "channel",
+                      channels.id,
+                      "write",
+                    )
+                  : undefined,
+              ),
+            );
         const look = {
           ...(patch.icon ? { icon: patch.icon } : {}),
           ...(patch.colour ? { colour: patch.colour } : {}),
@@ -360,8 +442,9 @@ export function createDuetChannelStore(deps: {
             target: openduetChannels.channelId,
             set: { ...look, updatedAt: at },
           });
+        if (principal) await deps.scope?.assertCurrent(principal);
       });
-      return one(ownerUserId, row.id);
+      return one(ownerUserId, channelId);
     },
 
     /** Put a channel away under Archived, or bring it back. Its conversation stays as it is. */
@@ -370,17 +453,27 @@ export function createDuetChannelStore(deps: {
       channelId: string,
       archived: boolean,
     ): Promise<ChannelRecord> {
-      const row = await channelToChange(ownerUserId, channelId);
+      const principal = await deps.scope?.resolve(ownerUserId);
       const at = now();
       const archivedAt = archived ? at : null;
-      await database
-        .insert(openduetChannels)
-        .values({ ...lookRow(row.id, at), archivedAt })
-        .onConflictDoUpdate({
-          target: openduetChannels.channelId,
-          set: { archivedAt, updatedAt: at },
-        });
-      return one(ownerUserId, row.id);
+      await database.transaction(async (transaction) => {
+        if (principal) await deps.scope?.assertCurrent(principal);
+        const row = await channelToChange(
+          ownerUserId,
+          channelId,
+          principal,
+          transaction,
+        );
+        await transaction
+          .insert(openduetChannels)
+          .values({ ...lookRow(row.id, at), archivedAt })
+          .onConflictDoUpdate({
+            target: openduetChannels.channelId,
+            set: { archivedAt, updatedAt: at },
+          });
+        if (principal) await deps.scope?.assertCurrent(principal);
+      });
+      return one(ownerUserId, channelId);
     },
 
     /**
@@ -389,17 +482,28 @@ export function createDuetChannelStore(deps: {
      * look it was already drawn with, so nothing on screen changes.
      */
     async keep(ownerUserId: string, channelId: string): Promise<ChannelRecord> {
-      const row = await channelToChange(ownerUserId, channelId);
-      if (!row.dressed)
-        await database
-          .insert(openduetChannels)
-          .values(lookRow(row.id, now()))
-          .onConflictDoNothing();
-      return one(ownerUserId, row.id);
+      const principal = await deps.scope?.resolve(ownerUserId);
+      await database.transaction(async (transaction) => {
+        if (principal) await deps.scope?.assertCurrent(principal);
+        const row = await channelToChange(
+          ownerUserId,
+          channelId,
+          principal,
+          transaction,
+        );
+        if (!row.dressed)
+          await transaction
+            .insert(openduetChannels)
+            .values(lookRow(row.id, now()))
+            .onConflictDoNothing();
+        if (principal) await deps.scope?.assertCurrent(principal);
+      });
+      return one(ownerUserId, channelId);
     },
 
     /** Whether this conversation of the person's is a dressed channel. */
     async isChannel(ownerUserId: string, channelId: string) {
+      const principal = await deps.scope?.resolve(ownerUserId);
       const [row] = await database
         .select({ id: openduetChannels.channelId })
         .from(openduetChannels)
@@ -410,8 +514,21 @@ export function createDuetChannelStore(deps: {
             eq(channelMemberships.userId, ownerUserId),
           ),
         )
-        .where(eq(openduetChannels.channelId, channelId))
+        .innerJoin(
+          channels,
+          and(
+            eq(channels.id, openduetChannels.channelId),
+            principal ? isNull(channels.deletedAt) : undefined,
+          ),
+        )
+        .where(
+          and(
+            eq(openduetChannels.channelId, channelId),
+            channelScope(principal),
+          ),
+        )
         .limit(1);
+      if (principal) await deps.scope?.assertCurrent(principal);
       return row !== undefined;
     },
 
@@ -424,6 +541,7 @@ export function createDuetChannelStore(deps: {
       ownerUserId: string,
       threadId: string,
     ): Promise<RunChannel | null> {
+      const principal = await deps.scope?.resolve(ownerUserId);
       const [row] = await database
         .select({
           channelId: channels.id,
@@ -447,9 +565,14 @@ export function createDuetChannelStore(deps: {
             eq(intelligenceChannelMappings.threadId, threadId),
             eq(intelligenceChannelMappings.userId, ownerUserId),
             NOT_A_TASK,
+            channelScope(principal),
+            principal
+              ? sql`exists (select 1 from ${channelMemberships} where ${channelMemberships.channelId} = ${channels.id} and ${channelMemberships.userId} = ${ownerUserId})`
+              : undefined,
           ),
         )
         .limit(1);
+      if (principal) await deps.scope?.assertCurrent(principal);
       return row
         ? {
             channelId: row.channelId,

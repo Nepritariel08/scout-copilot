@@ -140,6 +140,7 @@ import type { RoutineRunner } from "./routines/runner";
 import type { IntentRouter } from "./routing/classify";
 import { createRoutingRoutes } from "./routing/routes";
 import { createCoworkerRoutingService } from "./routing/service";
+import type { TenantScope } from "./scout/owned/scope";
 import { createScoutRoutes } from "./scout/routes";
 import type { ScoutService } from "./scout/service";
 import type { SelfHostBanner } from "./self-host-banner";
@@ -439,6 +440,8 @@ export function createApp(
     scout?: ScoutService;
     scoutOwned?: {
       requireTenant: MiddlewareHandler<{ Variables: AppVariables }>;
+      scope?: TenantScope;
+      requirePlatformAdmin?: (request: Request) => Promise<void>;
     };
     responsibilities?: {
       store: ResponsibilityStore;
@@ -581,6 +584,28 @@ export function createApp(
     "/api/auth/sso/update-provider",
     "/api/auth/sso/delete-provider",
   ]);
+  const OWNED_IDENTITY_MANAGEMENT = new Set([
+    ...ADMIN_ONLY_AUTH_ROUTES,
+    "/api/auth/sso/providers",
+    "/api/auth/sso/get-provider",
+    "/api/auth/sso/request-domain-verification",
+    "/api/auth/sso/verify-domain",
+  ]);
+  // Native login credentials are not a qualified connector credential or provider-context port.
+  const OWNED_UNADAPTED_ACCOUNT_ROUTES = new Set([
+    "/api/auth/get-access-token",
+    "/api/auth/refresh-token",
+    "/api/auth/account-info",
+    "/api/auth/list-accounts",
+  ]);
+  const ownedIdentityProtocol = (path: string, method: string) =>
+    (method === "GET" &&
+      /^\/api\/auth\/sso\/callback(?:\/[^/]+)?$/.test(path)) ||
+    (method === "GET" && path === "/api/auth/sso/saml2/sp/metadata") ||
+    (["GET", "POST"].includes(method) &&
+      /^\/api\/auth\/sso\/saml2\/sp\/(?:acs|slo)\/[^/]+$/.test(path)) ||
+    (method === "POST" &&
+      /^\/api\/auth\/sso\/saml2\/logout\/[^/]+$/.test(path));
 
   const AUTH_ROUTE_EVENTS: Record<string, AuditEventType | undefined> = {
     "/api/auth/sso/register": "identity_provider.registered",
@@ -588,6 +613,36 @@ export function createApp(
   };
 
   app.on(["GET", "POST"], "/api/auth/*", async (context) => {
+    if (config.runtime.mode === "owned") {
+      const rawPath = new URL(context.req.url).pathname;
+      // Use one canonical boundary before the native handler can normalize an equivalent route.
+      if (rawPath.includes("%"))
+        return context.json({ code: "SCOUT_IDENTITY_ROUTE_UNAVAILABLE" }, 503);
+      const path = rawPath.replace(/\/+$/, "");
+      if (
+        OWNED_UNADAPTED_ACCOUNT_ROUTES.has(path) ||
+        path === "/api/auth/admin" ||
+        path.startsWith("/api/auth/admin/") ||
+        path === "/api/auth/scim" ||
+        path.startsWith("/api/auth/scim/")
+      )
+        return context.json({ code: "SCOUT_IDENTITY_ROUTE_UNAVAILABLE" }, 503);
+      if (
+        path.startsWith("/api/auth/sso/") &&
+        !OWNED_IDENTITY_MANAGEMENT.has(path) &&
+        !ownedIdentityProtocol(path, context.req.method)
+      )
+        return context.json({ code: "SCOUT_IDENTITY_ROUTE_UNAVAILABLE" }, 503);
+      if (OWNED_IDENTITY_MANAGEMENT.has(path)) {
+        try {
+          if (!coworker?.scoutOwned?.requirePlatformAdmin)
+            throw new Error("unconfigured owner");
+          await coworker.scoutOwned.requirePlatformAdmin(context.req.raw);
+        } catch {
+          return context.json({ code: "SCOUT_ACCESS_DENIED" }, 403);
+        }
+      }
+    }
     if (
       context.req.method === "GET" &&
       new URL(context.req.url).pathname === "/api/auth/desktop" &&
@@ -605,7 +660,10 @@ export function createApp(
       );
     }
 
-    if (ADMIN_ONLY_AUTH_ROUTES.has(new URL(context.req.url).pathname)) {
+    if (
+      config.runtime.mode !== "owned" &&
+      ADMIN_ONLY_AUTH_ROUTES.has(new URL(context.req.url).pathname)
+    ) {
       const session = await auth.api.getSession({
         headers: context.req.raw.headers,
         // Fresh, not the cookie cache: a role changed a moment ago has to apply to this request.
@@ -683,15 +741,20 @@ export function createApp(
     app.all("/api/voice/*", (context) =>
       context.json({ code: "MODEL_ROUTE_UNAVAILABLE" }, 503),
     );
+    app.post("/api/agents/test-connection", (context) =>
+      context.json({ code: "SCOUT_REMOTE_ROUTE_UNAVAILABLE" }, 503),
+    );
   }
   // Enterprise controls: capability switches and the model allowlist in front of the routes they
   // govern, the admin screen's API, and the SCIM verbs the GET/POST auth handler above does not take.
   app.use("/api/*", createEnterpriseGate(requireUser));
   app.route("/api/admin/enterprise", createEnterpriseAdminRoutes(requireUser));
   app.on(["PUT", "PATCH", "DELETE"], "/api/auth/scim/*", (context) =>
-    auth
-      ? auth.handler(context.req.raw)
-      : context.json({ error: "No identity provider is configured." }, 503),
+    config.runtime.mode === "owned"
+      ? context.json({ code: "SCOUT_IDENTITY_ROUTE_UNAVAILABLE" }, 503)
+      : auth
+        ? auth.handler(context.req.raw)
+        : context.json({ error: "No identity provider is configured." }, 503),
   );
 
   app.route(
@@ -1632,13 +1695,21 @@ export function createApp(
     );
     channelAttachments.route(
       "/",
-      createChannelAttachmentRoutes(attachmentDatabase, requireUser),
+      createChannelAttachmentRoutes(
+        attachmentDatabase,
+        requireUser,
+        coworker?.scoutOwned?.scope,
+      ),
     );
     app.route("/api/channels", channelAttachments);
 
     app.route(
       "/api/attachments",
-      createAttachmentRoutes(attachmentDatabase, requireUser),
+      createAttachmentRoutes(
+        attachmentDatabase,
+        requireUser,
+        coworker?.scoutOwned?.scope,
+      ),
     );
   }
 

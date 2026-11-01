@@ -498,6 +498,13 @@
       "when": 1793503109600,
       "tag": "0070_scout_model_calls",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1793504573342,
+      "tag": "0071_scout_tenant_scope",
+      "breakpoints": true
     }
   ]
 }

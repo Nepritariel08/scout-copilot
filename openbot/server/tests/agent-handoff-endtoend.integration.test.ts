@@ -42,7 +42,7 @@ const RUN = `e2e-run-${suite}`;
 
 const queue = createWorkQueue(database);
 const auditStore = createAuditStore(database);
-const profiles = createAgentProfileStore(database);
+const profiles = createAgentProfileStore(database, undefined);
 
 const desk = createHandoffDesk({
   queue,

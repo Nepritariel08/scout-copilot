@@ -1379,6 +1379,7 @@ export type AnyDeploymentConfig = DeploymentConfig<RuntimeCapabilities>;
 export type OwnedDeploymentConfig =
   DeploymentConfig<OwnedRuntimeCapabilities> & {
     scoutModelPolicyFile?: string;
+    scoutPlatformOwnerIds: readonly string[];
   };
 
 /** An explicit public-SDK composition; never supplies fabricated Intelligence credentials. */
@@ -1417,11 +1418,32 @@ export function loadOwnedConfig(
     throw new Error(
       "SCOUT_MODEL_POLICY_FILE must be an absolute protected file path.",
     );
+  const scoutPlatformOwnerIds = (
+    optional(environment, "SCOUT_PLATFORM_OWNER_IDS") ?? ""
+  )
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  if (
+    scoutPlatformOwnerIds.length > 100 ||
+    new Set(scoutPlatformOwnerIds).size !== scoutPlatformOwnerIds.length ||
+    scoutPlatformOwnerIds.some(
+      (id) =>
+        id.length > 200 ||
+        Array.from(id).some(
+          (c) => c.charCodeAt(0) <= 32 || c.charCodeAt(0) === 127,
+        ),
+    )
+  )
+    throw new Error(
+      "SCOUT_PLATFORM_OWNER_IDS must contain unique exact native subject IDs.",
+    );
   return {
     ...config,
     learningAutoAssign: false,
     selfHostBanner: false,
     ...(scoutModelPolicyFile ? { scoutModelPolicyFile } : {}),
+    scoutPlatformOwnerIds,
   };
 }
 

@@ -13,8 +13,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   AbstractAgent,
-  HttpAgent,
   type BaseEvent,
+  HttpAgent,
   type RunAgentInput,
 } from "@ag-ui/client";
 import { eq, inArray, sql } from "drizzle-orm";
@@ -155,6 +155,7 @@ beforeAll(async () => {
     DATABASE_URL: testDatabaseUrl(),
     KEY_ENCRYPTION_KEY: Buffer.alloc(32, 13).toString("base64"),
     SCOUT_RUNTIME_MODE: "owned",
+    DEPLOYMENT_ID: "fixture-owned",
     OPENBOT_ORGANIZATION_AUTH_URL: "https://synthetic-identity.fixture.example",
     OPENBOT_HOST: "127.0.0.1",
     SCOUT_QUEUE_BINDINGS_FILE: join(fixtureDirectory, "synthetic-policy.json"),
@@ -454,6 +455,7 @@ describe("owned composition through the actual Scout app", () => {
           DATABASE_URL: testDatabaseUrl(),
           KEY_ENCRYPTION_KEY: Buffer.alloc(32, 13).toString("base64"),
           SCOUT_RUNTIME_MODE: "owned",
+          DEPLOYMENT_ID: "fixture-owned",
           PORT: String(port),
           OPENBOT_HOST: "127.0.0.1",
           OPENBOT_ORGANIZATION_AUTH_URL: issuer.url.origin,
