@@ -100,7 +100,7 @@ describe("owned Entra preprovisioned account lookup", () => {
           accountId: subject,
         })
         .execute(),
-    ).rejects.toMatchObject({ code: "23505" });
+    ).rejects.toMatchObject({ cause: { code: "23505" } });
   });
 
   test("removing the exact binding stops login while leaving local contact data intact", async () => {
