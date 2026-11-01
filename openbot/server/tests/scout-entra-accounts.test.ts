@@ -104,7 +104,13 @@ describe("owned Entra preprovisioned account lookup", () => {
         (error: unknown) =>
           error instanceof Error && "cause" in error ? error.cause : error,
       );
-    expect(duplicateError).toMatchObject({ code: "23505" });
+    const duplicateErrorCode =
+      typeof duplicateError === "object" &&
+      duplicateError !== null &&
+      "code" in duplicateError
+        ? duplicateError.code
+        : undefined;
+    expect(duplicateErrorCode).toBe("23505");
   });
 
   test("removing the exact binding stops login while leaving local contact data intact", async () => {
