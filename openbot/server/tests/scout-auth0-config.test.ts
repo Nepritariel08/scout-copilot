@@ -114,7 +114,9 @@ describe("protected owned Auth0 configuration", () => {
       INTELLIGENCE_GATEWAY_WS_URL: "wss://intelligence.fixture.example",
       INTELLIGENCE_API_KEY: "synthetic-intelligence-key",
     });
-    expect(config.auth?.auth0).toBeUndefined();
+    if (!config.auth)
+      throw new Error("Expected configured native Google auth.");
+    expect(config.auth.auth0).toBeUndefined();
     expect(configuredAuthProviders(config.auth)).toEqual(["google"]);
     expect(config.runtime.mode).toBe("intelligence");
   });
