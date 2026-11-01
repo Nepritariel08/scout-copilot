@@ -388,6 +388,11 @@ review grants/readback within `scout_owned_pilot` only. Keep audit invariants an
 deny runtime DDL/TRUNCATE. Do not run `REASSIGN OWNED BY postgres` on a shared
 cluster. Record migration journal/table/schema hashes and role privileges.
 
+For any release containing 0074, apply the exact inventory, reduced-runtime-role,
+minimum-binary and recovery checks in [HISTORY-RUNTIME-QUALIFICATION.md](HISTORY-RUNTIME-QUALIFICATION.md).
+The pending approval-bound 0072/0073 command is unchanged; it does not establish
+that a later release's context table, guards or runtime grants are ready.
+
 ## Service and private ingress templates
 
 Use [owned.env.example](owned.env.example) as the starting contract. This minimal
@@ -573,6 +578,13 @@ Do not point the restore fixture at live requester credentials. Compare persiste
 messages and recover interrupted runs without dispatching their model/tool work
 again. A successful `pg_restore` alone is not a usable recovery proof.
 
+After 0074, first verify restored context/run-prefix metadata and the complete
+trigger/privilege inventory without application source/model egress. Contextual
+history must deny when its current source/release/model-route authorization is
+unavailable. Use the separately isolated synthetic positive restore described in
+[the history qualification packet](HISTORY-RUNTIME-QUALIFICATION.md#minimum-binary-and-recovery-boundary);
+never reset provenance or reuse live requester keys to make that check pass.
+
 An older database snapshot may omit later model usage and task observations.
 Before re-enabling inference after recovery, reconcile actual provider/queue
 receipts and retained quotas; missing cost is unknown, not zero or a daily-budget
@@ -583,7 +595,10 @@ Rollback is manually targeted: withdraw the new Scout Caddy site (or restore
 the exact prior verified config), validate/reload Caddy, stop only
 `scout-pilot.service`, and retain the failed release/DB/receipts for investigation.
 For an update, select the last accepted compatible release/unit/config together;
-do not run an older binary against a newer unsupported schema. If DB rollback is
+do not run an older binary against a newer unsupported schema. Additive schema
+compatibility does not qualify a pre-0074 history reader: preserve the
+[provenance-aware minimum binary and ingress fence](HISTORY-RUNTIME-QUALIFICATION.md#minimum-binary-and-recovery-boundary)
+before any rollback. If DB rollback is
 needed, first preserve the current DB and restore the matched recovery point into
 a new dedicated target, then explicitly switch the Scout connection after
 reconciliation. No automated `DROP`, recursive deletion, global role reassignment,
