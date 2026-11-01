@@ -186,9 +186,9 @@ describe("owned Odoo grant persistence and credential resolution", () => {
         revision: 1,
         sourceUid: 201,
         qualification: "verified_nonadmin",
-        companyIds: [1, 2],
-        allowedProjectIds: [501, 502],
       });
+      expect(Array.from(record!.companyIds)).toEqual([1, 2]);
+      expect(Array.from(record!.allowedProjectIds)).toEqual([501, 502]);
       const [storedSecret] = await database
         .select({ encryptedValue: credentials.encryptedValue })
         .from(credentials)
