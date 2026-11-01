@@ -18,16 +18,22 @@ type NativeAccount = {
   name: string | null;
 };
 
-export type ScoutEntraAccountReader = (key: {
-  issuer: string;
-  subject: string;
-}) => Promise<NativeAccount | null>;
+export type ScoutEntraAccountReader = (
+  key: {
+    issuer: string;
+  } & ({ subject: string } | { userId: string }),
+) => Promise<NativeAccount | null>;
 
 /** A native Entra account exists only after an operator binds the exact tenant-scoped object. */
 export function createScoutEntraAccountReader(
   database: Database,
 ): ScoutEntraAccountReader {
-  return async ({ issuer, subject }) => {
+  return async (key) => {
+    const issuer = key.issuer;
+    const subjectCondition =
+      "subject" in key
+        ? eq(accounts.accountId, key.subject)
+        : eq(accounts.userId, key.userId);
     const matched = await database
       .select({
         userId: accounts.userId,
@@ -41,7 +47,7 @@ export function createScoutEntraAccountReader(
         and(
           eq(accounts.providerId, "microsoft"),
           eq(accounts.issuer, issuer),
-          eq(accounts.accountId, subject),
+          subjectCondition,
         ),
       )
       .limit(2);
@@ -253,9 +259,29 @@ export function createScoutEntraAdapter(
       denied();
   }
 
+  const after = createAuthMiddleware(async (context) => {
+    if (context.path !== "/get-session") return;
+    const result: unknown = context.context.returned;
+    if (result === null || result === undefined) return;
+    if (
+      !object(result) ||
+      !object(result.user) ||
+      typeof result.user.id !== "string"
+    ) {
+      context.context.returned = null;
+      return;
+    }
+    // Recheck the native issuer/OID mapping even when Better Auth served its session from
+    // cookie cache. Removing an identity binding must stop an already-issued session too.
+    const current = await readAccount({ issuer, userId: result.user.id });
+    if (!current || current.userId !== result.user.id)
+      context.context.returned = null;
+  });
+
   return {
     provider,
     before,
+    after,
     assertSessionUser,
     async validateUserInfo(user: { id?: unknown }, profile: unknown) {
       if (

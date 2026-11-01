@@ -218,6 +218,7 @@ export function createAuth(
       "Owned Scout must use one closed native identity adapter at a time.",
     );
   const identityBefore = scoutEntra?.before ?? scoutAuth0?.before;
+  const identityAfter = scoutEntra?.after;
 
   /*
    * Owned Entra and Auth0, plus Okta, go through the generic OAuth plugin.
@@ -369,7 +370,14 @@ export function createAuth(
     },
     baseURL: authConfig.baseUrl,
     secret: authConfig.secret,
-    ...(identityBefore ? { hooks: { before: identityBefore } } : {}),
+    ...(identityBefore || identityAfter
+      ? {
+          hooks: {
+            ...(identityBefore ? { before: identityBefore } : {}),
+            ...(identityAfter ? { after: identityAfter } : {}),
+          },
+        }
+      : {}),
     trustedOrigins: [
       ...authConfig.trustedOrigins,
       ...(nativeApp ? [NATIVE_APP_ORIGIN] : []),

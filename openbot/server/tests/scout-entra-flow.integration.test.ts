@@ -13,7 +13,7 @@ import {
   randomUUID,
   sign,
 } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { createAuth } from "../src/auth";
 import type { OwnedDeploymentConfig } from "../src/config";
 import { createDatabase } from "../src/db/client";
@@ -132,7 +132,7 @@ async function nativeRequest(
   return response;
 }
 
-async function begin(unknown = false) {
+async function begin(unknown = false, requestSignUp = false) {
   const cookies = new CookieJar();
   const started = await nativeRequest(
     "/api/auth/sign-in/social",
@@ -140,6 +140,7 @@ async function begin(unknown = false) {
     {
       provider: "microsoft",
       callbackURL: `${origin}/synthetic-signed-in`,
+      ...(requestSignUp ? { requestSignUp: true } : {}),
     },
     cookies,
   );
@@ -346,7 +347,7 @@ describe("actual Better Auth owned Entra authorization-code flow", () => {
     ).toHaveLength(1);
   });
 
-  test("client-posted ID tokens, account-link attempts and explicit signup are refused", async () => {
+  test("client-posted ID tokens and account-link attempts are refused", async () => {
     const directToken = await nativeRequest(
       "/api/auth/sign-in/social",
       "POST",
@@ -364,15 +365,39 @@ describe("actual Better Auth owned Entra authorization-code flow", () => {
       callbackURL: `${origin}/synthetic-signed-in`,
       link: true,
     });
-    const signup = await nativeRequest("/api/auth/sign-in/social", "POST", {
-      provider: "microsoft",
-      callbackURL: `${origin}/synthetic-signed-in`,
-      requestSignUp: true,
-    });
     expect([400, 403]).toContain(directToken.status);
     expect([400, 403]).toContain(link.status);
-    expect([400, 403]).toContain(signup.status);
     expect(providerFetches).toEqual([]);
+  });
+
+  test("explicit signup cannot create an account for an unprovisioned oid", async () => {
+    const flow = await begin(true, true);
+    const response = await finish(flow);
+    expect(response.status).toBe(302);
+    const redirect = response.headers.get("location");
+    if (!redirect)
+      throw new Error("Rejected signup omitted its error redirect");
+    const target = new URL(redirect);
+    expect(target.pathname).not.toBe("/synthetic-signed-in");
+    expect(target.searchParams.has("error")).toBe(true);
+    expect(await session(flow.cookies)).toBeNull();
+    expect(
+      await database.select().from(sessions).where(eq(sessions.userId, userId)),
+    ).toHaveLength(0);
+    expect(
+      await database.select().from(users).where(eq(users.email, email)),
+    ).toHaveLength(1);
+    expect(
+      await database
+        .select()
+        .from(accounts)
+        .where(
+          and(
+            eq(accounts.providerId, "microsoft"),
+            eq(accounts.accountId, unprovisionedObjectId),
+          ),
+        ),
+    ).toHaveLength(0);
   });
 
   test("mapping revocation at session creation stops an otherwise valid callback", async () => {
@@ -384,5 +409,17 @@ describe("actual Better Auth owned Entra authorization-code flow", () => {
     expect(
       await database.select().from(sessions).where(eq(sessions.userId, userId)),
     ).toHaveLength(0);
+  });
+
+  test("mapping revocation also denies an already-issued session", async () => {
+    const flow = await begin();
+    const response = await finish(flow);
+    expect(response.status).toBe(302);
+    expect(await session(flow.cookies)).toMatchObject({
+      user: { id: userId, email },
+    });
+
+    await database.delete(accounts).where(eq(accounts.id, accountId));
+    expect(await session(flow.cookies)).toBeNull();
   });
 });
