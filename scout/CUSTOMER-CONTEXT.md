@@ -5,6 +5,12 @@ task-context and provider-consent UI. It does not activate shared access or chan
 the owner-private deployment defaults. The primary outcome is still
 [SSC AI Enablement #4](https://github.com/Nepritariel08/ssc-ai-enablement/issues/4).
 
+The subsequent [owned contextual-history boundary](CONTEXT-HISTORY.md) retains
+server-owned source dependencies for derived answers and ordinary continuations.
+Unknown legacy provenance denies; current source/release/model rights are checked
+again for display, replay and provider reuse. This is a conservative task-context
+history slice, not completion of general retrieval, memory or customer rollout.
+
 ## Odoo 20 feasibility and selected boundary
 
 The official Odoo 20

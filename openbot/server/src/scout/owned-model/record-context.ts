@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { historyDigest } from "../history/protocol";
+import type { ContextDependency } from "./context-dependency";
 import { ModelPolicyError } from "./policy";
 
 /** The only browser value accepted by this pilot: an untrusted ID hint. */
@@ -124,6 +126,7 @@ export type ProjectTaskContextPort = {
 
 export type ResolvedProjectTaskContext = {
   prompt: string;
+  dependency: ContextDependency;
   assertCurrent(
     principal: ProjectTaskContextPrincipal,
     provider: ProjectTaskContextProvider,
@@ -365,6 +368,17 @@ export async function resolveProjectTaskContext(
   if (Buffer.byteLength(prompt, "utf8") > MAX_RECORD_BYTES) return deny();
   return {
     prompt,
+    dependency: {
+      kind: "odoo.project_task_summary.v1",
+      principal: { ...principal },
+      sourceInstanceId: port.sourceInstanceId,
+      recordId,
+      provider,
+      modelPolicyFingerprint,
+      grantDigest: historyDigest(grant),
+      releaseDigest: historyDigest(releaseGrant),
+      recordDigest: historyDigest(selected),
+    },
     assertCurrent: async (currentPrincipal, currentProvider) => {
       if (!samePrincipal(currentPrincipal, principal)) return deny();
       if (currentProvider !== provider || now() - retrievedAtMs > 60_000)

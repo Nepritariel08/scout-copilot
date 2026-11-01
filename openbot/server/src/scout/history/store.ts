@@ -9,6 +9,7 @@ import {
   scoutHistoryRuns as runs,
   scoutHistoryThreads as threads,
 } from "../../db/schema/scout-history";
+import { stampNewHistoryContext } from "./context-store";
 import {
   HistoryError,
   type HistoryPrincipal,
@@ -278,6 +279,7 @@ export function createHistoryStore(
         channelId: input.channelId ?? null,
       })
       .returning(metadata);
+    await stampNewHistoryContext(tx, thread.id);
     return thread;
   }
 

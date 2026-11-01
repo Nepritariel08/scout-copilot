@@ -13,6 +13,7 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import type { HistorySnapshot } from "../../scout/history/protocol";
+import type { ContextDependency } from "../../scout/owned-model/context-dependency";
 import { users } from "./core";
 import { jsonb } from "./json";
 
@@ -69,6 +70,7 @@ export const scoutHistoryRuns = pgTable(
     id: text("id").notNull(),
     agentId: text("agent_id").notNull(),
     requestDigest: text("request_digest").notNull(),
+    contextRevision: integer("context_revision"),
     input: jsonb("input").$type<RunAgentInput>().notNull(),
     status: text("status").$type<HistoryRunStatus>().notNull(),
     leaseToken: text("lease_token").notNull(),
@@ -92,6 +94,10 @@ export const scoutHistoryRuns = pgTable(
     check(
       "scout_history_run_digest_check",
       sql`${table.requestDigest} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "scout_history_run_context_revision_check",
+      sql`${table.contextRevision} is null or ${table.contextRevision} between 0 and 16`,
     ),
   ],
 );
@@ -119,5 +125,24 @@ export const scoutHistoryEvents = pgTable(
       table.sequence,
     ),
     check("scout_history_event_sequence_check", sql`${table.sequence} > 0`),
+  ],
+);
+
+/** Absence means unknown legacy provenance, never implicitly source-free. */
+export const scoutHistoryContext = pgTable(
+  "scout_history_context",
+  {
+    threadId: text("thread_id")
+      .primaryKey()
+      .references(() => scoutHistoryThreads.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    revision: integer("revision").notNull(),
+    dependencies: jsonb("dependencies").$type<ContextDependency[]>().notNull(),
+  },
+  (table) => [
+    check(
+      "scout_history_context_shape",
+      sql`${table.version} = 1 and ${table.revision} between 0 and 16 and jsonb_typeof(${table.dependencies}) = 'array' and jsonb_array_length(${table.dependencies}) = ${table.revision}`,
+    ),
   ],
 );

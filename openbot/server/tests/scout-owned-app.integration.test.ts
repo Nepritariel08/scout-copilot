@@ -8,7 +8,7 @@ import {
   test,
 } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
@@ -30,7 +30,11 @@ import {
   users,
   workItems,
 } from "../src/db/schema";
-import { scoutHistoryThreads } from "../src/db/schema/scout-history";
+import {
+  scoutHistoryContext,
+  scoutHistoryRuns,
+  scoutHistoryThreads,
+} from "../src/db/schema/scout-history";
 import { parseScoutMembership } from "../src/scout/membership";
 import { createOwnedApplication } from "../src/scout/owned/application";
 import { createModelPolicyReader } from "../src/scout/owned-model/policy";
@@ -51,6 +55,8 @@ let active = true;
 let invocations = 0;
 let odooFixtureCalls = 0;
 let modelFixtureCalls = 0;
+let beforeModelDispatch: (() => Promise<void>) | undefined;
+let observedModelBodies: unknown[] = [];
 let revokeOdooMapOnTaskRead = false;
 let issuedFresh = true;
 let changingPolicy = false;
@@ -351,7 +357,12 @@ beforeAll(async () => {
           : value;
       },
       modelFetch: Object.assign(
-        async () => {
+        async (
+          _input: Parameters<typeof fetch>[0],
+          init?: Parameters<typeof fetch>[1],
+        ) => {
+          await beforeModelDispatch?.();
+          observedModelBodies.push(JSON.parse(String(init?.body)));
           modelFixtureCalls++;
           const packets = [
             {
@@ -464,6 +475,8 @@ beforeEach(async () => {
   policyReads = 0;
   odooFixtureCalls = 0;
   modelFixtureCalls = 0;
+  beforeModelDispatch = undefined;
+  observedModelBodies = [];
   revokeOdooMapOnTaskRead = false;
   membershipRevision = 1;
   odooMapRevision = 1;
@@ -1008,6 +1021,293 @@ describe("owned composition through the actual Scout app", () => {
       await writeOdooPolicy();
       revokeOdooMapOnTaskRead = true;
       expect(await selected()).not.toContain("ODOO_MODEL_SYNTHETIC_OK");
+      expect(modelFixtureCalls).toBe(0);
+    },
+  );
+  test.skipIf(process.platform !== "linux")(
+    "contextual answer and ordinary continuation retain durable source authority for display, replay and later egress",
+    async () => {
+      expect(
+        (
+          await requestConfiguredGrant(
+            "POST",
+            "/api/scout/odoo/context-grants",
+            { apiKey: "synthetic-history-context-key" },
+          )
+        ).status,
+      ).toBe(201);
+      expect(
+        (
+          await requestConfiguredGrant(
+            "POST",
+            "/api/scout/odoo/context-grants/release",
+            await releaseConsent(),
+          )
+        ).status,
+      ).toBe(201);
+      const { threadId } = await (
+        await requestConfiguredGrant("POST", "/api/threads/mint", { agentId })
+      ).json();
+      beforeModelDispatch = async () => {
+        const [marked] = await database
+          .select()
+          .from(scoutHistoryContext)
+          .where(eq(scoutHistoryContext.threadId, threadId));
+        expect(marked?.revision).toBe(1);
+        expect(marked?.dependencies[0]?.recordId).toBe(42);
+        const [run] = await database
+          .select({ contextRevision: scoutHistoryRuns.contextRevision })
+          .from(scoutHistoryRuns)
+          .where(eq(scoutHistoryRuns.threadId, threadId))
+          .orderBy(sql`${scoutHistoryRuns.startedAt} desc`)
+          .limit(1);
+        expect(run?.contextRevision).toBe(1);
+        expect(JSON.stringify(marked)).not.toContain("Synthetic mapped task");
+        expect(JSON.stringify(marked)).not.toContain(
+          "synthetic-history-context-key",
+        );
+      };
+      const selected = await requestConfiguredGrant(
+        "POST",
+        `/api/copilotkit/agent/${agentId}/run`,
+        {
+          ...input(threadId),
+          context: [{ description: "scout.project_task_id", value: "42" }],
+        },
+      );
+      expect(await selected.text()).toContain("ODOO_MODEL_SYNTHETIC_OK");
+      const ordinary = await requestConfiguredGrant(
+        "POST",
+        `/api/copilotkit/agent/${agentId}/run`,
+        input(threadId),
+      );
+      expect(await ordinary.text()).toContain("ODOO_MODEL_SYNTHETIC_OK");
+      expect(modelFixtureCalls).toBe(2);
+      expect(JSON.stringify(observedModelBodies.at(-1))).toContain(
+        "ODOO_MODEL_SYNTHETIC_OK",
+      );
+      const messages = `/api/scout/threads/${threadId}/messages`;
+      const replay = `/api/scout/threads/${threadId}/events`;
+      expect((await requestConfiguredGrant("GET", messages)).status).toBe(200);
+      expect(
+        (await requestConfiguredGrant("GET", messages, undefined, bob)).ok,
+      ).toBe(false);
+      expect(
+        (
+          await requestConfiguredGrant(
+            "DELETE",
+            "/api/scout/odoo/context-grants/release",
+            { agentId },
+          )
+        ).status,
+      ).toBe(200);
+      modelFixtureCalls = 0;
+      for (const path of [
+        messages,
+        replay,
+        `/api/copilotkit/threads/${threadId}/messages?agentId=${agentId}`,
+        `/api/threads/${threadId}`,
+      ]) {
+        const response = await requestConfiguredGrant("GET", path);
+        expect(response.status).toBe(403);
+        expect(await response.text()).not.toContain("ODOO_MODEL_SYNTHETIC_OK");
+      }
+      const denied = await requestConfiguredGrant(
+        "POST",
+        `/api/copilotkit/agent/${agentId}/run`,
+        input(threadId),
+      );
+      expect(denied.status).toBe(403);
+      expect(await denied.text()).not.toContain("ODOO_MODEL_SYNTHETIC_OK");
+      expect(modelFixtureCalls).toBe(0);
+      // Source revocation closes only contextual history. A fresh source-free
+      // conversation can still use the independently authorized model route.
+      beforeModelDispatch = undefined;
+      const { threadId: freshId } = await (
+        await requestConfiguredGrant("POST", "/api/threads/mint", { agentId })
+      ).json();
+      odooFixtureCalls = 0;
+      const fresh = await requestConfiguredGrant(
+        "POST",
+        `/api/copilotkit/agent/${agentId}/run`,
+        input(freshId),
+      );
+      expect(await fresh.text()).toContain("ODOO_MODEL_SYNTHETIC_OK");
+      expect(odooFixtureCalls).toBe(0);
+    },
+  );
+  test.skipIf(process.platform !== "linux")(
+    "current Odoo mapping and native membership gate prior contextual answers without another task selection",
+    async () => {
+      expect(
+        (
+          await requestConfiguredGrant(
+            "POST",
+            "/api/scout/odoo/context-grants",
+            { apiKey: "synthetic-source-continuation-key" },
+          )
+        ).status,
+      ).toBe(201);
+      expect(
+        (
+          await requestConfiguredGrant(
+            "POST",
+            "/api/scout/odoo/context-grants/release",
+            await releaseConsent(),
+          )
+        ).status,
+      ).toBe(201);
+      const { threadId } = await (
+        await requestConfiguredGrant("POST", "/api/threads/mint", { agentId })
+      ).json();
+      expect(
+        await (
+          await requestConfiguredGrant(
+            "POST",
+            `/api/copilotkit/agent/${agentId}/run`,
+            {
+              ...input(threadId),
+              context: [{ description: "scout.project_task_id", value: "42" }],
+            },
+          )
+        ).text(),
+      ).toContain("ODOO_MODEL_SYNTHETIC_OK");
+      odooMapActive = false;
+      await writeOdooPolicy();
+      modelFixtureCalls = 0;
+      expect(
+        (
+          await requestConfiguredGrant(
+            "GET",
+            `/api/scout/threads/${threadId}/messages`,
+          )
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await requestConfiguredGrant(
+            "POST",
+            `/api/copilotkit/agent/${agentId}/run`,
+            input(threadId),
+          )
+        ).status,
+      ).toBe(403);
+      expect(modelFixtureCalls).toBe(0);
+      odooMapActive = true;
+      await writeOdooPolicy();
+      expect(
+        (
+          await requestConfiguredGrant(
+            "GET",
+            `/api/scout/threads/${threadId}/messages`,
+          )
+        ).status,
+      ).toBe(200);
+      membershipRevision++;
+      expect(
+        (
+          await requestConfiguredGrant(
+            "GET",
+            `/api/scout/threads/${threadId}/messages`,
+          )
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await requestConfiguredGrant(
+            "POST",
+            `/api/copilotkit/agent/${agentId}/run`,
+            input(threadId),
+          )
+        ).status,
+      ).toBe(403);
+      expect(modelFixtureCalls).toBe(0);
+    },
+  );
+  test.skipIf(process.platform !== "linux")(
+    "unknown legacy provenance and model-route changes cannot reuse contextual history",
+    async () => {
+      expect(
+        (
+          await requestConfiguredGrant(
+            "POST",
+            "/api/scout/odoo/context-grants",
+            { apiKey: "synthetic-route-context-key" },
+          )
+        ).status,
+      ).toBe(201);
+      expect(
+        (
+          await requestConfiguredGrant(
+            "POST",
+            "/api/scout/odoo/context-grants/release",
+            await releaseConsent(),
+          )
+        ).status,
+      ).toBe(201);
+      const { threadId } = await (
+        await requestConfiguredGrant("POST", "/api/threads/mint", { agentId })
+      ).json();
+      expect(
+        await (
+          await requestConfiguredGrant(
+            "POST",
+            `/api/copilotkit/agent/${agentId}/run`,
+            {
+              ...input(threadId),
+              context: [{ description: "scout.project_task_id", value: "42" }],
+            },
+          )
+        ).text(),
+      ).toContain("ODOO_MODEL_SYNTHETIC_OK");
+      const path = join(fixtureDirectory, "synthetic-model-policy.json");
+      const original = await readFile(path, "utf8");
+      try {
+        const changed = JSON.parse(original);
+        changed.bindings[0].route.model = "different-synthetic-model";
+        await writeFile(path, JSON.stringify(changed), { mode: 0o600 });
+        modelFixtureCalls = 0;
+        expect(
+          (
+            await requestConfiguredGrant(
+              "GET",
+              `/api/scout/threads/${threadId}/messages`,
+            )
+          ).status,
+        ).toBe(403);
+        expect(
+          (
+            await requestConfiguredGrant(
+              "POST",
+              `/api/copilotkit/agent/${agentId}/run`,
+              input(threadId),
+            )
+          ).status,
+        ).toBe(403);
+        expect(modelFixtureCalls).toBe(0);
+      } finally {
+        await writeFile(path, original, { mode: 0o600 });
+      }
+      await database
+        .delete(scoutHistoryContext)
+        .where(eq(scoutHistoryContext.threadId, threadId));
+      expect(
+        (
+          await requestConfiguredGrant(
+            "GET",
+            `/api/scout/threads/${threadId}/messages`,
+          )
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await requestConfiguredGrant(
+            "POST",
+            `/api/copilotkit/agent/${agentId}/run`,
+            input(threadId),
+          )
+        ).status,
+      ).toBe(403);
       expect(modelFixtureCalls).toBe(0);
     },
   );

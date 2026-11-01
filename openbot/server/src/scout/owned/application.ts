@@ -32,7 +32,9 @@ import {
 import { createUserInstructionsStore } from "../../user-instructions";
 import { createUserPreferencesStore } from "../../user-preferences";
 import { createScoutBindingReader } from "../binding";
+import { createHistoryContextStore } from "../history/context-store";
 import { createHistoryEngine } from "../history/runner";
+import type { HistoryResource } from "../history/service";
 import { createBoundHistory } from "../history/service";
 import { createHistoryStore } from "../history/store";
 import { createScoutConnector } from "../mcp";
@@ -41,6 +43,10 @@ import {
   type MembershipReader,
 } from "../membership";
 import { createOwnedModelAgents } from "../owned-model/agents";
+import {
+  type ContextHistory,
+  createContextHistory,
+} from "../owned-model/context-history";
 import {
   createOwnedOdooContextAdapters,
   readOwnedOdooContextSource,
@@ -164,6 +170,14 @@ export async function createOwnedApplication(
     options.auth,
   );
   const historyStore = createHistoryStore(database);
+  const historyContextStore = createHistoryContextStore(database);
+  let contextHistory: ContextHistory | undefined;
+  let authorizeHistoryContext: (
+    request: Request,
+    resource: HistoryResource,
+  ) => Promise<void> = async () => {
+    throw new Error("HISTORY_ACCESS_DENIED");
+  };
   const historyEngine = createHistoryEngine(historyStore);
   const threadIdentity = createThreadIdentity(deploymentId);
   const channels = createChannelStore(
@@ -195,6 +209,8 @@ export async function createOwnedApplication(
     binding,
     profiles,
     channels,
+    authorizeContext: (request, resource) =>
+      authorizeHistoryContext(request, resource),
   });
   const loadAgents = createRuntimeAgentLoader(
     database,
@@ -243,6 +259,36 @@ export async function createOwnedApplication(
   const readOdooModelPolicy = config.scoutModelPolicyFile
     ? createModelPolicyReader(config.scoutModelPolicyFile)
     : undefined;
+  contextHistory = createContextHistory({
+    store: historyContextStore,
+    recordContext,
+    ...(readOdooModelPolicy
+      ? {
+          readPolicy: (principal, agentId) =>
+            readOdooModelPolicy({
+              userId: principal.userId,
+              tenantId: principal.tenantId,
+              deploymentId: principal.deploymentId,
+              agentId,
+            }),
+        }
+      : {}),
+  });
+  authorizeHistoryContext = async (request, resource) => {
+    if (!resource.id || !contextHistory)
+      throw new Error("HISTORY_ACCESS_DENIED");
+    const { person, policy: current } = await authority.binding(request);
+    await contextHistory.assertCurrent(
+      {
+        userId: person.id,
+        tenantId: current.tenantId,
+        deploymentId: current.deploymentId,
+        bindingFingerprint: current.fingerprint,
+      },
+      resource.id,
+      resource.agentId,
+    );
+  };
   const odooGrants =
     odooContextSource && odooContextAdapters && odooGrantService
       ? {
@@ -280,6 +326,7 @@ export async function createOwnedApplication(
           transport: options.modelFetch,
           scope,
           recordContext,
+          contextHistory,
         })
       : async (actor: AuthenticatedActor) =>
           Object.fromEntries(

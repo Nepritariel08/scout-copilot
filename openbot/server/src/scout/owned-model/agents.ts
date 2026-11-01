@@ -12,6 +12,7 @@ import { createBoundHistory } from "../history/service";
 import type { HistoryStore } from "../history/store";
 import type { createOwnedAuthority } from "../owned/authority";
 import type { TenantScope } from "../owned/scope";
+import type { ContextHistory } from "./context-history";
 import { OwnedTextModel } from "./model";
 import {
   createModelPolicyReader,
@@ -62,6 +63,7 @@ export function createOwnedModelAgents(deps: {
   scope?: TenantScope;
   /** Test-only trusted adapter seam. Production leaves this absent until source identity is qualified. */
   recordContext?: ProjectTaskContextPort;
+  contextHistory: ContextHistory;
 }) {
   const load = createRuntimeAgentLoader(
     deps.database,
@@ -92,6 +94,8 @@ export function createOwnedModelAgents(deps: {
             async (input, signal) => {
               const selection = selections.get(input) ?? { kind: "none" };
               let selectedContext: ResolvedProjectTaskContext | undefined;
+              let rememberedContext = false;
+              let markedRun = false;
               let bindingFingerprint: string | undefined;
               const authorize = async () => {
                 if (selection.kind === "invalid")
@@ -114,6 +118,18 @@ export function createOwnedModelAgents(deps: {
                 const grant = await policy(
                   modelPrincipal(person.id, binding, registered.id),
                 );
+                const contextPrincipal = {
+                  userId: person.id,
+                  tenantId: binding.tenantId,
+                  deploymentId: binding.deploymentId,
+                  bindingFingerprint: binding.fingerprint,
+                };
+                // Includes every dependency inherited by ordinary continuation, not just this selection.
+                let contextRevision = await deps.contextHistory.assertCurrent(
+                  contextPrincipal,
+                  input.threadId,
+                  registered.id,
+                );
                 // History and protected-model reads await I/O. Recheck the pinned
                 // membership after those waits, rather than returning an earlier binding.
                 const current = await deps.authority.binding(request);
@@ -123,7 +139,7 @@ export function createOwnedModelAgents(deps: {
                 )
                   throw new ModelPolicyError("MODEL_ACCESS_DENIED");
                 if (selection.kind === "selected") {
-                  if (!deps.recordContext)
+                  if (!deps.recordContext || !deps.contextHistory)
                     throw new ModelPolicyError("MODEL_ACCESS_DENIED");
                   const principal = {
                     userId: current.person.id,
@@ -144,6 +160,21 @@ export function createOwnedModelAgents(deps: {
                       principal,
                       grant.route.provider,
                     );
+                  if (!rememberedContext) {
+                    await deps.contextHistory.remember(
+                      principal,
+                      input.threadId,
+                      registered.id,
+                      input.runId,
+                      selectedContext.dependency,
+                    );
+                    rememberedContext = true;
+                    contextRevision = await deps.contextHistory.assertCurrent(
+                      principal,
+                      input.threadId,
+                      registered.id,
+                    );
+                  }
                   // Source and grant reads can await remote I/O. Pin native
                   // identity again after they finish, before authorizing egress.
                   const afterContext = await deps.authority.binding(request);
@@ -154,6 +185,16 @@ export function createOwnedModelAgents(deps: {
                     afterContext.policy.deploymentId !== principal.deploymentId
                   )
                     throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+                }
+                if (!markedRun) {
+                  await deps.contextHistory.markRun(
+                    contextPrincipal,
+                    input.threadId,
+                    registered.id,
+                    input.runId,
+                    contextRevision,
+                  );
+                  markedRun = true;
                 }
                 return grant;
               };
