@@ -44,6 +44,7 @@ let directory = "",
 let provider: ReturnType<typeof Bun.serve>;
 let app: Awaited<ReturnType<typeof createOwnedApplication>>;
 let active = true;
+let aliceRequesterUid = 101;
 let behavior = "normal";
 let providerCalls = 0;
 let captured:
@@ -70,7 +71,7 @@ const bindings = () => ({
     environment: {
       SCOUT_ODOO_URL: "https://synthetic-odoo.fixture.example",
       SCOUT_ODOO_DB: "fixture_db",
-      SCOUT_ODOO_UID: String(index + 101),
+      SCOUT_ODOO_UID: String(index ? 102 : aliceRequesterUid),
       SCOUT_ODOO_COMPANY_IDS: "1",
       SCOUT_ODOO_KEY_FILE: keyFile,
     },
@@ -182,6 +183,7 @@ beforeAll(async () => {
       };
       const ledger = await rows();
       expect(ledger.some((row) => row.status === "dispatched")).toBe(true);
+      if (behavior === "requester-change") aliceRequesterUid = 301;
       if (behavior === "error")
         return new Response("synthetic-owned-provider-key", { status: 502 });
       if (behavior === "stall")
@@ -292,6 +294,7 @@ beforeAll(async () => {
 });
 beforeEach(async () => {
   active = true;
+  aliceRequesterUid = 101;
   behavior = "normal";
   providerCalls = 0;
   captured = undefined;
@@ -609,5 +612,87 @@ describe("owned model: real SQL and SDK chat-completions", () => {
       model(scope, grant, () => reader(principal())).doGenerate(modelOptions()),
     ).rejects.toThrow("MODEL_ACCESS_DENIED");
     expect(providerCalls).toBe(0);
+  });
+  test("a same-tenant requester change while the provider responds releases and persists no answer", async () => {
+    const minted = await request("/api/threads/mint", { agentId });
+    expect(minted.status).toBe(200);
+    const { threadId } = (await minted.json()) as { threadId: string };
+    const before = parseScoutBinding(bindings(), { id: alice });
+    behavior = "requester-change";
+    const response = await request(
+      `/api/copilotkit/agent/${agentId}/run`,
+      input(threadId),
+    );
+    const events = await response.text();
+    expect(response.status).toBe(200);
+    expect(providerCalls).toBe(1);
+    expect(aliceRequesterUid).toBe(301);
+    const after = parseScoutBinding(bindings(), { id: alice });
+    expect(after.tenantId).toBe(before.tenantId);
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+    expect(events).not.toContain("OWNED_MODEL_SYNTHETIC_OK");
+    const saved = await request(
+      `/api/copilotkit/threads/${threadId}/messages?agentId=${agentId}`,
+    );
+    expect(saved.status).toBe(200);
+    expect(await saved.text()).not.toContain("OWNED_MODEL_SYNTHETIC_OK");
+    const ledger = await rows();
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]?.status).toBe("uncertain");
+    expect(ledger[0]?.errorCode).toBe("MODEL_ACCESS_DENIED");
+    expect(ledger[0]?.outputBytes).toBe(0);
+  });
+  test("a requester change during awaited history authorization cannot release the earlier binding's answer", async () => {
+    const minted = await request("/api/threads/mint", { agentId });
+    expect(minted.status).toBe(200);
+    const { threadId } = (await minted.json()) as { threadId: string };
+    const original = app.authority.forRequest;
+    let changedDuringHistory = false;
+    app.authority.forRequest = (raw) => {
+      const bound = original(raw);
+      // The native runner captures its authority before provider dispatch. Only
+      // the model's fresh history check is constructed after dispatch here.
+      const changeAfterHistoryCheck =
+        providerCalls > 0 && !changedDuringHistory;
+      return {
+        ...bound,
+        authorize: async (...args) => {
+          const allowed = await bound.authorize(...args);
+          if (
+            allowed &&
+            changeAfterHistoryCheck &&
+            args[2] === "run" &&
+            !changedDuringHistory
+          ) {
+            changedDuringHistory = true;
+            aliceRequesterUid = 301;
+          }
+          return allowed;
+        },
+      };
+    };
+    try {
+      const response = await request(
+        `/api/copilotkit/agent/${agentId}/run`,
+        input(threadId),
+      );
+      const events = await response.text();
+      expect(response.status).toBe(200);
+      expect(changedDuringHistory).toBe(true);
+      expect(providerCalls).toBe(1);
+      expect(events).not.toContain("OWNED_MODEL_SYNTHETIC_OK");
+      const saved = await request(
+        `/api/copilotkit/threads/${threadId}/messages?agentId=${agentId}`,
+      );
+      expect(saved.status).toBe(200);
+      expect(await saved.text()).not.toContain("OWNED_MODEL_SYNTHETIC_OK");
+      const ledger = await rows();
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0]?.status).toBe("uncertain");
+      expect(ledger[0]?.errorCode).toBe("MODEL_ACCESS_DENIED");
+      expect(ledger[0]?.outputBytes).toBe(0);
+    } finally {
+      app.authority.forRequest = original;
+    }
   });
 });

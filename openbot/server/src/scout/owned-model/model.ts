@@ -57,6 +57,24 @@ export class OwnedTextModel implements PlanLanguageModel {
     private readonly transport: typeof fetch = fetch,
   ) {}
 
+  private async currentGrant(fingerprint: string, signal: AbortSignal) {
+    try {
+      signal.throwIfAborted();
+      const current = await this.authorize();
+      // Revocation/abort may arrive while native identity, history or policy is being read.
+      signal.throwIfAborted();
+      if (
+        current.fingerprint !== fingerprint ||
+        !current.active ||
+        !(Date.parse(current.expiresAt) > Date.now())
+      )
+        throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+      return current;
+    } catch (error) {
+      throw safeError(error);
+    }
+  }
+
   async doGenerate(options: Options): Promise<Generated> {
     const { stream } = await this.doStream(options);
     const content: Generated["content"] = [];
@@ -76,6 +94,14 @@ export class OwnedTextModel implements PlanLanguageModel {
       if (part.type === "error") throw safeError(part.error);
     }
     if (!finish) throw new ModelPolicyError("MODEL_UNAVAILABLE");
+    // The answer is still private after the final asynchronous stream-close read.
+    await this.currentGrant(
+      this.initialGrant.fingerprint,
+      AbortSignal.any([
+        this.runSignal,
+        ...(options.abortSignal ? [options.abortSignal] : []),
+      ]),
+    );
     return {
       content,
       finishReason: finish.finishReason,
@@ -161,13 +187,7 @@ export class OwnedTextModel implements PlanLanguageModel {
       void fail(new ModelPolicyError("MODEL_UNAVAILABLE")).catch(() => {});
     };
     signal.addEventListener("abort", onAbort, { once: true });
-    const revalidate = async () => {
-      signal.throwIfAborted();
-      const current = await this.authorize();
-      if (current.fingerprint !== grant.fingerprint)
-        throw new ModelPolicyError("MODEL_ACCESS_DENIED");
-      return current;
-    };
+    const revalidate = () => this.currentGrant(grant.fingerprint, signal);
     try {
       const key = await readModelKey(grant);
       grant = await revalidate();
@@ -335,83 +355,97 @@ export class OwnedTextModel implements PlanLanguageModel {
       const reader = result.stream.getReader();
       const store = this.store;
       return {
-        stream: new ReadableStream<Part>({
-          async pull(out) {
-            try {
-              signal.throwIfAborted();
-              const item = await reader.read();
-              if (item.done) {
-                if (!settled) throw new ModelPolicyError("MODEL_UNAVAILABLE");
+        stream: new ReadableStream<Part>(
+          {
+            async pull(out) {
+              try {
+                for (;;) {
+                  signal.throwIfAborted();
+                  const item = await reader.read();
+                  // Recheck after the provider/SDK wait, including each decoded part from
+                  // a buffered wire chunk, before releasing any content or identifiers.
+                  await revalidate();
+                  if (item.done) {
+                    if (!settled)
+                      throw new ModelPolicyError("MODEL_UNAVAILABLE");
+                    signal.removeEventListener("abort", onAbort);
+                    out.close();
+                    return;
+                  }
+                  const part = item.value;
+                  if (part.type === "error") throw safeError(part.error);
+                  if (part.type.startsWith("tool-") || part.type === "file")
+                    throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+                  if (
+                    part.type === "text-delta" ||
+                    part.type === "reasoning-delta"
+                  ) {
+                    outputBytes += Buffer.byteLength(part.delta);
+                    if (outputBytes > grant.limits.maxOutputBytes)
+                      throw new ModelPolicyError("MODEL_LIMIT");
+                  }
+                  if (part.type === "finish") {
+                    if (!providerFinished)
+                      throw new ModelPolicyError("MODEL_UNAVAILABLE");
+                    await store.finish(call, "completed", {
+                      ...usage,
+                      outputBytes,
+                    });
+                    settled = true;
+                    clearTimeout(timeout);
+                    signal.removeEventListener("abort", onAbort);
+                    // A committed receipt remains counted even if authority changes while
+                    // persistence awaits; it does not authorize a stale terminal response.
+                    await revalidate();
+                    out.enqueue({
+                      type: "finish",
+                      finishReason: {
+                        unified: part.finishReason.unified,
+                        raw: undefined,
+                      },
+                      usage: part.usage,
+                    });
+                    return;
+                  }
+                  // Never forward provider metadata, raw payloads, request/response bodies or warning strings.
+                  if (part.type === "stream-start")
+                    out.enqueue({ type: "stream-start", warnings: [] });
+                  else if (
+                    part.type === "text-start" ||
+                    part.type === "text-end" ||
+                    part.type === "reasoning-start" ||
+                    part.type === "reasoning-end"
+                  )
+                    out.enqueue({ type: part.type, id: part.id });
+                  else if (
+                    part.type === "text-delta" ||
+                    part.type === "reasoning-delta"
+                  )
+                    out.enqueue({
+                      type: part.type,
+                      id: part.id,
+                      delta: part.delta,
+                    });
+                  else continue;
+                  // Dropped SDK metadata does not fulfill a pending read; keep reading
+                  // until one allowed part is available, then preserve backpressure.
+                  return;
+                }
+              } catch (error) {
+                await reader.cancel().catch(() => {});
+                await fail(error);
                 signal.removeEventListener("abort", onAbort);
-                out.close();
-                return;
+                out.error(safeError(error));
               }
-              const part = item.value;
-              if (part.type === "error") throw safeError(part.error);
-              if (part.type.startsWith("tool-") || part.type === "file")
-                throw new ModelPolicyError("MODEL_ACCESS_DENIED");
-              if (
-                part.type === "text-delta" ||
-                part.type === "reasoning-delta"
-              ) {
-                outputBytes += Buffer.byteLength(part.delta);
-                if (outputBytes > grant.limits.maxOutputBytes)
-                  throw new ModelPolicyError("MODEL_LIMIT");
-              }
-              if (part.type === "finish") {
-                if (!providerFinished)
-                  throw new ModelPolicyError("MODEL_UNAVAILABLE");
-                await revalidate();
-                await store.finish(call, "completed", {
-                  ...usage,
-                  outputBytes,
-                });
-                settled = true;
-                clearTimeout(timeout);
-                signal.removeEventListener("abort", onAbort);
-                signal.throwIfAborted();
-                out.enqueue({
-                  type: "finish",
-                  finishReason: {
-                    unified: part.finishReason.unified,
-                    raw: undefined,
-                  },
-                  usage: part.usage,
-                });
-                return;
-              }
-              // Never forward provider metadata, raw payloads, request/response bodies or warning strings.
-              if (part.type === "stream-start")
-                out.enqueue({ type: "stream-start", warnings: [] });
-              else if (
-                part.type === "text-start" ||
-                part.type === "text-end" ||
-                part.type === "reasoning-start" ||
-                part.type === "reasoning-end"
-              )
-                out.enqueue({ type: part.type, id: part.id });
-              else if (
-                part.type === "text-delta" ||
-                part.type === "reasoning-delta"
-              )
-                out.enqueue({
-                  type: part.type,
-                  id: part.id,
-                  delta: part.delta,
-                });
-            } catch (error) {
+            },
+            async cancel() {
               await reader.cancel().catch(() => {});
-              await fail(error);
+              await fail(new ModelPolicyError("MODEL_UNAVAILABLE"));
               signal.removeEventListener("abort", onAbort);
-              out.error(safeError(error));
-            }
+            },
           },
-          async cancel() {
-            await reader.cancel().catch(() => {});
-            await fail(new ModelPolicyError("MODEL_UNAVAILABLE"));
-            signal.removeEventListener("abort", onAbort);
-          },
-        }),
+          { highWaterMark: 0 },
+        ),
       };
     } catch (error) {
       await fail(error);
