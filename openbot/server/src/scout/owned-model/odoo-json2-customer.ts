@@ -18,7 +18,8 @@ function denied(): never {
 /**
  * Invited portal collaborators only. Composition selects this adapter from a protected
  * native-to-Odoo mapping, never a client/model role, company, partner or project hint.
- * All reads run as that portal user's bearer identity, without sudo or access tokens.
+ * Business reads run as that portal user's bearer identity, without sudo or access
+ * tokens. The separately installed attestation exposes only its own UID/fixed groups.
  */
 export function createOdooJson2CustomerTaskReader(
   options: OdooJson2ProjectTaskReaderOptions,
@@ -35,19 +36,40 @@ export function createOdooJson2CustomerTaskReader(
       (identity as Record<string, unknown>).uid !== uid
     )
       return denied();
+    // Stock Odoo 20 has_group may hide all groups from portal users because
+    // res.groups read access is internal-only. Never infer portal from all-false.
+    const attestation = await post(
+      "res.users",
+      "scout_own_identity_v1",
+      apiKey,
+      {},
+      2048,
+    );
+    if (
+      !attestation ||
+      typeof attestation !== "object" ||
+      Array.isArray(attestation) ||
+      Object.keys(attestation).sort().join(",") !== "contract,groups,uid"
+    )
+      return denied();
+    const own = attestation as Record<string, unknown>;
+    if (
+      own.contract !== "scout-own-identity-v1" ||
+      own.uid !== uid ||
+      !own.groups ||
+      typeof own.groups !== "object" ||
+      Array.isArray(own.groups) ||
+      Object.keys(own.groups).sort().join(",") !==
+        "base.group_erp_manager,base.group_portal,base.group_system,base.group_user"
+    )
+      return denied();
     for (const [group, expected] of [
       ["base.group_portal", true],
       ["base.group_user", false],
       ["base.group_system", false],
       ["base.group_erp_manager", false],
     ] as const) {
-      const actual = await post(
-        "res.users",
-        "has_group",
-        apiKey,
-        { ids: [uid], group_ext_id: group },
-        1024,
-      );
+      const actual = (own.groups as Record<string, unknown>)[group];
       if (actual !== expected) return denied();
     }
   };

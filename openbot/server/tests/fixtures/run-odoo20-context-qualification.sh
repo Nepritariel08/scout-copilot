@@ -4,6 +4,7 @@ umask 077
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../" && pwd)"
 seed_file="$repo_root/openbot/server/tests/fixtures/odoo20-qualification-seed.py"
+addon_dir="$repo_root/scout/odoo-addons"
 private_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/scout-odoo20-qualification.XXXXXXXX")"
 suffix="$(openssl rand -hex 8)"
 network="scout-odoo20-$suffix"
@@ -50,8 +51,10 @@ if [[ "$pg_ready" != true ]]; then
 fi
 
 if ! docker create --platform linux/amd64 --name "$init_name" --network "$network" \
+  --mount "type=bind,source=$addon_dir,target=/mnt/extra-addons,readonly" \
   --env HOST=pg --env PORT=5432 --env USER=odoo --env "PASSWORD=$pg_password" \
-  "$odoo_image" -d "$database" --init=base,project,portal --without-demo=all \
+  "$odoo_image" -d "$database" --init=base,project,portal,scout_own_identity --without-demo=all \
+  --test-enable --test-tags /scout_own_identity \
   --stop-after-init --workers=0 --max-cron-threads=0 \
   --db_host=pg --db_port=5432 --db_user=odoo --db_password="$pg_password" \
   >/dev/null; then
@@ -63,6 +66,7 @@ fi
 docker rm -fv "$init_name" >/dev/null
 
 if ! docker create --interactive --platform linux/amd64 --name "$seed_name" --network "$network" \
+  --mount "type=bind,source=$addon_dir,target=/mnt/extra-addons,readonly" \
   --env HOST=pg --env PORT=5432 --env USER=odoo --env "PASSWORD=$pg_password" \
   "$odoo_image" odoo shell -d "$database" --no-http --db_host=pg --db_port=5432 \
   --db_user=odoo --db_password="$pg_password" >/dev/null; then
@@ -83,6 +87,7 @@ chmod 600 "$private_dir/fixture/credentials.json" "$private_dir/fixture/metadata
 docker rm -fv "$seed_name" >/dev/null
 
 docker run --platform linux/amd64 --detach --name "$app_name" --network "$network" \
+  --mount "type=bind,source=$addon_dir,target=/mnt/extra-addons,readonly" \
   --publish 127.0.0.1::8069 --env HOST=pg --env PORT=5432 --env USER=odoo \
   --env PASSWORD="$pg_password" "$odoo_image" -d "$database" \
   --db_host=pg --db_port=5432 --db_user=odoo --db_password="$pg_password" \
@@ -115,6 +120,10 @@ if ! bun test server/tests/odoo20-context-qualification.integration.test.ts \
   >"$private_dir/bun-test.log" 2>&1; then
   # Bun's summary contains no fixture secrets. Forward only its final test status,
   # while keeping complete runner logs private and ephemeral.
+  # Preserve all six fixed, redacted classification reports even when Bun's
+  # failure summary would push the first customer outside the final 25 lines.
+  grep -E '^\{"fixture":"synthetic-odoo20-customer-classification"' \
+    "$private_dir/bun-test.log" | head -n 6 >&2 || true
   tail -n 25 "$private_dir/bun-test.log" >&2
   exit 1
 fi

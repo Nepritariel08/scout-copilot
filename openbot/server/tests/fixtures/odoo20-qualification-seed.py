@@ -165,6 +165,19 @@ keys = {
     "admin": make_key(admin, "Scout Odoo 20 qualification admin denial"),
 }
 
+# Inspect effective groups from flushed rows, not a requested group assignment.
+# This diagnostic metadata contains only fixed group identifiers and booleans;
+# no token, key, password, contact or business record is written here.
+env.flush_all()
+env.transaction.invalidate_ormcache()
+customer_groups = (
+    "base.group_portal", "base.group_user", "base.group_system", "base.group_erp_manager"
+)
+customer_classification = {
+    label: {group: user.sudo().has_group(group) for group in customer_groups}
+    for label, user in (("portalA", portal_a), ("portalB", portal_b))
+}
+
 metadata = {
     "database": env.cr.dbname,
     "sourceInstanceId": "scout-odoo20-qualification",
@@ -194,6 +207,7 @@ metadata = {
         **customer_tasks,
     },
     "collaborators": customer_collaborators,
+    "customerClassification": customer_classification,
 }
 
 env.cr.commit()

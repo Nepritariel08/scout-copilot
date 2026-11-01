@@ -41,6 +41,9 @@ function fixture(uid = 401) {
     company: 7,
     afterTask: () => {},
     groupOverride: undefined as unknown,
+    attestationOverride: undefined as unknown,
+    attestationMissing: false,
+    businessDenied: false,
   };
   const calls: { path: string; body: Record<string, unknown> }[] = [];
   const reader = createOdooJson2CustomerTaskReader({
@@ -65,22 +68,26 @@ function fixture(uid = 401) {
       );
       if (path.endsWith("context_get"))
         return Response.json({ uid: state.actualUid });
-      if (path.endsWith("has_group")) {
-        if (state.groupOverride !== undefined)
-          return Response.json(state.groupOverride);
-        return Response.json(
-          state.kind === "portal"
-            ? body.group_ext_id === "base.group_portal"
-            : state.kind === "employee"
-              ? body.group_ext_id === "base.group_user"
-              : state.kind === "admin"
-                ? ["base.group_portal", "base.group_system"].includes(
-                    String(body.group_ext_id),
-                  )
-                : false,
-        );
+      if (path.endsWith("scout_own_identity_v1")) {
+        expect(body).toEqual({});
+        if (state.attestationMissing)
+          return new Response(null, { status: 404 });
+        if (state.attestationOverride !== undefined)
+          return Response.json(state.attestationOverride);
+        return Response.json({
+          contract: "scout-own-identity-v1",
+          uid,
+          groups: {
+            "base.group_portal":
+              state.groupOverride ?? ["portal", "admin"].includes(state.kind),
+            "base.group_user": state.kind === "employee",
+            "base.group_system": state.kind === "admin",
+            "base.group_erp_manager": false,
+          },
+        });
       }
       expect(body.context).toEqual({ allowed_company_ids: [7] });
+      if (state.businessDenied) return new Response(null, { status: 403 });
       if (path === "/json/2/project.project/search_read") {
         expect(body).toEqual({
           context: { allowed_company_ids: [7] },
@@ -224,6 +231,69 @@ describe("separately selected portal customer task reader", () => {
     expect(f.calls.some((call) => call.path.includes("project.task"))).toBe(
       false,
     );
+  });
+  test("missing own-identity addon fails before any project/task read, without stock all-false fallback", async () => {
+    const f = fixture();
+    f.state.attestationMissing = true;
+    await expect(f.reader.readProjectTask(request())).rejects.toThrow();
+    expect(f.calls.some((call) => call.path.includes("project."))).toBe(false);
+    expect(f.calls.some((call) => call.path.endsWith("has_group"))).toBe(false);
+  });
+  test("positive own attestation cannot override an Odoo business ACL denial", async () => {
+    const f = fixture();
+    f.state.businessDenied = true;
+    await expect(f.reader.readProjectTask(request())).rejects.toThrow();
+    expect(
+      f.calls.filter((call) => call.path.includes("project.")),
+    ).toHaveLength(1);
+    expect(f.calls.some((call) => call.path.includes("project.task"))).toBe(
+      false,
+    );
+    expect(
+      f.calls.every((call) => !JSON.stringify(call.body).includes("sudo")),
+    ).toBe(true);
+  });
+  test("requires exact attestation contract, own UID, fixed shape and literal group booleans", async () => {
+    const valid = {
+      contract: "scout-own-identity-v1",
+      uid: 401,
+      groups: {
+        "base.group_portal": true,
+        "base.group_user": false,
+        "base.group_system": false,
+        "base.group_erp_manager": false,
+      },
+    };
+    for (const invalid of [
+      null,
+      true,
+      [valid],
+      {},
+      { ...valid, uid: 402 },
+      { ...valid, uid: "401" },
+      { ...valid, contract: "scout-own-identity-v2" },
+      { ...valid, sudo: true },
+      { ...valid, groups: { ...valid.groups, "base.group_public": false } },
+      ...Object.keys(valid.groups).flatMap((group) => [
+        { ...valid, groups: { ...valid.groups, [group]: "false" } },
+        {
+          ...valid,
+          groups: {
+            ...valid.groups,
+            [group]: !valid.groups[group as keyof typeof valid.groups],
+          },
+        },
+      ]),
+    ]) {
+      const f = fixture();
+      f.state.attestationOverride = invalid;
+      await expect(f.reader.readProjectTask(request())).rejects.toThrow(
+        "MODEL_ACCESS_DENIED",
+      );
+      expect(f.calls.some((call) => call.path.includes("project."))).toBe(
+        false,
+      );
+    }
   });
   test.each(["collaboration", "classification"] as const)(
     "withholds a task if %s is revoked during its read",

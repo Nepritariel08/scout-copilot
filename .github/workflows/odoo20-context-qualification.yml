@@ -8,9 +8,11 @@ on:
       - openbot/server/src/scout/owned-model/odoo-json2.ts
       - openbot/server/src/scout/owned-model/odoo-json2-customer.ts
       - openbot/server/tests/fixtures/odoo20-qualification-seed.py
+      - openbot/server/tests/fixtures/odoo20-customer-classification.ts
       - openbot/server/tests/fixtures/run-odoo20-context-qualification.sh
       - openbot/server/tests/odoo20-context-qualification.integration.test.ts
       - scout/ODOO20-QUALIFICATION.md
+      - scout/odoo-addons/scout_own_identity/**
 
 permissions:
   contents: read
