@@ -221,12 +221,35 @@ along with source, provenance and freshness metadata. It rejects mismatched
 rows, extra fields, oversized data, malformed selections, missing grants and
 grant changes before model egress. Immediately before egress it rechecks both
 grants and re-reads the same bounded task under the same source identity; loss
-of ACL visibility or any released-field change denies the run. No Odoo RPC adapter is wired in production;
-there is no approved qualified source credential or live Odoo schema/identity
-readback in this slice. Consequently a selected task fails closed in production
-until that separate source identity, grant store and read-only adapter are
-implemented and qualified. Synthetic adapter tests do not establish live
-Odoo access or acceptance.
+of ACL visibility or any released-field change denies the run.
+
+The follow-on `odoo-json2.ts` source slice implements a fixed Odoo JSON-2
+reader: it resolves a protected key by the qualified nonadmin UID, asks
+`res.users/context_get` to verify the key's actual UID, then calls only
+`project.task/search_read` with the typed allowlisted domain, fields and limit.
+Both calls use the same key; the task read carries the grant's exact
+`allowed_company_ids` context, and UID 1 is denied as defense in depth.
+Redirects are refused, and request/response bytes, timeout and error output are
+bounded. Odoo's standard ACLs, record rules and field permissions remain the
+final enforcement point for reads
+([Odoo JSON-2 API](https://www.odoo.com/documentation/20.0/developer/reference/external_api.html)).
+
+This source reader is not yet a production port: caller-provided `qualified`
+status does not prove nonadmin membership, so the future provisioning path
+must independently qualify the Odoo group membership and deny all system
+admins. A persistent native grant and context-release store, protected
+per-user key resolver, approved UID/ACL readback, Odoo test database, and
+production composition are still absent. No
+live Odoo schema, credential or business record was used by the mocked
+transport tests. A selected task therefore continues to fail closed in
+production. Before enabling JSON-2 on the self-hosted Community build, verify
+the endpoint against that exact installed build and its available API route.
+On 2026-11-01, a loopback read of the target Linode returned HTTP 200 for
+`/web/version`; an unauthenticated JSON-2 `res.users/context_get` request
+returned HTTP 401. This proves only that the route is present and demands
+authentication; it does not prove a qualified API key, UID, task ACL, record
+rule or field access. Odoo's documentation also marks external API access as
+plan-dependent, so verify applicability for the installed Community build.
 
 Storing conversations on Linode does not keep prompts on Linode when an
 OpenRouter route is selected. The operator must approve the actual context
