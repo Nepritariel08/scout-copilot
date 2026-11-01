@@ -45,6 +45,19 @@ export function createHistoryContextStore(database: Database) {
         .where(owned(principal, threadId));
       const parsed = historyContextSchema.safeParse(row);
       if (!parsed.success) throw deny();
+      // A stored turn cannot depend on a prefix missing from the thread marker.
+      // This also refuses a corrupted/reset marker even if SQL fencing was bypassed.
+      const [invalidRun] = await database
+        .select({ id: runs.id })
+        .from(runs)
+        .where(
+          and(
+            eq(runs.threadId, threadId),
+            gt(runs.contextRevision, parsed.data.revision),
+          ),
+        )
+        .limit(1);
+      if (invalidRun) throw deny();
       return parsed.data;
     },
     /** Freeze this run's dependency prefix before its first owned-model dispatch. */

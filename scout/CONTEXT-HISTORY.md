@@ -25,12 +25,18 @@ contains no task fields, prompt, API key, password, contact or credential refere
 The source payload is still bounded by the existing fixed Odoo task contract.
 Database locks recheck the exact owned thread/agent/live run. Exact dependency
 retries are idempotent; the limit is 16 dependencies, and exhaustion refuses
-instead of dropping older ones. SQL enforces append-only prefixes.
+instead of dropping older ones. SQL enforces append-only prefixes and refuses
+direct marker DELETE/reinsert and TRUNCATE resets. An intentional parent-thread
+DELETE still cascades its context and runs; truncation, including a cascaded
+TRUNCATE, is refused. These DML guards do not protect against an administrator
+altering/disabling triggers, so the runtime role must not have migration/DDL rights.
 
 Each owned-model run durably freezes its dependency revision before inference:
 zero for new source-free chat, or the current dependency prefix for selected and
 ordinary derived turns. SQL prevents rewriting that run marker. It is metadata,
-not permission. Failed/cancelled attempts may conservatively leave a dependency
+not permission. SQL rejects a new turn marker without a corresponding thread
+dependency prefix, and history reads deny if a stored turn refers to a missing
+prefix. Failed/cancelled attempts may conservatively leave a dependency
 even when no model answer was returned. A producer crash cannot turn a marked
 thread back into source-free history.
 
@@ -69,7 +75,8 @@ Focused tests exercise selected context followed by ordinary continuation,
 source/release/route/content/native revocation, transitive older dependencies,
 concurrent metadata changes and new source-free chat. Synthetic SQL cases cover
 atomic new markers, unknown legacy refusal, exact retries, active-run fencing,
-append-only rollback, bounded exhaustion, durable turn prefixes and reconstruction
+append-only/reset rollback, parent-thread cascades, bounded exhaustion, durable
+turn prefixes and reconstruction
 through a fresh store instance. The composed-app fixture requires metadata and
 the run revision to exist before its synthetic provider receives a request; it
 checks history/replay and continuation refusal after release/source/native/route
@@ -85,5 +92,15 @@ without lockfile or manifest changes. The focused seven-suite bundle passed
 108 tests/941 assertions; the overlapping authority/pool/consent bundle passed
 33 tests/794 assertions. The changed four-test/application TypeScript graph and
 the additional authority-test graph passed, as did 15-file Biome and whitespace
-checks. The five new dedicated SQL cases and composed-app scenarios were not
+checks. The dedicated SQL cases and composed-app scenarios were not
 run locally; only the coordinator's dedicated CI database can qualify them.
+
+The review correction regenerates the `0074` snapshot from the preceding snapshot
+with the normal Drizzle generator. Only the context table and run revision differ;
+the generated foreign-key name is preserved alongside the custom trigger SQL.
+`drizzle-kit check` and the CI's `generate --name=ci_drift_probe` both pass without
+further migration changes using a synthetic, nonconnecting configuration URL.
+The corrected seven-suite bundle passed 109 tests/943 assertions, including a
+synthetic corrupt-prefix read refusal. Seven dedicated SQL cases now also assert
+the exact trigger refusal code, reset rollback and intentional parent deletion;
+their actual PostgreSQL execution remains pending CI.

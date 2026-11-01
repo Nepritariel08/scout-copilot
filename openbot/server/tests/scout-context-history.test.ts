@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import type { Database } from "../src/db/client";
+import { createHistoryContextStore } from "../src/scout/history/context-store";
 import { createBoundHistory } from "../src/scout/history/service";
 import type { HistoryStore } from "../src/scout/history/store";
 import {
@@ -13,6 +15,28 @@ import {
   type ProjectTaskContextReleaseGrant,
   resolveProjectTaskContext,
 } from "../src/scout/owned-model/record-context";
+
+test("a stored turn with an absent dependency prefix denies history instead of accepting a reset marker", async () => {
+  let invalidRuns: { id: string }[] = [];
+  const marker: HistoryContext = { version: 1, revision: 0, dependencies: [] };
+  // Synthetic storage responses only: actual trigger/query semantics belong to SQL CI.
+  const database = {
+    select: () => ({
+      from: () => ({
+        innerJoin: () => ({ where: async () => [marker] }),
+        where: () => ({ limit: async () => invalidRuns }),
+      }),
+    }),
+  } as unknown as Database;
+  const store = createHistoryContextStore(database);
+  expect(
+    await store.read({ userId: "alice", tenantId: "tenant-a" }, "thread"),
+  ).toEqual(marker);
+  invalidRuns = [{ id: "synthetic-turn-with-missing-prefix" }];
+  await expect(
+    store.read({ userId: "alice", tenantId: "tenant-a" }, "thread"),
+  ).rejects.toThrow("HISTORY_ACCESS_DENIED");
+});
 
 const principal = {
   userId: "alice",

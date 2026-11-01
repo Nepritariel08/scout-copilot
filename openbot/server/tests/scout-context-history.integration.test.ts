@@ -5,6 +5,7 @@ import { createDatabase } from "../src/db/client";
 import {
   scoutHistoryContext,
   scoutHistoryRuns,
+  scoutHistoryThreads,
 } from "../src/db/schema/scout-history";
 import { createHistoryContextStore } from "../src/scout/history/context-store";
 import { createHistoryStore } from "../src/scout/history/store";
@@ -33,6 +34,31 @@ const dependency = (recordId = 42): ContextDependency => ({
   releaseDigest: "d".repeat(64),
   recordDigest: "e".repeat(64),
 });
+async function expectTriggerRefusal(
+  work: () => PromiseLike<unknown>,
+  message: string,
+) {
+  let refusal: { message?: string; code?: unknown } | undefined;
+  try {
+    await work();
+  } catch (error) {
+    let current: unknown = error;
+    for (let depth = 0; depth < 5 && current; depth++) {
+      const entry = current as {
+        message?: string;
+        errno?: unknown;
+        code?: unknown;
+        cause?: unknown;
+      };
+      if (entry.message === message) {
+        refusal = { message: entry.message, code: entry.errno ?? entry.code };
+        break;
+      }
+      current = entry.cause;
+    }
+  }
+  expect(refusal).toEqual({ message, code: "P0001" });
+}
 async function started() {
   const thread = await history.mint(owner, { agentId: "scout" });
   const runId = randomUUID();
@@ -67,17 +93,92 @@ describe("durable source provenance SQL fencing", () => {
       revision: 0,
       dependencies: [],
     });
-    await database
-      .delete(scoutHistoryContext)
-      .where(eq(scoutHistoryContext.threadId, thread.id));
-    await expect(contexts.read(owner, thread.id)).rejects.toThrow(
+    // A legacy thread predates the marker migration; do not bypass its reset guard.
+    const legacyId = randomUUID();
+    await database.insert(scoutHistoryThreads).values({
+      id: legacyId,
+      ownerUserId: owner.userId,
+      tenantId: owner.tenantId,
+      agentId: "scout",
+    });
+    await expect(contexts.read(owner, legacyId)).rejects.toThrow(
       "HISTORY_ACCESS_DENIED",
     );
     await expect(
-      contexts.append(owner, thread.id, "scout", runId, dependency()),
+      contexts.append(owner, legacyId, "scout", runId, dependency()),
     ).rejects.toThrow("HISTORY_ACCESS_DENIED");
     const fresh = await history.mint(owner, { agentId: "scout" });
     expect((await contexts.read(owner, fresh.id)).dependencies).toEqual([]);
+  });
+  test("DELETE/reinsert and TRUNCATE cannot reset contextual provenance, and failed reset transactions roll back", async () => {
+    const { thread, runId } = await started();
+    await contexts.append(owner, thread.id, "scout", runId, dependency());
+    await contexts.markRun(owner, thread.id, "scout", runId, 1);
+    const before = await contexts.read(owner, thread.id);
+    await expectTriggerRefusal(
+      () =>
+        database.transaction(async (tx) => {
+          await tx
+            .update(scoutHistoryThreads)
+            .set({ name: "Synthetic mutation that must roll back" })
+            .where(eq(scoutHistoryThreads.id, thread.id));
+          await tx
+            .delete(scoutHistoryContext)
+            .where(eq(scoutHistoryContext.threadId, thread.id));
+          await tx.insert(scoutHistoryContext).values({
+            threadId: thread.id,
+            version: 1,
+            revision: 0,
+            dependencies: [],
+          });
+        }),
+      "Scout history context is append-only",
+    );
+    expect(await contexts.read(owner, thread.id)).toEqual(before);
+    const [storedThread] = await database
+      .select({ name: scoutHistoryThreads.name })
+      .from(scoutHistoryThreads)
+      .where(eq(scoutHistoryThreads.id, thread.id));
+    expect(storedThread?.name).toBe(thread.name);
+    await expectTriggerRefusal(
+      () =>
+        database.transaction(async (tx) => {
+          await tx.execute(sql`truncate table scout_history_context`);
+          await tx.insert(scoutHistoryContext).values({
+            threadId: thread.id,
+            version: 1,
+            revision: 0,
+            dependencies: [],
+          });
+        }),
+      "Scout history context cannot be truncated",
+    );
+    expect(await contexts.read(owner, thread.id)).toEqual(before);
+  });
+  test("intentional parent-thread DELETE cascades context and run deletion without harming another thread", async () => {
+    const { thread, runId } = await started();
+    await contexts.append(owner, thread.id, "scout", runId, dependency());
+    await contexts.markRun(owner, thread.id, "scout", runId, 1);
+    const other = await history.mint(owner, { agentId: "scout" });
+    await database
+      .delete(scoutHistoryThreads)
+      .where(eq(scoutHistoryThreads.id, thread.id));
+    expect(
+      await database
+        .select()
+        .from(scoutHistoryContext)
+        .where(eq(scoutHistoryContext.threadId, thread.id)),
+    ).toEqual([]);
+    expect(
+      await database
+        .select()
+        .from(scoutHistoryRuns)
+        .where(eq(scoutHistoryRuns.threadId, thread.id)),
+    ).toEqual([]);
+    await expect(contexts.read(owner, thread.id)).rejects.toThrow(
+      "HISTORY_ACCESS_DENIED",
+    );
+    expect((await contexts.read(owner, other.id)).revision).toBe(0);
   });
   test("exact retries are idempotent, older dependencies survive, and SQL replacement rolls back", async () => {
     const { thread, runId } = await started();
@@ -168,6 +269,29 @@ describe("durable source provenance SQL fencing", () => {
   });
   test("durable turn markers inherit the dependency prefix, reject stale revisions, and cannot be rewritten", async () => {
     const { thread, runId, lease } = await started();
+    const [originalRun] = await database
+      .select()
+      .from(scoutHistoryRuns)
+      .where(eq(scoutHistoryRuns.threadId, thread.id));
+    if (!originalRun) throw new Error("Expected synthetic run fixture");
+    const insertTarget = await history.mint(owner, { agentId: "scout" });
+    await expectTriggerRefusal(
+      () =>
+        database.insert(scoutHistoryRuns).values({
+          ...originalRun,
+          threadId: insertTarget.id,
+          id: randomUUID(),
+          contextRevision: 1,
+        }),
+      "Scout run context provenance has no dependency prefix",
+    );
+    await expectTriggerRefusal(
+      () =>
+        database.execute(
+          sql`update scout_history_runs set context_revision=1 where thread_id=${thread.id} and id=${runId}`,
+        ),
+      "Scout run context provenance has no dependency prefix",
+    );
     await contexts.append(owner, thread.id, "scout", runId, dependency());
     await expect(
       contexts.markRun(owner, thread.id, "scout", runId, 0),
