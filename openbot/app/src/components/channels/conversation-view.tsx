@@ -155,6 +155,7 @@ export function ConversationView({
    */
   const [queued, setQueued] = useState<readonly QueuedMessage[]>([]);
   const queuedRef = useRef<readonly QueuedMessage[]>(queued);
+  const [queueNotice, setQueueNotice] = useState<string | null>(null);
 
   /*
    * In the shell the composer floats over the conversation, frosted, rather than below it, so the
@@ -263,6 +264,13 @@ export function ConversationView({
     const next = reduceQueue(queuedRef.current, action);
     queuedRef.current = next.queue;
     setQueued(next.queue);
+    if (next.run) {
+      setQueueNotice(
+        next.omittedOdooTaskContext
+          ? "Odoo task context was withheld because queued messages are sent as one combined request. Send the task-selected message by itself to include its task summary."
+          : null,
+      );
+    }
     // Only on an actual drop, so a settle or a remove that let go of nothing does not hand the
     // composer a fresh empty array it has no reason to react to.
     if (next.droppedAttachments.length > 0) {
@@ -642,6 +650,11 @@ export function ConversationView({
         {queuedNotice && queued.length > 0 ? (
           <p className="pb-2 text-sm text-muted-foreground" role="status">
             {queuedNotice}
+          </p>
+        ) : null}
+        {queueNotice ? (
+          <p className="pb-2 text-sm text-muted-foreground" role="status">
+            {queueNotice}
           </p>
         ) : null}
         {notice}

@@ -41,10 +41,13 @@ const alice = `${prefix}-alice`,
   bob = `${prefix}-bob`,
   outsider = `${prefix}-outsider`;
 const agentId = `${prefix}-agent`;
+const unapprovedAgentId = `${agentId}-unapproved`;
 let fixtureDirectory = "";
 let owned: Awaited<ReturnType<typeof createOwnedApplication>>;
+let ownedWithGrants: Awaited<ReturnType<typeof createOwnedApplication>>;
 let active = true;
 let invocations = 0;
+let odooFixtureCalls = 0;
 let issuedFresh = true;
 let changingPolicy = false;
 let policyReads = 0;
@@ -132,11 +135,26 @@ function request(
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
+function requestConfiguredGrant(
+  method: "GET" | "POST" | "DELETE",
+  path: string,
+  body?: unknown,
+  userId = alice,
+) {
+  return ownedWithGrants.app.request(path, {
+    method,
+    headers: {
+      "content-type": "application/json",
+      "x-synthetic-session": userId,
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
 beforeAll(async () => {
   fixtureDirectory = await mkdtemp(join(tmpdir(), "scout-owned-app-"));
   const files = {
     "brand.yaml": `tenant:\n  id: ${prefix}\n  product_name: Scout Synthetic\n`,
-    "agents.yaml": `agents:\n  - id: ${agentId}\n    name: Scout Synthetic\n    title: Fixture\n    role_description: Synthetic qualification only.\n    avatar_seed: fixture\n    type: built-in\n    system_prompt: Return synthetic fixture output only.\n`,
+    "agents.yaml": `agents:\n  - id: ${agentId}\n    name: Scout Synthetic\n    title: Fixture\n    role_description: Synthetic qualification only.\n    avatar_seed: fixture\n    type: built-in\n    system_prompt: Return synthetic fixture output only.\n  - id: ${unapprovedAgentId}\n    name: Scout Synthetic Secondary\n    title: Fixture\n    role_description: Synthetic unapproved-profile qualification only.\n    avatar_seed: fixture-secondary\n    type: built-in\n    system_prompt: Return synthetic fixture output only.\n`,
     "channels.yaml": "channels: []\n",
     "knowledge.yaml": "sources: []\n",
     "model.yaml":
@@ -190,6 +208,128 @@ beforeAll(async () => {
     },
     agents: async () => ({ [agentId]: new FixtureAgent() }),
   });
+  if (process.platform === "linux") {
+    const sourcePath = join(fixtureDirectory, "synthetic-odoo-source.json");
+    const modelPath = join(fixtureDirectory, "synthetic-model-policy.json");
+    await writeFile(
+      sourcePath,
+      JSON.stringify({
+        version: 1,
+        sourceInstanceId: "fixture-odoo",
+        baseUrl: "https://synthetic-odoo.fixture.example",
+        database: "fixture_db",
+      }),
+    );
+    await chmod(sourcePath, 0o600);
+    await writeFile(
+      modelPath,
+      JSON.stringify({
+        version: 1,
+        deploymentId: "fixture-owned",
+        globalMaxConcurrent: 2,
+        globalMaxCallsPerDay: 100,
+        bindings: [
+          {
+            userId: alice,
+            tenantId: "tenant-a",
+            active: true,
+            revision: 1,
+            expiresAt: "2099-01-01T00:00:00Z",
+            agentIds: [agentId],
+            allowConversationContext: true,
+            allowPersonalInstructions: false,
+            route: {
+              provider: "openrouter",
+              model: "fixture-model",
+              apiKeyFile: join(fixtureDirectory, "synthetic-model-key"),
+            },
+            limits: {
+              maxInputBytes: 8192,
+              maxOutputTokens: 64,
+              maxOutputBytes: 8192,
+              maxCallsPerRun: 1,
+              maxCallsPerDay: 10,
+              maxConcurrent: 1,
+              timeoutMs: 5000,
+            },
+          },
+        ],
+      }),
+    );
+    await chmod(modelPath, 0o600);
+    const configured = loadOwnedConfig({
+      DATABASE_URL: testDatabaseUrl(),
+      KEY_ENCRYPTION_KEY: Buffer.alloc(32, 13).toString("base64"),
+      SCOUT_RUNTIME_MODE: "owned",
+      DEPLOYMENT_ID: "fixture-owned",
+      OPENBOT_ORGANIZATION_AUTH_URL:
+        "https://synthetic-identity.fixture.example",
+      OPENBOT_HOST: "127.0.0.1",
+      SCOUT_QUEUE_BINDINGS_FILE: join(
+        fixtureDirectory,
+        "synthetic-policy.json",
+      ),
+      SCOUT_ODOO_CONTEXT_SOURCE_FILE: sourcePath,
+      SCOUT_MODEL_POLICY_FILE: modelPath,
+      TENANT_PACKAGE_DIR: fixtureDirectory,
+      OPENBOT_GENERATIVE_UI: "false",
+      OPENBOT_SELF_HOST_BANNER: "false",
+    });
+    ownedWithGrants = await createOwnedApplication(configured, database, {
+      auth: {
+        handler: () => new Response(null),
+        api: {
+          getSession: async ({ headers, query }) => {
+            issuedFresh &&= query?.disableCookieCache === true;
+            const id = headers.get("x-synthetic-session");
+            return id && [alice, bob, outsider].includes(id)
+              ? {
+                  user: {
+                    id,
+                    email: "same-native-email@fixture.example",
+                    role: "user",
+                  },
+                }
+              : null;
+          },
+        },
+      },
+      binding: async (actor) => {
+        const value = parseScoutBinding(policy(), actor);
+        return changingPolicy
+          ? { ...value, fingerprint: String(++policyReads) }
+          : value;
+      },
+      agents: async () => ({ [agentId]: new FixtureAgent() }),
+      odooFetch: Object.assign(
+        async (
+          input: Parameters<typeof fetch>[0],
+          init?: Parameters<typeof fetch>[1],
+        ) => {
+          odooFixtureCalls++;
+          const path = new URL(
+            input instanceof Request ? input.url : String(input),
+          ).pathname;
+          if (path === "/json/2/res.users/context_get")
+            return Response.json({ uid: 101 });
+          if (path === "/json/2/res.users/has_group") {
+            // Only internal-user membership is true; the two administrator checks are false.
+            const body = JSON.parse(String(init?.body ?? "{}")) as {
+              group_ext_id?: string;
+            };
+            return Response.json(body.group_ext_id === "base.group_user");
+          }
+          if (path === "/json/2/project.project/search_read")
+            return Response.json([{ id: 501, company_id: [1, "Fixture"] }]);
+          return Response.json(
+            { code: "UNEXPECTED_FIXTURE_REQUEST" },
+            { status: 404 },
+          );
+        },
+        { preconnect: fetch.preconnect },
+      ),
+    });
+  }
 });
 beforeEach(() => {
   active = true;
@@ -197,8 +337,10 @@ beforeEach(() => {
   issuedFresh = true;
   changingPolicy = false;
   policyReads = 0;
+  odooFixtureCalls = 0;
 });
 afterAll(async () => {
+  await ownedWithGrants?.close();
   await owned?.close();
   const memberships = await database
     .select({ id: channelMemberships.channelId })
@@ -347,6 +489,105 @@ describe("owned composition through the actual Scout app", () => {
       });
     }
   });
+  test.skipIf(process.platform !== "linux")(
+    "configured Odoo grant routes authorize by native user and profile, and revoke the scoped key",
+    async () => {
+      const statusPath = `/api/scout/odoo/context-grants?agentId=${encodeURIComponent(agentId)}`;
+      const deniedStatus = await requestConfiguredGrant(
+        "GET",
+        statusPath,
+        undefined,
+        outsider,
+      );
+      expect(deniedStatus.status).toBe(403);
+      const deniedConsent = await requestConfiguredGrant(
+        "POST",
+        "/api/scout/odoo/context-grants/release",
+        { agentId, consent: true },
+        outsider,
+      );
+      expect(deniedConsent.status).toBe(403);
+      expect(odooFixtureCalls).toBe(0);
+
+      const initial = await requestConfiguredGrant("GET", statusPath);
+      expect(initial.status).toBe(200);
+      expect(await initial.json()).toEqual({
+        provider: "openrouter",
+        record: null,
+        release: null,
+      });
+      const deniedProfile = await requestConfiguredGrant(
+        "GET",
+        `/api/scout/odoo/context-grants?agentId=${encodeURIComponent(unapprovedAgentId)}`,
+      );
+      expect(deniedProfile.status).toBe(403);
+
+      const consent = await requestConfiguredGrant(
+        "POST",
+        "/api/scout/odoo/context-grants/release",
+        { agentId, consent: true },
+      );
+      expect(consent.status).toBe(201);
+      const consentStatus = await requestConfiguredGrant("GET", statusPath);
+      expect(await consentStatus.json()).toMatchObject({
+        release: { active: true, provider: "openrouter" },
+      });
+      const withdrawn = await requestConfiguredGrant(
+        "DELETE",
+        "/api/scout/odoo/context-grants/release",
+        { agentId },
+      );
+      expect(withdrawn.status).toBe(200);
+
+      const apiKey = "synthetic-odoo-key-for-route-fixture";
+      const grant = await requestConfiguredGrant(
+        "POST",
+        "/api/scout/odoo/context-grants",
+        { apiKey },
+      );
+      expect(grant.status).toBe(201);
+      const grantBody = await grant.json();
+      expect(grantBody.projectCount).toBe(1);
+      expect(JSON.stringify(grantBody)).not.toContain(apiKey);
+      const grantedStatus = await requestConfiguredGrant("GET", statusPath);
+      expect(await grantedStatus.json()).toMatchObject({
+        record: { active: true, credentialStored: true, projectCount: 1 },
+        release: { active: false },
+      });
+
+      const revoked = await requestConfiguredGrant(
+        "DELETE",
+        "/api/scout/odoo/context-grants",
+      );
+      expect(revoked.status).toBe(200);
+      const revokedStatus = await requestConfiguredGrant("GET", statusPath);
+      expect(await revokedStatus.json()).toMatchObject({
+        record: { active: false, credentialStored: false },
+        release: { active: false },
+      });
+    },
+  );
+  test.skipIf(process.platform !== "linux")(
+    "configured key qualification rejects a tenant binding that changes during the Odoo lookup",
+    async () => {
+      changingPolicy = true;
+      policyReads = 0;
+      const response = await requestConfiguredGrant(
+        "POST",
+        "/api/scout/odoo/context-grants",
+        { apiKey: "synthetic-changing-binding-key" },
+      );
+      expect(response.status).toBe(403);
+      expect(odooFixtureCalls).toBeGreaterThan(0);
+
+      changingPolicy = false;
+      const status = await requestConfiguredGrant(
+        "GET",
+        `/api/scout/odoo/context-grants?agentId=${encodeURIComponent(agentId)}`,
+      );
+      expect(await status.json()).toMatchObject({ record: null });
+    },
+  );
   test("direct chat server mint persists native ownership and rejects injected identity", async () => {
     expect(
       (await request("/api/threads/mint", { agentId, userId: bob })).status,

@@ -199,6 +199,7 @@ export function createOwnedOdooGrantService(
                 credentialLive &&
                 record.expiresAt.getTime() > now &&
                 record.qualificationExpiresAt.getTime() > now,
+              credentialStored: Boolean(credential),
               revision: record.revision,
               expiresAt: record.expiresAt.toISOString(),
               projectCount: record.allowedProjectIds.length,

@@ -51,6 +51,9 @@ export function ScoutOdooContext({
     current?.release?.active &&
       Date.parse(current.release.expiresAt) > Date.now(),
   );
+  const canRevokeStoredAccess = Boolean(
+    current?.record?.credentialStored || releaseActive,
+  );
   const canSelectTask = recordActive && releaseActive;
 
   async function refreshStatus() {
@@ -244,7 +247,7 @@ export function ScoutOdooContext({
             ) : null}
           </form>
         ) : null}
-        {recordActive || releaseActive ? (
+        {canRevokeStoredAccess ? (
           <Button
             type="button"
             variant="outline"

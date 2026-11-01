@@ -5,6 +5,7 @@ export type OwnedOdooContextStatus = {
   provider: "openrouter" | "local";
   record: {
     active: boolean;
+    credentialStored: boolean;
     revision: number;
     expiresAt: string;
     projectCount: number;

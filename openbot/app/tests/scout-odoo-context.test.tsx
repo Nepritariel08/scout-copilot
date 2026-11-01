@@ -33,6 +33,7 @@ const owner: AuthenticatedUser = {
 };
 const activeRecord = {
   active: true,
+  credentialStored: true,
   revision: 1,
   expiresAt: "2099-01-01T00:00:00.000Z",
   projectCount: 4,
@@ -94,7 +95,9 @@ beforeEach(() => {
         ) {
           status = {
             ...status,
-            record: status.record ? { ...status.record, active: false } : null,
+            record: status.record
+              ? { ...status.record, active: false, credentialStored: false }
+              : null,
             release: status.release
               ? { ...status.release, active: false }
               : null,
@@ -191,6 +194,45 @@ test("the rendered status contains no credential reference and task selection re
   expect(view.queryByText("must-not-render")).toBeNull();
   const taskId = view.getByLabelText("Odoo project task ID");
   expect((taskId as HTMLInputElement).disabled).toBe(false);
+});
+
+test("expired record access keeps a revoke action while its key remains stored", async () => {
+  status = {
+    provider: "openrouter",
+    record: {
+      ...activeRecord,
+      active: false,
+      expiresAt: "2020-01-01T00:00:00.000Z",
+    },
+    release: null,
+  };
+  const view = mount();
+  await view.findByText(/Odoo access: not active/);
+  expect(
+    view.getByRole("button", { name: "Revoke Scout's Odoo access" }),
+  ).toBeTruthy();
+});
+
+test("revoking the stored key removes the revoke action after status refresh", async () => {
+  status = { provider: "openrouter", record: activeRecord, release: null };
+  const view = mount();
+  const button = await view.findByRole("button", {
+    name: "Revoke Scout's Odoo access",
+  });
+  fireEvent.click(button);
+  await view.findByText(
+    "Scout's local Odoo grant and provider consent were revoked. The upstream Odoo API key remains valid until you revoke it in Odoo.",
+  );
+  expect(calls).toContainEqual({
+    path: "/api/scout/odoo/context-grants",
+    method: "DELETE",
+    body: undefined,
+  });
+  await waitFor(() =>
+    expect(
+      view.queryByRole("button", { name: "Revoke Scout's Odoo access" }),
+    ).toBeNull(),
+  );
 });
 
 test("the selected task marker is removed after successful or failed runs", async () => {

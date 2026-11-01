@@ -229,8 +229,22 @@ describe("owned Odoo grant persistence and credential resolution", () => {
         service.status(grantPrincipal, "openrouter", modelPolicyFingerprint),
       ).resolves.toMatchObject({
         provider: "openrouter",
-        record: { active: true, revision: 1, projectCount: 2 },
+        record: {
+          active: true,
+          credentialStored: true,
+          revision: 1,
+          projectCount: 2,
+        },
         release: { active: true, revision: 1, provider: "openrouter" },
+      });
+      await database
+        .update(scoutOdooRecordAccessGrants)
+        .set({ expiresAt: new Date(Date.now() - 1000) })
+        .where(eq(scoutOdooRecordAccessGrants.id, record!.id));
+      await expect(
+        service.status(grantPrincipal, "openrouter", modelPolicyFingerprint),
+      ).resolves.toMatchObject({
+        record: { active: false, credentialStored: true, revision: 1 },
       });
       expect(await service.revokeAll(grantPrincipal)).toEqual({
         recordGrantRevoked: true,
@@ -258,7 +272,11 @@ describe("owned Odoo grant persistence and credential resolution", () => {
       await expect(
         service.status(grantPrincipal, "openrouter", modelPolicyFingerprint),
       ).resolves.toMatchObject({
-        record: { active: false, revision: 2 },
+        record: {
+          active: false,
+          credentialStored: false,
+          revision: 2,
+        },
         release: { active: false, revision: 2 },
       });
       await expect(

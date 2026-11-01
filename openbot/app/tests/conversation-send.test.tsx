@@ -140,6 +140,33 @@ test("a one-shot Odoo task selector stays with a queued draft until it runs", as
   expect(chat.sent[0]?.text).toBe("Check this task");
 });
 
+test("a selected Odoo task does not leak into a different queued message", async () => {
+  const prepareDraft = (draft: ComposerDraft) =>
+    draft.text === "Use task context" ? { ...draft, odooTaskId: "77" } : draft;
+  const chat = mount({
+    pending: true,
+    queueWhileBusy: true,
+    prepareDraft,
+  });
+
+  expect(chat.send("Use task context")).toBe(true);
+  await chat.view.findByText("Uses Odoo project task #77");
+  expect(chat.send("This is unrelated")).toBe(true);
+  await chat.view.findByText("This is unrelated");
+
+  chat.rerender({
+    pending: false,
+    queueWhileBusy: true,
+    prepareDraft,
+  });
+  await waitFor(() => expect(chat.sent).toHaveLength(1));
+  expect(chat.sent[0]?.text).toBe("Use task context\nThis is unrelated");
+  expect(chat.sent[0]?.odooTaskId).toBeUndefined();
+  await chat.view.findByText(
+    "Odoo task context was withheld because queued messages are sent as one combined request. Send the task-selected message by itself to include its task summary.",
+  );
+});
+
 describe("the latest turn", () => {
   test("is the tool calls since the person last spoke", () => {
     expect(latestTurnToolCalls(ASKED)).toEqual(["call-1"]);
