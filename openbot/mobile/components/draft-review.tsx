@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Button, Text, View } from "react-native";
+import type { ChatMessage } from "../src/api";
 import {
   type AuthenticatedApi,
   acceptReviewedDraft,
@@ -8,10 +9,12 @@ import {
   readDrafts,
   refreshDraft,
   sameReviewedDraft,
+  type WorkScope,
 } from "../src/scout-work";
+import { DraftSubmissionPanel } from "./draft-submission";
 
 const stateNames: Record<DraftReceipt["state"], string> = {
-  submission_unknown: "Submission needs recovery in Scout web",
+  submission_unknown: "Submission needs recovery",
   queued: "Queued",
   running: "Working",
   review_required: "Ready for review",
@@ -20,13 +23,21 @@ const stateNames: Record<DraftReceipt["state"], string> = {
   failed: "Failed",
 };
 
-/** Existing queue receipts only: no submission, timer, recovery worker or automatic acceptance. */
+/** Human delegation and existing receipts; no scheduler, worker or automatic acceptance. */
 export function DraftReviewPanel({
   channelId,
   client,
+  scope,
+  serverUrl,
+  persistedMessages,
+  isCurrent,
 }: {
   channelId: string;
   client: AuthenticatedApi;
+  scope: WorkScope;
+  serverUrl: string;
+  persistedMessages: readonly ChatMessage[];
+  isCurrent(): boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [available, setAvailable] = useState<boolean>();
@@ -122,6 +133,17 @@ export function DraftReviewPanel({
             Review existing DSH drafts for this conversation. Acceptance applies
             to the exact result and revision you reviewed.
           </Text>
+          {available === true ? (
+            <DraftSubmissionPanel
+              scope={scope}
+              serverUrl={serverUrl}
+              client={client}
+              persistedMessages={persistedMessages}
+              isCurrent={isCurrent}
+              disabled={pending}
+              onChange={() => void run()}
+            />
+          ) : null}
           {pending ? (
             <Text accessibilityLiveRegion="polite">
               Checking draft receipts…
@@ -152,10 +174,25 @@ export function DraftReviewPanel({
                   {task.revision ? `; revision ${task.revision}` : ""}
                 </Text>
                 {task.result ? <Text selectable>{task.result}</Text> : null}
+                {task.state === "submission_unknown" ? (
+                  <Text>
+                    Select the original saved message above to recover its exact
+                    request. Requests without a saved message need Scout web
+                    recovery.
+                  </Text>
+                ) : null}
                 <Button
-                  title="Refresh draft status"
+                  title={
+                    task.state === "submission_unknown"
+                      ? "Check draft list"
+                      : "Refresh draft status"
+                  }
                   disabled={pending}
-                  onPress={() => void run(task)}
+                  onPress={() =>
+                    void run(
+                      task.state === "submission_unknown" ? undefined : task,
+                    )
+                  }
                 />
                 {canAcceptDraft(task) && !confirming ? (
                   <Button

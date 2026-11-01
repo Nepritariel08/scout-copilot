@@ -44,6 +44,7 @@ type ConversationData = {
   conversation: Conversation;
   agent: ScoutAgent;
   messages: ChatMessage[];
+  persistedMessages: ChatMessage[];
 };
 
 export default function ConversationScreen() {
@@ -80,10 +81,11 @@ export default function ConversationScreen() {
   };
   const activeWorkScope = useRef(workScope);
   activeWorkScope.current = workScope;
+  const isCurrentWorkScope = () =>
+    mounted.current && sameWorkScope(activeWorkScope.current, workScope);
   const workClient = scopedApi({
     userId: workScope.userId,
-    isCurrent: () =>
-      mounted.current && sameWorkScope(activeWorkScope.current, workScope),
+    isCurrent: isCurrentWorkScope,
   });
   const selectedTaskId = selectedOdooTask(taskSelection, workScope);
   const turnTaskId = selectedOdooTask(turnSelection, workScope);
@@ -186,6 +188,7 @@ export default function ConversationScreen() {
             conversation: channel,
             agent: selectedAgent,
             messages: history,
+            persistedMessages: history,
           };
         },
         apply: (value) => setView({ userId, value }),
@@ -410,9 +413,13 @@ export default function ConversationScreen() {
                 client={workClient}
               />
               <DraftReviewPanel
-                key={`${session.user.id}:${channelId}:drafts`}
+                key={`${session.user.id}:${channelId}:${agent.id}:drafts`}
                 channelId={channelId}
                 client={workClient}
+                scope={workScope}
+                serverUrl={serverUrl}
+                persistedMessages={conversationData?.persistedMessages ?? []}
+                isCurrent={isCurrentWorkScope}
               />
             </>
           ) : null}

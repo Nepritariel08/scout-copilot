@@ -5,15 +5,8 @@ import { createAgentProfileStore } from "../../agents/profile-store";
 import { createRuntimeAgentLoader } from "../../agents/runtime-agents";
 import { createApp } from "../../app";
 import { createAuditReader, createAuditStore } from "../../audit";
-import { createAuth } from "../../auth";
-import {
-  type AuthenticatedActor,
-  type AuthService,
-  createRoleRepository,
-} from "../../auth/guards";
+import type { AuthenticatedActor, AuthService } from "../../auth/guards";
 import { createIdentityProviderStore } from "../../auth/identity-provider-store";
-import { createOrganizationAuth } from "../../auth/organization";
-import { organizationUserStore } from "../../auth/organization-store";
 import { createChannelEventHub } from "../../channels/events";
 import { createChannelStore } from "../../channels/routes";
 import { createThreadIdentity } from "../../channels/thread-identity";
@@ -64,8 +57,11 @@ import { createModelCallStore } from "../owned-model/store";
 import { createScoutService } from "../service";
 import { createScoutStore } from "../store";
 import { ScoutError } from "../types";
-import { createOwnedIdentity } from "./auth";
 import { createOwnedAuthority } from "./authority";
+import {
+  assertOwnedNativeIdentityConfiguration,
+  createOwnedNativeIdentity,
+} from "./native-identity";
 import { createOwnedQueueBindingReader } from "./queue-binding";
 import { createOwnedRuntimeRoutes } from "./routes";
 import { createTenantScope } from "./scope";
@@ -75,6 +71,8 @@ export async function createOwnedApplication(
   config: OwnedDeploymentConfig,
   database: Database,
   options: {
+    /** Independent bounded pool for native auth and every identity callback. */
+    identityDatabase?: Database;
     /** Trusted test issuer seam; production constructs the configured native authentication service. */
     auth?: AuthService;
     membership?: MembershipReader;
@@ -101,6 +99,20 @@ export async function createOwnedApplication(
     throw new Error(
       "Owned Scout requires its explicit configuration and verified sign-in.",
     );
+  assertOwnedNativeIdentityConfiguration();
+  // Never allow production auth to wait for the data transaction that requested
+  // its fresh check. Distinct Drizzle wrappers around one SQL client still share
+  // a pool. Only the explicit synthetic issuer seam may omit a separate pool.
+  if (
+    (!options.auth && !options.identityDatabase) ||
+    (options.identityDatabase &&
+      (options.identityDatabase === database ||
+        options.identityDatabase.$client === database.$client))
+  )
+    throw new Error(
+      "Owned Scout requires an independent identity database pool.",
+    );
+  const identityDatabase = options.identityDatabase ?? database;
   const audit = createAuditStore(database);
   const credentials = createCredentialStore(database);
   const tenantPackage = await loadTenantPackage(config.tenantPackageDirectory);
@@ -145,31 +157,12 @@ export async function createOwnedApplication(
     database,
     config.auth?.initialAdminEmails ?? [],
   );
-  const nativeAuth =
-    options.auth ??
-    (config.organizationAuthUrl
-      ? createOrganizationAuth({
-          authorityUrl: config.organizationAuthUrl,
-          materializeUser: async (user) => {
-            if (await people.isRevoked(user.email))
-              throw new Error("SCOUT_ACCESS_DENIED");
-            return organizationUserStore(database, {
-              requireSubjectMatch: true,
-            })(user);
-          },
-        })
-      : createAuth(
-          config,
-          database,
-          (email) => people.isRevoked(email),
-          audit,
-        ));
-  const { auth, roles } = createOwnedIdentity({
-    auth: nativeAuth,
-    roles: createRoleRepository(database),
+  const { auth, roles } = createOwnedNativeIdentity(
+    config,
+    identityDatabase,
     scope,
-    platformOwnerIds: config.scoutPlatformOwnerIds,
-  });
+    options.auth,
+  );
   const historyStore = createHistoryStore(database);
   const historyEngine = createHistoryEngine(historyStore);
   const threadIdentity = createThreadIdentity(deploymentId);

@@ -5,10 +5,13 @@ import { createDemonstrationRecorder } from "../../demonstrations/recording";
 import { createDemonstrationStore } from "../../demonstrations/store";
 import { startHttpServer } from "../../http-server";
 import { createOwnedApplication } from "./application";
+import { assertOwnedNativeIdentityConfiguration } from "./native-identity";
 
-// Keep the one-process pilot below its 24-connection role cap; LISTEN owns a
-// separate max: 1 client and is counted independently.
-const ownedApplicationDatabasePoolMax = 8;
+// Fresh native identity checks run while a consent transaction holds a data
+// connection. Reserve an independent identity pool, never another data-pool
+// wrapper. 7 data + 1 identity + 1 LISTEN = 9 under the pilot's role cap of 24.
+const ownedApplicationDatabasePoolMax = 7;
+const ownedIdentityDatabasePoolMax = 1;
 
 type OwnedStartupDependencies = {
   loadOwnedConfig: typeof loadOwnedConfig;
@@ -35,10 +38,13 @@ export async function startOwnedScout(
     ...overrides,
   };
   const config = deps.loadOwnedConfig();
+  assertOwnedNativeIdentityConfiguration();
   const database = deps.createDatabase(config.databaseUrl, {
     max: ownedApplicationDatabasePoolMax,
   });
-  const cleanup: (() => unknown | Promise<unknown>)[] = [];
+  const cleanup: (() => unknown | Promise<unknown>)[] = [
+    () => database.$client.close(),
+  ];
   let stopping: Promise<void> | undefined;
   let signalsRegistered = false;
   const close = (): Promise<void> =>
@@ -52,9 +58,7 @@ export async function startOwnedScout(
       let failure: unknown;
       // Reverse acquisition order: stop HTTP, LISTEN and history while their database is still open.
       // Call each inside the try, so synchronous throws cannot prevent later cleanup either.
-      for (const stop of [...cleanup]
-        .reverse()
-        .concat([() => database.$client.close()])) {
+      for (const stop of [...cleanup].reverse()) {
         try {
           await stop();
         } catch (error) {
@@ -76,7 +80,17 @@ export async function startOwnedScout(
   let activity: Awaited<ReturnType<typeof startChannelActivityListener>>;
   let listener: ReturnType<typeof startHttpServer>;
   try {
-    owned = await deps.createOwnedApplication(config, database);
+    const identityDatabase = deps.createDatabase(config.databaseUrl, {
+      max: ownedIdentityDatabasePoolMax,
+    });
+    if (identityDatabase.$client === database.$client)
+      throw new Error(
+        "Owned Scout requires an independent identity database pool.",
+      );
+    cleanup.push(() => identityDatabase.$client.close());
+    owned = await deps.createOwnedApplication(config, database, {
+      identityDatabase,
+    });
     cleanup.push(() => owned.close());
     activity = await deps.startChannelActivityListener(
       config.databaseUrl,

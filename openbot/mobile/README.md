@@ -17,14 +17,41 @@ The server rechecks membership, grants, model policy and Odoo visibility before
 releasing the fixed summary. Configure or replace the Odoo credential through
 the authenticated web setup link; mobile has no raw-key enrollment field.
 
-The DSH draft-review panel loads existing receipts only when the server's
+The DSH panel loads existing receipts only when the server's
 `delegatedDrafts` capability is explicitly true. It filters to the current
 conversation and renders returned results as plain text. Refreshing a task reads
 its current receipt. Acceptance requires a separate review/confirmation action
 and carries the exact reviewed revision and draft digest. A conflict requires
 refresh and review rather than automatic acceptance of a newer result.
 
-This slice adds no draft submission, cancellation, recovery worker, scheduler,
+For explicit delegation, choose a saved user message and review the displayed
+title and instructions, then select **Delegate reviewed message to DSH**. Only
+plain-text messages read from canonical server history, with a UUID and up to
+8,000 characters, qualify; optimistic messages and model/tool replies do not.
+The title is derived from the first line (up to 200 characters), instructions
+are the trimmed message text, and its original message UUID is the stable
+`sourceId`. To change a request, save and explicitly choose a new message.
+
+Before the first submission, SecureStore persists and reads back an opaque
+attempt marker scoped to the server, account, conversation, assistant and
+message. It holds only the source UUID and payload digest, never the prompt or
+an authorization claim. Failed storage blocks submission. The backend commits
+the complete intent before its queue RPC. A lost response retains the local
+marker; opening the panel or remounting performs no automatic submission.
+**Check request status** reads current receipts. A list is capped at 50, so
+absence does not establish that a request never reached the server.
+
+**Recover the same reviewed request** is an explicit retry of the identical
+payload/source through the existing submission API. The server verifies the
+stored payload and binding before recovering it. A matching list `sourceId`
+alone does not authorize by-ID recovery: public receipts omit instructions.
+Changed content, unreadable markers and changed identities/scopes fail closed.
+All saved eligible messages remain selectable, including older uncertain
+requests; messages no longer present in canonical history require web/operator
+reconciliation. No source key is rotated automatically. All network requests
+reuse the subject-bound `scopedApi` guard, including asynchronous cookie reads.
+
+This slice adds no cancellation, recovery worker, scheduler,
 routines, memory, computer access, plugins or push notifications. Existing queue
 and server authorization remain authoritative. Runtime activation, live Entra/
 Odoo/model/DSH qualification and physical-device acceptance are separate work.
@@ -55,7 +82,9 @@ server.
 Run `npm run typecheck` and `npm test` from this directory. The focused
 tests cover persisted history reads, authenticated request shape, owned-run
 payloads, streamed text, terminal events, failure recovery, one-turn task
-selection, consent request shapes, capability gating and exact draft acceptance.
+selection, consent request shapes, capability gating, exact draft acceptance,
+durable submission markers, lost replies, same-key recovery, and delayed
+storage/cookie completion across account, conversation and assistant changes.
 They use synthetic fixtures and fake API ports, not live providers or queue work.
 Native API and chat dispatches recheck the initiating account and conversation
 after asynchronous credential reads. The server also rejects an expected-user

@@ -39,8 +39,9 @@ create its direct conversation without launching an automatic turn.
 
 The proposed service envelope is 1 CPU (`CPUQuota=100%`), 640 MiB memory
 high-water, 1,024 MiB hard memory limit, 128 MiB swap ceiling and 96 tasks. In
-the one-process owned runtime, the application query pool is explicitly capped
-at 8 connections; the separate channel `LISTEN` client is capped at 1, for 9
+the one-process owned runtime, the application data query pool is explicitly
+capped at 7 connections, the independent native-identity query pool at 1, and
+the separate channel `LISTEN` client at 1, for 9
 configured connections per process. The dedicated PostgreSQL role limit is 24
 and is shared by every client using that role, leaving up to 15 additional
 connections only when no other same-role clients are active. Two owned replicas
@@ -49,6 +50,24 @@ limit, so horizontal scaling is not covered. Verify cluster headroom, role
 ownership, peak connections, pool waits and timeouts first. PostgreSQL's work
 is outside the Bun service's memory cgroup. These are initial pilot limits to
 measure, not proven throughput or customer-production targets.
+
+The identity pool uses the same explicitly configured Scout database and runtime
+role, but a separate SQL client. Native authentication, exact Entra account
+mapping, role lookup, organization-user reconciliation, revocation lookup and
+authentication audit callbacks all use this pool. Consent keeps its data
+transaction and fresh identity, membership, Odoo-map and model-policy checks:
+sharing the data pool can deadlock when every data connection is held by a
+transaction awaiting another identity read. Do not recombine the pools, increase
+the total, or disable those checks to hide a pool wait. Shutdown stops HTTP,
+activity listening and history before closing identity and data clients; partial
+startup failure closes every acquired client once.
+
+Keep `SCIM_BEARER_TOKEN` unset. Owned mode does not admit SCIM provisioning and
+refuses this unsupported server configuration before acquiring database clients.
+Silently installing SCIM would enable interactive native-auth transactions whose
+SCIM hooks can reenter and exhaust the identity pool. The default licensed
+composition retains its existing SCIM behavior; qualifying an owned directory
+adapter is a separate task.
 
 ## Ownership and inputs before host mutation
 
