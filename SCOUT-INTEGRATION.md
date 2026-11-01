@@ -56,6 +56,13 @@ and accepted task5/client-crash task7 receipts remain in
 
 ## Persistence and deployment qualification
 
+The separately reviewed [owned PostgreSQL persistence foundation](scout/PERSISTENCE.md)
+uses the public MIT AgentRunner extension. It now has synthetic real-SDK/SQL
+qualification for native user/tenant isolation, durable replay, fenced producer
+recovery, interrupted resume and exact-run cancellation. It is not yet wired
+into the platform bootstrap/UI; the original Intelligence requirements below
+still describe the runnable app. Licensed Intelligence features remain distinct.
+
 Upstream `server/src/config.ts` requires Intelligence API, WebSocket and key
 settings. A local memory table fallback does not make durable threads optional.
 The [local Intelligence evaluation](https://docs.copilotkit.ai/intelligence/self-hosting-local)

@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "scope": "Owned CopilotKit PostgreSQL persistence foundation; source and synthetic qualification only",
+  "upstream_pin": "f52288fff5ccdbd3de428d573d9f026fce5ff480",
+  "baseline_before_changes": "53f797167dd676e8d0945982a5f65bc65cbbc740",
+  "hash_normalization": "UTF-8 text with CRLF normalized to LF; no whitespace stripped",
+  "source_sha256": {
+    "openbot/bun.lock": "9017daffa3c9a0e7d691fb8325f877e9711d2a27037da6196e68703a1c946777",
+    "openbot/server/drizzle.config.ts": "96817aeb169893098321e06804b8852a315b650e135f63f576f24367ebfce12d",
+    "openbot/server/drizzle/0069_scout_history.sql": "6a837ae59bc639cb7d409a104e922173856ed2b590e57c5dbffa89486663b645",
+    "openbot/server/drizzle/meta/_journal.json": "431148d6efbb418a4887848a8ff6e3f2e83a7e38d7d746d8f6b77ff0d4793ba6",
+    "openbot/server/drizzle/meta/0069_snapshot.json": "c1841abe19fedaef5dffec15b8d22ad723698b75af5ae2adeec3b4a26822b6c3",
+    "openbot/server/package.json": "1b74705a6f0eb6bc6f6120fd1159dbe0e09df751fe74f7b77db414ccd17d5f5e",
+    "openbot/server/src/db/schema/index.ts": "bc75287166eb9166632e4f7ea2fd0647b12538e5021df4419ecb86b8e6c98ac0",
+    "openbot/server/src/db/schema/scout-history.ts": "851a7c894f31835aba321b06462a43bbd37ec5116b023486fd8ae9e527b7f300",
+    "openbot/server/src/scout/history/endpoint.ts": "734b7e548e0bcc6008daad93d1f0ed5704580d36ab0d60c7d5dc008f199b06f1",
+    "openbot/server/src/scout/history/protocol.ts": "e9b76b79d3a60277a1d0d59de2029f6a0f2f8b5ca9898e648327f32de55f1dff",
+    "openbot/server/src/scout/history/routes.ts": "135828a16f2b07981963b4f23c098281835debda6c408055eeb5a9cb05373d3b",
+    "openbot/server/src/scout/history/runner.ts": "1930d91f432a7b8734f018e60c3c7ef86ce5cdd01a5484e95c101812b9ae4a93",
+    "openbot/server/src/scout/history/service.ts": "d7a229ebbf91593abdecf862bc5a6bc103a54577a8fabd821b9498ac5bfa034f",
+    "openbot/server/src/scout/history/store.ts": "884ce17aaa875f4ea058b2810861deb34e59a4fefdd023e82ba58dfeab7859de",
+    "openbot/server/tests/scout-history.integration.test.ts": "5cb8f5319117c6601f5ec96665cff79d6c311425028084bafa55f661e16c64fb",
+    "openbot/server/tests/support/scout-history-process.ts": "de0b269387be2da251fb631362d7b19984858b38c78f98f95f50b7b12f600981",
+    "SCOUT-INTEGRATION.md": "aba63f3d1853a2c0f00ad9713c21d0cc2da6db79b3d109e4ddb275d83c5295a0",
+    "scout/PERSISTENCE.md": "b14ac8f2e13069ae0a17447a9808666cffdcb179d8a97d14dc734b8a9ca5fd80"
+  },
+  "results": {
+    "history_integration": {
+      "passed": 31,
+      "failed": 0,
+      "files": 1
+    },
+    "history_and_requester_integration": {
+      "passed": 65,
+      "failed": 0,
+      "files": 2
+    },
+    "server_typecheck": "pass",
+    "server_tests_typecheck": {
+      "existing_baseline_diagnostics": 239,
+      "new": 0,
+      "comparison": "Existing test tsconfig; Windows path normalization; baseline unchanged"
+    },
+    "scoped_biome": "pass",
+    "dependency_install": "Bun1.4.3 frozen lockfile, scripts disabled; no version upgrades; one already locked direct server dependency declared",
+    "migration": "0069 applied to dedicated PostgreSQL16 fixture with minimal users table; full platform migration deferred to exact-head CI",
+    "migration_metadata_check": "drizzle-kit check pass",
+    "producer_termination": {
+      "actual_child_process_killed": true,
+      "partial_answer_recovered": true,
+      "committed_dispatch_markers": 1,
+      "same_run_invoked_again": false,
+      "model_api_called": false
+    },
+    "protocol_boundary_followup": "2 standalone guard assertions passed after final integration run; included in the published integration test"
+  },
+  "local_process_cleanup": {
+    "postgres_container_id": "63e1e115c01cc90f10e23d00b9a4a7c975ee250276cca50176778787a28debd7",
+    "postgres_state": "exited",
+    "postgres_exit_code": 0,
+    "postgres_oom_killed": false,
+    "bounded_wsl_holders": "Both exact helper processes verified by command/cwd, terminated and exec completion read back",
+    "test_children": "completed or killed by exact owned handle; none retained"
+  },
+  "acceptance": {
+    "platform_bootstrap_or_ui_wired": false,
+    "exact_head_ci": "pending publication",
+    "linode_deployed": false,
+    "live_company_sso": false,
+    "live_inference": false,
+    "live_odoo_or_dsh": false,
+    "shared_employee_customer_access": false,
+    "native_device_accepted": false,
+    "physical_pc_off": "deferred and unarmed"
+  }
+}

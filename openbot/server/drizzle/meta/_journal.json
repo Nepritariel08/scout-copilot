@@ -484,6 +484,13 @@
       "when": 1793486207225,
       "tag": "0068_scout_queue_requester",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1793493053542,
+      "tag": "0069_scout_history",
+      "breakpoints": true
     }
   ]
 }
