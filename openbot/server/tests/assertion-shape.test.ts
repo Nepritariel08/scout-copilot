@@ -449,6 +449,13 @@ const key = (o: { file: string; line: number; shape: Shape }) =>
  */
 const ALLOW: Allowed[] = [
   {
+    file: "app/tests/conversation-send.test.tsx",
+    line: 164,
+    shape: "b",
+    finding: "NEW (current fix cycle)",
+    why: "expect(chat.sent[0]?.odooTaskId).toBeUndefined();",
+  },
+  {
     file: "app/tests/auth-client.test.ts",
     line: 83,
     shape: "a",

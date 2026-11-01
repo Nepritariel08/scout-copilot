@@ -237,14 +237,29 @@ describe("owned Odoo grant persistence and credential resolution", () => {
         },
         release: { active: true, revision: 1, provider: "openrouter" },
       });
-      await database
-        .update(scoutOdooRecordAccessGrants)
-        .set({ expiresAt: new Date(Date.now() - 1000) })
-        .where(eq(scoutOdooRecordAccessGrants.id, record!.id));
+      // The grant ledger is append-only. Model elapsed time with a later
+      // immutable revision whose expiry has passed instead of mutating history.
+      const expiredAt = new Date(Date.now() - 1000);
+      await database.insert(scoutOdooRecordAccessGrants).values({
+        deploymentId: record!.deploymentId,
+        tenantId: record!.tenantId,
+        nativeUserId: record!.nativeUserId,
+        bindingFingerprint: record!.bindingFingerprint,
+        revision: record!.revision + 1,
+        active: true,
+        sourceInstanceId: record!.sourceInstanceId,
+        sourceUid: record!.sourceUid,
+        qualification: record!.qualification,
+        qualificationExpiresAt: expiredAt,
+        companyIds: record!.companyIds,
+        allowedProjectIds: record!.allowedProjectIds,
+        credentialRef: record!.credentialRef,
+        expiresAt: expiredAt,
+      });
       await expect(
         service.status(grantPrincipal, "openrouter", modelPolicyFingerprint),
       ).resolves.toMatchObject({
-        record: { active: false, credentialStored: true, revision: 1 },
+        record: { active: false, credentialStored: true, revision: 2 },
       });
       expect(await service.revokeAll(grantPrincipal)).toEqual({
         recordGrantRevoked: true,
@@ -260,7 +275,7 @@ describe("owned Odoo grant persistence and credential resolution", () => {
           eq(scoutOdooRecordAccessGrants.nativeUserId, grantPrincipal.userId),
         )
         .orderBy(desc(scoutOdooRecordAccessGrants.revision));
-      expect(recordRevisions[0]).toMatchObject({ active: false, revision: 2 });
+      expect(recordRevisions[0]).toMatchObject({ active: false, revision: 3 });
       const releaseRevisions = await database
         .select()
         .from(scoutContextReleaseGrants)
@@ -275,7 +290,7 @@ describe("owned Odoo grant persistence and credential resolution", () => {
         record: {
           active: false,
           credentialStored: false,
-          revision: 2,
+          revision: 3,
         },
         release: { active: false, revision: 2 },
       });

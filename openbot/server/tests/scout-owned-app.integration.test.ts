@@ -516,6 +516,16 @@ describe("owned composition through the actual Scout app", () => {
         record: null,
         release: null,
       });
+      const visibleProfiles = await requestConfiguredGrant(
+        "GET",
+        "/api/agents",
+      );
+      expect(visibleProfiles.status).toBe(200);
+      expect(
+        (await visibleProfiles.json()).agents.map(
+          (profile: { id: string }) => profile.id,
+        ),
+      ).toContain(unapprovedAgentId);
       const deniedProfile = await requestConfiguredGrant(
         "GET",
         `/api/scout/odoo/context-grants?agentId=${encodeURIComponent(unapprovedAgentId)}`,

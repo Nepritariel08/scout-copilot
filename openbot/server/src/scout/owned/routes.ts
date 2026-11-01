@@ -9,7 +9,7 @@ import { HistoryError } from "../history/protocol";
 import { createHistoryRoutes, historyErrorStatuses } from "../history/routes";
 import type { createHistoryEngine } from "../history/runner";
 import type { OdooGrantBinding } from "../owned-model/grant-service";
-import type { ModelGrant } from "../owned-model/policy";
+import { type ModelGrant, ModelPolicyError } from "../owned-model/policy";
 import type {
   ProjectTaskContextPrincipal,
   ProjectTaskContextProvider,
@@ -162,11 +162,19 @@ export function createOwnedRuntimeRoutes(deps: {
   app.use("/api/scout/odoo/context-grants/*", deps.authority.requireTenant);
   app.use("/api/scout/odoo/context-grants", bodyLimit({ maxSize: 8192 }));
   app.use("/api/scout/odoo/context-grants/*", bodyLimit({ maxSize: 8192 }));
-  app.onError((error, context) =>
-    error instanceof HistoryError
-      ? context.json({ code: error.code }, historyErrorStatuses[error.code])
-      : context.json({ code: "HISTORY_UNAVAILABLE" }, 503),
-  );
+  app.onError((error, context) => {
+    if (error instanceof HistoryError)
+      return context.json(
+        { code: error.code },
+        historyErrorStatuses[error.code],
+      );
+    if (error instanceof ModelPolicyError)
+      return context.json(
+        { code: error.code },
+        error.code === "MODEL_ACCESS_DENIED" ? 403 : 503,
+      );
+    return context.json({ code: "HISTORY_UNAVAILABLE" }, 503);
+  });
   app.post("/api/scout/odoo/context-grants", async (context) => {
     const depsGrants = deps.odooGrants;
     if (!depsGrants) return context.json({ code: "MODEL_NOT_CONFIGURED" }, 503);
