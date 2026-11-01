@@ -66,6 +66,14 @@ export function createRequireUser(
       return context.json({ error: "Authentication required." }, 401);
     }
 
+    // This is an additional refusal condition, never an identity or permission grant.
+    // A native action started before SecureStore/account switching must not mutate as
+    // the new cookie's subject, even if the client has not rendered that change yet.
+    const expectedUser = context.req.header("X-Scout-Expected-User");
+    if (expectedUser !== undefined && expectedUser !== session.user.id) {
+      return context.json({ code: "SCOUT_IDENTITY_CHANGED" }, 409);
+    }
+
     const roles = session.user.role
       ? [session.user.role]
       : await roleRepository.rolesForUser(session.user.id);

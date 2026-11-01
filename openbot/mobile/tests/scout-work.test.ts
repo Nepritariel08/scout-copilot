@@ -38,6 +38,12 @@ const scope = {
 };
 const status: OdooContextStatus = {
   provider: "openrouter",
+  route: {
+    provider: "openrouter",
+    model: "synthetic-free",
+    policyFingerprint: "b".repeat(64),
+    expiresAt: "2099-01-01T00:00:00Z",
+  },
   record: {
     active: true,
     credentialStored: true,
@@ -66,6 +72,43 @@ const draft: DraftReceipt = {
   errorCode: null,
   updatedAt: "2026-11-01T00:00:00Z",
 };
+
+test("consent requires a displayed unexpired route; withdrawal remains possible without one", async () => {
+  const calls: unknown[] = [];
+  const client = clientFor((_path, input) => {
+    calls.push(input);
+  });
+  assert.throws(
+    () => changeOdooRelease(client, "scout-a", true),
+    /review the current model route/,
+  );
+  assert.throws(
+    () =>
+      changeOdooRelease(client, "scout-a", true, {
+        ...status.route,
+        expiresAt: "2000-01-01T00:00:00Z",
+      }),
+    /review the current model route/,
+  );
+  assert.throws(
+    () =>
+      changeOdooRelease(client, "scout-a", true, {
+        ...status.route,
+        policyFingerprint: "invalid",
+      }),
+    /review the current model route/,
+  );
+  assert.deepEqual(calls, []);
+  await changeOdooRelease(client, "scout-a", false);
+  assert.deepEqual(calls, [{ method: "DELETE", body: { agentId: "scout-a" } }]);
+  assert.equal(
+    canSelectOdooTask({
+      ...status,
+      route: { ...status.route, expiresAt: "2000-01-01T00:00:00Z" },
+    }),
+    false,
+  );
+});
 
 test("task selection belongs to one user, channel and agent and is synchronously consumed once", () => {
   const selection: OdooTaskSelection = { ...scope, taskId: "77" };
@@ -178,7 +221,7 @@ test("Odoo status and explicit consent use the existing native-authenticated con
     return status;
   });
   assert.deepEqual(await readOdooContext(client, "scout /a"), status);
-  await changeOdooRelease(client, "scout-a", true);
+  await changeOdooRelease(client, "scout-a", true, status.route);
   await changeOdooRelease(client, "scout-a", false);
   assert.deepEqual(calls, [
     {
@@ -187,7 +230,16 @@ test("Odoo status and explicit consent use the existing native-authenticated con
     },
     {
       path: "/api/scout/odoo/context-grants/release",
-      input: { method: "POST", body: { agentId: "scout-a", consent: true } },
+      input: {
+        method: "POST",
+        body: {
+          agentId: "scout-a",
+          consent: true,
+          expectedProvider: "openrouter",
+          expectedModel: "synthetic-free",
+          expectedPolicyFingerprint: "b".repeat(64),
+        },
+      },
     },
     {
       path: "/api/scout/odoo/context-grants/release",

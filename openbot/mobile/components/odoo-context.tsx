@@ -1,8 +1,9 @@
 import * as Linking from "expo-linking";
 import { useEffect, useRef, useState } from "react";
 import { Button, Text, TextInput, View } from "react-native";
-import { api, serverUrl } from "../src/api";
+import { serverUrl } from "../src/api";
 import {
+  type AuthenticatedApi,
   canSelectOdooTask,
   changeOdooRelease,
   type OdooContextStatus,
@@ -18,12 +19,14 @@ export function OdooContextPanel({
   selectedTaskId,
   onSelectTaskId,
   sending,
+  client,
 }: {
   agentId: string;
   channelId: string;
   selectedTaskId: string | null;
   onSelectTaskId(taskId: string | null): void;
   sending: boolean;
+  client: AuthenticatedApi;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [status, setStatus] = useState<OdooContextStatus>();
@@ -54,7 +57,7 @@ export function OdooContextPanel({
       : "the configured local provider";
 
   async function loadStatus() {
-    const next = await readOdooContext(api, agentId);
+    const next = await readOdooContext(client, agentId);
     if (!alive.current) return;
     setStatus(next);
     if (!canSelectOdooTask(next)) onSelectTaskId(null);
@@ -68,7 +71,8 @@ export function OdooContextPanel({
     setNotice("");
     if (action === false) onSelectTaskId(null);
     try {
-      if (action !== undefined) await changeOdooRelease(api, agentId, action);
+      if (action !== undefined)
+        await changeOdooRelease(client, agentId, action, status?.route);
       if (!alive.current) return;
       await loadStatus();
       if (alive.current && action !== undefined)
@@ -138,14 +142,14 @@ export function OdooContextPanel({
               </Text>
               <Text>
                 Model sharing: {releaseActive ? "allowed" : "not allowed"} to{" "}
-                {provider}.
+                {provider}, model {status.route.model}.
               </Text>
               {recordActive && !releaseActive ? (
                 <>
                   <Text>
                     Allow only the fixed project-task summary to reach{" "}
-                    {provider} for this model route. Consent expires with its
-                    grant or model policy.
+                    {provider}, model {status.route.model}, for this model
+                    route. Consent expires with its grant or model policy.
                   </Text>
                   <Button
                     title="Allow task summaries to reach this model"

@@ -229,6 +229,7 @@ test("owned run sends the cookie and canonical AG-UI request, streams text, and 
 
   const result = await runOwnedAgent({
     serverUrl: "https://scout.example",
+    expectedUserId: "native-user-1",
     cookie: "better-auth.session_token=secret-cookie",
     agentId: "scout assistant",
     payload: run.payload,
@@ -244,6 +245,7 @@ test("owned run sends the cookie and canonical AG-UI request, streams text, and 
   assert.equal(capturedInit?.credentials, "omit");
   assert.deepEqual(capturedInit?.headers, {
     Accept: "text/event-stream",
+    "X-Scout-Expected-User": "native-user-1",
     Cookie: "better-auth.session_token=secret-cookie",
     "Content-Type": "application/json",
   });
@@ -267,6 +269,7 @@ test("owned history fetch reads the authenticated persisted thread snapshot", as
 
   const result = await readOwnedHistory({
     serverUrl: "https://scout.example",
+    expectedUserId: "native-user-1",
     cookie: "session=private",
     threadId: "thread /1",
     agentId: "scout/agent",
@@ -281,6 +284,7 @@ test("owned history fetch reads the authenticated persisted thread snapshot", as
   assert.equal(capturedInit?.credentials, "omit");
   assert.deepEqual(capturedInit?.headers, {
     Accept: "application/json",
+    "X-Scout-Expected-User": "native-user-1",
     Cookie: "session=private",
   });
   assert.deepEqual(result, messages);
@@ -292,6 +296,7 @@ test("owned history reports server authorization errors and refuses unreadable s
   await assert.rejects(
     readOwnedHistory({
       serverUrl: "https://scout.example",
+      expectedUserId: "native-user-1",
       cookie: null,
       threadId: "thread-1",
       agentId: "scout",
@@ -305,6 +310,7 @@ test("owned history reports server authorization errors and refuses unreadable s
   await assert.rejects(
     readOwnedHistory({
       serverUrl: "https://scout.example",
+      expectedUserId: "native-user-1",
       cookie: null,
       threadId: "thread-1",
       agentId: "scout",
@@ -330,6 +336,7 @@ test("owned run rejects an error event and a stream without a terminal event", a
       new Response(eventStream(data));
   const base = {
     serverUrl: "https://scout.example",
+    expectedUserId: "native-user-1",
     cookie: null,
     agentId: "scout",
     payload: request.payload,

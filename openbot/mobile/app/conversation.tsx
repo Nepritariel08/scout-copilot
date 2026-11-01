@@ -16,10 +16,10 @@ import {
 import { DraftReviewPanel } from "../components/draft-review";
 import { OdooContextPanel } from "../components/odoo-context";
 import {
-  api,
   type ChatMessage,
   type Conversation,
   type ScoutAgent,
+  scopedApi,
 } from "../src/api";
 import { authClient, serverUrl } from "../src/auth";
 import {
@@ -30,6 +30,7 @@ import {
   recoverFailedSend,
   runOwnedAgent,
 } from "../src/owned-chat";
+import { scopedSession } from "../src/request-scope";
 import {
   consumeOdooTaskSelection,
   type OdooTaskSelection,
@@ -79,6 +80,11 @@ export default function ConversationScreen() {
   };
   const activeWorkScope = useRef(workScope);
   activeWorkScope.current = workScope;
+  const workClient = scopedApi({
+    userId: workScope.userId,
+    isCurrent: () =>
+      mounted.current && sameWorkScope(activeWorkScope.current, workScope),
+  });
   const selectedTaskId = selectedOdooTask(taskSelection, workScope);
   const turnTaskId = selectedOdooTask(turnSelection, workScope);
 
@@ -147,11 +153,12 @@ export default function ConversationScreen() {
       const snapshot = await refreshForCurrentScope<ConversationData>({
         isCurrent,
         read: async () => {
+          const client = scopedApi({ userId, isCurrent });
           const [channelResult, agentResult] = await Promise.all([
-            api<{ channel: Conversation }>(
+            client<{ channel: Conversation }>(
               `/api/channels/${encodeURIComponent(channelId)}`,
             ),
-            api<{ agents: ScoutAgent[] }>("/api/agents"),
+            client<{ agents: ScoutAgent[] }>("/api/agents"),
           ]);
           const channel = channelResult.channel;
           const selectedAgent = agentResult.agents.find(
@@ -163,10 +170,13 @@ export default function ConversationScreen() {
               "This conversation has no available Scout assistant.",
             );
 
-          const cookie = (await authClient.getCookie()) || null;
+          const nativeSession = await scopedSession(
+            () => authClient.getCookie(),
+            { userId, isCurrent },
+          );
           const history = await readOwnedHistory({
             serverUrl,
-            cookie,
+            ...nativeSession,
             threadId: channel.threadId,
             agentId: selectedAgent.id,
             fetcher: expoFetch,
@@ -257,10 +267,14 @@ export default function ConversationScreen() {
 
     let sendError: string | undefined;
     try {
-      const cookie = (await authClient.getCookie()) || null;
+      const nativeSession = await scopedSession(() => authClient.getCookie(), {
+        userId,
+        isCurrent: () =>
+          mounted.current && sameWorkScope(activeWorkScope.current, workScope),
+      });
       await runOwnedAgent({
         serverUrl,
-        cookie,
+        ...nativeSession,
         agentId: agent.id,
         payload: run.payload,
         fetcher: expoFetch,
@@ -383,10 +397,12 @@ export default function ConversationScreen() {
                 selectedTaskId={selectedTaskId}
                 onSelectTaskId={selectTask}
                 sending={sending}
+                client={workClient}
               />
               <DraftReviewPanel
                 key={`${session.user.id}:${channelId}:drafts`}
                 channelId={channelId}
+                client={workClient}
               />
             </>
           ) : null}

@@ -7,7 +7,9 @@ transcript authority.
 
 The conversation's Odoo context panel shows the current user's access and
 provider-sharing status. Users explicitly allow or withdraw the existing
-model-release consent, then select one project task ID for their next message.
+model-release consent for the displayed provider and model, then select one
+project task ID for their next message. Consent carries the displayed policy
+fingerprint; a changed route requires refresh and a new explicit decision.
 The reference is scoped to the user, conversation and agent and consumed once
 when a turn is attempted. A failed turn restores only the chat draft under the
 existing recovery rules; selecting a task again requires another explicit choice.
@@ -55,3 +57,7 @@ tests cover persisted history reads, authenticated request shape, owned-run
 payloads, streamed text, terminal events, failure recovery, one-turn task
 selection, consent request shapes, capability gating and exact draft acceptance.
 They use synthetic fixtures and fake API ports, not live providers or queue work.
+Native API and chat dispatches recheck the initiating account and conversation
+after asynchronous credential reads. The server also rejects an expected-user
+header that differs from the authenticated cookie subject. The header grants
+no access. Rebuild and deploy the matching client/server contract together.

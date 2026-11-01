@@ -148,9 +148,16 @@ export function buildOwnedRunInput(input: {
   };
 }
 
-function sessionHeaders(cookie: string | null, accept: string) {
+function sessionHeaders(
+  cookie: string | null,
+  accept: string,
+  expectedUserId: string,
+) {
+  if (!expectedUserId)
+    throw new Error("A signed-in Scout identity is required.");
   return {
     Accept: accept,
+    "X-Scout-Expected-User": expectedUserId,
     ...(cookie ? { Cookie: cookie } : {}),
   };
 }
@@ -173,6 +180,7 @@ async function responseError(response: Response): Promise<Error> {
 export async function readOwnedHistory(input: {
   serverUrl: string;
   cookie: string | null;
+  expectedUserId: string;
   threadId: string;
   agentId: string;
   fetcher?: Fetcher;
@@ -182,7 +190,11 @@ export async function readOwnedHistory(input: {
   const response = await fetcher(`${input.serverUrl}${path}`, {
     method: "GET",
     credentials: "omit",
-    headers: sessionHeaders(input.cookie, "application/json"),
+    headers: sessionHeaders(
+      input.cookie,
+      "application/json",
+      input.expectedUserId,
+    ),
   });
   if (!response.ok) throw await responseError(response);
   const body: unknown = await response.json();
@@ -294,6 +306,7 @@ export async function consumeOwnedEventStream(
 export async function runOwnedAgent(input: {
   serverUrl: string;
   cookie: string | null;
+  expectedUserId: string;
   agentId: string;
   payload: OwnedRunInput;
   fetcher: Fetcher;
@@ -307,7 +320,11 @@ export async function runOwnedAgent(input: {
       method: "POST",
       credentials: "omit",
       headers: {
-        ...sessionHeaders(input.cookie, "text/event-stream"),
+        ...sessionHeaders(
+          input.cookie,
+          "text/event-stream",
+          input.expectedUserId,
+        ),
         "Content-Type": "application/json",
       },
       body: JSON.stringify(input.payload),

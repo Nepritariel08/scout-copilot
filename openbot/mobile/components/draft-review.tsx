@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button, Text, View } from "react-native";
-import { api } from "../src/api";
 import {
+  type AuthenticatedApi,
   acceptReviewedDraft,
   canAcceptDraft,
   type DraftReceipt,
@@ -21,7 +21,13 @@ const stateNames: Record<DraftReceipt["state"], string> = {
 };
 
 /** Existing queue receipts only: no submission, timer, recovery worker or automatic acceptance. */
-export function DraftReviewPanel({ channelId }: { channelId: string }) {
+export function DraftReviewPanel({
+  channelId,
+  client,
+}: {
+  channelId: string;
+  client: AuthenticatedApi;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [available, setAvailable] = useState<boolean>();
   const [tasks, setTasks] = useState<DraftReceipt[]>([]);
@@ -39,7 +45,7 @@ export function DraftReviewPanel({ channelId }: { channelId: string }) {
   }, []);
 
   async function load() {
-    const next = await readDrafts(api, channelId);
+    const next = await readDrafts(client, channelId);
     if (!alive.current) return;
     setAvailable(next.available);
     setTasks(next.tasks);
@@ -57,8 +63,8 @@ export function DraftReviewPanel({ channelId }: { channelId: string }) {
     try {
       if (task) {
         if (acceptance)
-          await acceptReviewedDraft(api, channelId, task, acceptance);
-        else await refreshDraft(api, channelId, task);
+          await acceptReviewedDraft(client, channelId, task, acceptance);
+        else await refreshDraft(client, channelId, task);
         if (alive.current)
           setNotice(
             acceptance

@@ -1,5 +1,5 @@
 import { router, useFocusEffect } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Button,
@@ -8,7 +8,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { api, type Conversation, type ScoutAgent } from "../src/api";
+import { api, type Conversation, type ScoutAgent, scopedApi } from "../src/api";
 import { authClient, signIn } from "../src/auth";
 import { clearForIdentityChange, dataForSignedInUser } from "../src/owned-chat";
 
@@ -25,6 +25,13 @@ export default function Home() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const mounted = useRef(false);
+  const activeUserId = useRef(session?.user.id);
+  activeUserId.current = session?.user.id;
+  const userId = session?.user.id ?? "";
+  const isCurrent = () =>
+    mounted.current && Boolean(userId) && activeUserId.current === userId;
+  const client = scopedApi({ userId, isCurrent });
   const microsoftAvailable = capabilities?.authProviders?.includes("microsoft");
   const currentHomeData = dataForSignedInUser(homeData, session?.user.id);
   const agents = currentHomeData?.agents ?? [];
@@ -33,6 +40,13 @@ export default function Home() {
     () => agents.find((agent) => agent.builtIn),
     [agents],
   );
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     setHomeData((current) => clearForIdentityChange(current, session?.user.id));
@@ -61,25 +75,29 @@ export default function Home() {
   const refresh = useCallback(async () => {
     const userId = session?.user.id;
     if (!userId) return;
+    const isCurrent = () => mounted.current && activeUserId.current === userId;
+    const client = scopedApi({ userId, isCurrent });
     setRefreshing(true);
     setError("");
     try {
       const [agentResult, channelPage] = await Promise.all([
-        api<{ agents: ScoutAgent[] }>("/api/agents"),
-        api<{ channels: Conversation[] }>("/api/channels?limit=50"),
+        client<{ agents: ScoutAgent[] }>("/api/agents"),
+        client<{ channels: Conversation[] }>("/api/channels?limit=50"),
       ]);
+      if (!isCurrent()) return;
       setHomeData({
         userId,
         value: { agents: agentResult.agents, channels: channelPage.channels },
       });
     } catch (failure) {
+      if (!isCurrent()) return;
       setError(
         failure instanceof Error
           ? failure.message
           : "Could not load Scout conversations.",
       );
     } finally {
-      setRefreshing(false);
+      if (isCurrent()) setRefreshing(false);
     }
   }, [session?.user.id]);
 
@@ -91,26 +109,28 @@ export default function Home() {
   );
 
   async function createConversation() {
-    if (!scoutAgent || busy) return;
+    if (!scoutAgent || busy || !isCurrent()) return;
     setBusy(true);
     setError("");
     try {
-      const result = await api<{ channel: Conversation }>("/api/channels", {
+      const result = await client<{ channel: Conversation }>("/api/channels", {
         method: "POST",
         body: { agentIds: [scoutAgent.id] },
       });
+      if (!isCurrent()) return;
       router.push({
         pathname: "/conversation",
         params: { channelId: result.channel.id },
       });
     } catch (failure) {
+      if (!isCurrent()) return;
       setError(
         failure instanceof Error
           ? failure.message
           : "Could not create a Scout conversation.",
       );
     } finally {
-      setBusy(false);
+      if (isCurrent()) setBusy(false);
     }
   }
 

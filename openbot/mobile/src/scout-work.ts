@@ -64,6 +64,12 @@ export function consumeOdooTaskSelection(
 
 export type OdooContextStatus = {
   provider: "openrouter" | "local";
+  route: {
+    provider: "openrouter" | "local";
+    model: string;
+    policyFingerprint: string;
+    expiresAt: string;
+  };
   record: {
     active: boolean;
     credentialStored: boolean;
@@ -85,6 +91,8 @@ export function canSelectOdooTask(
 ): boolean {
   return Boolean(
     status?.record?.active &&
+      status.route?.provider === status.provider &&
+      Date.parse(status.route.expiresAt) > now &&
       Date.parse(status.record.expiresAt) > now &&
       status.release?.active &&
       status.release.provider === status.provider &&
@@ -92,10 +100,23 @@ export function canSelectOdooTask(
   );
 }
 
-export function readOdooContext(client: AuthenticatedApi, agentId: string) {
-  return client<OdooContextStatus>(
+export async function readOdooContext(
+  client: AuthenticatedApi,
+  agentId: string,
+) {
+  const status = await client<OdooContextStatus>(
     `/api/scout/odoo/context-grants?agentId=${encodeURIComponent(agentId)}`,
   );
+  if (
+    !status.route?.model ||
+    status.route.provider !== status.provider ||
+    !/^[a-f0-9]{64}$/.test(status.route.policyFingerprint) ||
+    !Number.isFinite(Date.parse(status.route.expiresAt))
+  )
+    throw new Error(
+      "Scout did not return a reviewable model route. Refresh or update the server before sharing task summaries.",
+    );
+  return status;
 }
 
 /** This only records/withdraws explicit provider release consent, never an Odoo API key. */
@@ -103,10 +124,30 @@ export function changeOdooRelease(
   client: AuthenticatedApi,
   agentId: string,
   allow: boolean,
+  route?: OdooContextStatus["route"],
 ) {
+  if (
+    allow &&
+    (!route?.model ||
+      !/^[a-f0-9]{64}$/.test(route.policyFingerprint) ||
+      !(Date.parse(route.expiresAt) > Date.now()))
+  )
+    throw new Error(
+      "Refresh Odoo access and review the current model route before allowing task summaries.",
+    );
   return client<unknown>("/api/scout/odoo/context-grants/release", {
     method: allow ? "POST" : "DELETE",
-    body: { agentId, ...(allow ? { consent: true } : {}) },
+    body: {
+      agentId,
+      ...(allow && route
+        ? {
+            consent: true,
+            expectedProvider: route.provider,
+            expectedModel: route.model,
+            expectedPolicyFingerprint: route.policyFingerprint,
+          }
+        : {}),
+    },
   });
 }
 
