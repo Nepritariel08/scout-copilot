@@ -1,4 +1,11 @@
 import {
+  classifyAttachment,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_FILE_BYTES,
+  MAX_IMAGE_BYTES,
+  namesNoFormat,
+} from "@openbot/shared/attachments";
+import {
   and,
   eq,
   exists,
@@ -19,15 +26,45 @@ import {
   channels,
   intelligenceChannelMappings,
 } from "../db/schema";
-import {
-  classifyAttachment,
-  MAX_ATTACHMENTS_PER_MESSAGE,
-  MAX_FILE_BYTES,
-  MAX_IMAGE_BYTES,
-  namesNoFormat,
-} from "@openbot/shared/attachments";
-import type { StoredAttachment } from "./attachment-parts";
+import type { TenantPrincipal, TenantScope } from "../scout/owned/scope";
 import { sniffMimeType } from "./attachment-mime";
+import type { StoredAttachment } from "./attachment-parts";
+
+function scopedChannel(
+  scope: TenantScope | undefined,
+  principal: TenantPrincipal | undefined,
+  mode: "read" | "write" = "read",
+) {
+  return scope && principal
+    ? scope.predicate(principal, "channel", channels.id, mode)
+    : undefined;
+}
+function scopedAttachment(
+  database: Database,
+  scope: TenantScope | undefined,
+  principal: TenantPrincipal | undefined,
+  mode: "read" | "write" = "read",
+) {
+  return scope && principal
+    ? exists(
+        database
+          .select({ one: sql`1` })
+          .from(channels)
+          .where(
+            and(
+              eq(channels.id, attachments.channelId),
+              scopedChannel(scope, principal, mode),
+            ),
+          ),
+      )
+    : undefined;
+}
+async function currentScope(
+  scope: TenantScope | undefined,
+  principal: TenantPrincipal | undefined,
+) {
+  if (scope && principal) await scope.assertCurrent(principal);
+}
 
 function megabytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(0)}MB`;
@@ -160,6 +197,7 @@ export async function loadAttachmentForTurn(
   database: Database,
   turn: { actorId: string; threadId: string },
   id: string,
+  scope?: TenantScope,
 ): Promise<StoredAttachment | null> {
   /*
    * The same uuid-shape guard as the two routes below, and it belongs here rather than at either
@@ -175,6 +213,7 @@ export async function loadAttachmentForTurn(
    * starting another channel. An id no `uuid` column could hold is an id no row has: null.
    */
   if (!isUuidShaped(id)) return null;
+  const principal = await scope?.resolve(turn.actorId);
 
   /*
    * `channels` is in the join, not only `channelMemberships`, and the difference is a channel that
@@ -205,6 +244,7 @@ export async function loadAttachmentForTurn(
     .where(
       and(
         eq(attachments.id, id),
+        scopedChannel(scope, principal),
         // The conversation this turn is running in, as a term in the same statement rather than as
         // a fact a caller looked up and passed. See {@link inTheTurnsChannel}.
         inTheTurnsChannel(database, turn.threadId),
@@ -223,6 +263,7 @@ export async function loadAttachmentForTurn(
         ),
       ),
     );
+  await currentScope(scope, principal);
   return row ?? null;
 }
 
@@ -377,9 +418,33 @@ export async function markAttachmentsSent(
   database: Database,
   turn: { actorId: string; threadId: string },
   ids: readonly string[],
+  scope?: TenantScope,
 ): Promise<void> {
   const known = ids.filter(isUuidShaped);
   if (known.length === 0) return;
+  const principal = await scope?.resolve(turn.actorId);
+  const allowed =
+    scope && principal
+      ? exists(
+          database
+            .select({ one: sql`1` })
+            .from(channels)
+            .innerJoin(
+              channelMemberships,
+              and(
+                eq(channelMemberships.channelId, channels.id),
+                eq(channelMemberships.userId, turn.actorId),
+              ),
+            )
+            .where(
+              and(
+                eq(channels.id, attachments.channelId),
+                isNull(channels.deletedAt),
+                scopedChannel(scope, principal, "write"),
+              ),
+            ),
+        )
+      : undefined;
 
   const unrecorded = await database
     .transaction(async (transaction) => {
@@ -389,6 +454,7 @@ export async function markAttachmentsSent(
         .where(
           and(
             inArray(attachments.id, known),
+            allowed,
             eq(attachments.uploadedBy, turn.actorId),
             // The channel this send actually happened in. See {@link inTheTurnsChannel}.
             inTheTurnsChannel(database, turn.threadId),
@@ -402,6 +468,7 @@ export async function markAttachmentsSent(
         .where(
           and(
             inArray(attachments.id, known),
+            allowed,
             inTheTurnsChannel(database, turn.threadId),
             isNotNull(attachments.attachedAt),
           ),
@@ -412,6 +479,7 @@ export async function markAttachmentsSent(
       // Thrown rather than returned, because the rollback is the point: see the paragraph above on
       // what keeping a partial set of stamps would leave behind.
       if (missing.length > 0) throw new UnrecordedSend(missing);
+      await currentScope(scope, principal);
       return [];
     })
     .catch((error: unknown) => {
@@ -729,12 +797,14 @@ function describeType(mimeType: string): string {
 export function createChannelAttachmentRoutes(
   database: Database,
   requireUser: MiddlewareHandler<{ Variables: AppVariables }>,
+  scope?: TenantScope,
 ): Hono<{ Variables: AppVariables }> {
   const routes = new Hono<{ Variables: AppVariables }>();
 
   routes.post("/:channelId/attachments", requireUser, async (context) => {
     const actor = context.var.actor;
     const channelId = context.req.param("channelId");
+    const principal = await scope?.resolve(actor.id);
 
     /*
      * The join IS the membership check, not a separate select run after one: a row comes back only
@@ -756,7 +826,13 @@ export function createChannelAttachmentRoutes(
           eq(channelMemberships.userId, actor.id),
         ),
       )
-      .where(and(eq(channels.id, channelId), isNull(channels.deletedAt)))
+      .where(
+        and(
+          eq(channels.id, channelId),
+          isNull(channels.deletedAt),
+          scopedChannel(scope, principal, "write"),
+        ),
+      )
       // Guarded like every other database call on these routes, and this is the one that runs
       // FIRST: without it a database that cannot answer takes the door out before the body is even
       // read, as a plain-text 500 the composer can only report as "could not upload".
@@ -903,6 +979,7 @@ export function createChannelAttachmentRoutes(
      */
     const outcome = await database
       .transaction(async (transaction) => {
+        await currentScope(scope, principal);
         await transaction.execute(
           sql`select pg_advisory_xact_lock(hashtext(${`attachment-cap-${actor.id}`}))`,
         );
@@ -938,6 +1015,7 @@ export function createChannelAttachmentRoutes(
             and channel_memberships.user_id = ${actor.id}::text
           where channels.id = ${channelId}::text
             and channels.deleted_at is null
+            and ${scopedChannel(scope, principal, "write") ?? sql`true`}
         ),
         staged as (
           select count(*)::int as waiting
@@ -946,12 +1024,14 @@ export function createChannelAttachmentRoutes(
             and attachments.uploaded_by = ${actor.id}::text
             and attachments.upload_group = ${uploadGroup}::text
             and attachments.attached_at is null
+            and ${scopedAttachment(database, scope, principal) ?? sql`true`}
         ),
         held as (
           select count(*)::int as waiting
           from attachments
           where attachments.uploaded_by = ${actor.id}::text
             and attachments.attached_at is null
+            and ${scopedAttachment(database, scope, principal) ?? sql`true`}
         ),
         written as (
           insert into attachments (channel_id, uploaded_by, upload_group, name, mime_type, size_bytes, bytes)
@@ -980,6 +1060,7 @@ export function createChannelAttachmentRoutes(
         cross join held
         left join written on true
       `)) as unknown as UploadAttempt[];
+        await currentScope(scope, principal);
 
         if (attempt.id !== null) {
           return {
@@ -1374,7 +1455,13 @@ function couldNotReadAttachment(context: AttachmentContext) {
  * reason this is reusable — and it cannot multiply the attachment row if a membership is ever
  * recorded twice, which a join silently would.
  */
-function visibleToActor(database: Database, actorId: string, id: string) {
+function visibleToActor(
+  database: Database,
+  actorId: string,
+  id: string,
+  scope?: TenantScope,
+  principal?: TenantPrincipal,
+) {
   return and(
     eq(attachments.id, id),
     exists(
@@ -1387,6 +1474,7 @@ function visibleToActor(database: Database, actorId: string, id: string) {
             eq(channelMemberships.channelId, attachments.channelId),
             eq(channelMemberships.userId, actorId),
             isNull(channels.deletedAt),
+            scopedChannel(scope, principal),
           ),
         ),
     ),
@@ -1436,12 +1524,14 @@ async function readOrNull<TRows>(
 export function createAttachmentRoutes(
   database: Database,
   requireUser: MiddlewareHandler<{ Variables: AppVariables }>,
+  scope?: TenantScope,
 ): Hono<{ Variables: AppVariables }> {
   const routes = new Hono<{ Variables: AppVariables }>();
 
   routes.get("/:id", requireUser, async (context) => {
     const actor = context.var.actor;
     const id = context.req.param("id");
+    const principal = await scope?.resolve(actor.id);
 
     // `attachments.id` is a Postgres `uuid` column: comparing it against arbitrary path text
     // raises `22P02` and throws before any row can fail to match. That throw would escape as a
@@ -1493,12 +1583,13 @@ export function createAttachmentRoutes(
         database
           .select({ id: attachments.id })
           .from(attachments)
-          .where(visibleToActor(database, actor.id, id)),
+          .where(visibleToActor(database, actor.id, id, scope, principal)),
         actor.id,
         id,
       );
       if (!visible) return couldNotReadAttachment(context);
       if (!visible[0]) return noSuchAttachment(context);
+      await currentScope(scope, principal);
 
       return context.body(null, 304, {
         ETag: etag,
@@ -1543,7 +1634,7 @@ export function createAttachmentRoutes(
             sizeBytes: attachments.sizeBytes,
           })
           .from(attachments)
-          .where(visibleToActor(database, actor.id, id)),
+          .where(visibleToActor(database, actor.id, id, scope, principal)),
         actor.id,
         id,
       );
@@ -1551,6 +1642,7 @@ export function createAttachmentRoutes(
       if (!probed) return couldNotReadAttachment(context);
       const metadata = probed[0];
       if (!metadata) return noSuchAttachment(context);
+      await currentScope(scope, principal);
 
       return context.body(null, 200, {
         ...attachmentHeaders(metadata, etag),
@@ -1576,7 +1668,7 @@ export function createAttachmentRoutes(
           bytes: attachments.bytes,
         })
         .from(attachments)
-        .where(visibleToActor(database, actor.id, id)),
+        .where(visibleToActor(database, actor.id, id, scope, principal)),
       actor.id,
       id,
     );
@@ -1589,6 +1681,7 @@ export function createAttachmentRoutes(
     if (!row) {
       return noSuchAttachment(context);
     }
+    await currentScope(scope, principal);
 
     /*
      * A VIEW OVER THE DRIVER'S BUFFER, NEVER `Uint8Array.from` OVER IT.
@@ -1629,6 +1722,7 @@ export function createAttachmentRoutes(
   routes.delete("/:id", requireUser, async (context) => {
     const actor = context.var.actor;
     const id = context.req.param("id");
+    const principal = await scope?.resolve(actor.id);
 
     // Same uuid-shape guard, and the same sentence, as the GET route above.
     if (!isUuidShaped(id)) {
@@ -1672,31 +1766,37 @@ export function createAttachmentRoutes(
      * same join" true rather than merely claimed.
      */
     const removed = await database
-      .delete(attachments)
-      .where(
-        and(
-          eq(attachments.id, id),
-          eq(attachments.uploadedBy, actor.id),
-          isNull(attachments.attachedAt),
-          exists(
-            database
-              .select({ member: sql`1` })
-              .from(channelMemberships)
-              .innerJoin(
-                channels,
-                eq(channels.id, channelMemberships.channelId),
-              )
-              .where(
-                and(
-                  eq(channelMemberships.channelId, attachments.channelId),
-                  eq(channelMemberships.userId, actor.id),
-                  isNull(channels.deletedAt),
-                ),
+      .transaction(async (transaction) => {
+        const removed = await transaction
+          .delete(attachments)
+          .where(
+            and(
+              eq(attachments.id, id),
+              eq(attachments.uploadedBy, actor.id),
+              isNull(attachments.attachedAt),
+              exists(
+                database
+                  .select({ member: sql`1` })
+                  .from(channelMemberships)
+                  .innerJoin(
+                    channels,
+                    eq(channels.id, channelMemberships.channelId),
+                  )
+                  .where(
+                    and(
+                      eq(channelMemberships.channelId, attachments.channelId),
+                      eq(channelMemberships.userId, actor.id),
+                      isNull(channels.deletedAt),
+                      scopedChannel(scope, principal, "write"),
+                    ),
+                  ),
               ),
-          ),
-        ),
-      )
-      .returning({ id: attachments.id })
+            ),
+          )
+          .returning({ id: attachments.id });
+        await currentScope(scope, principal);
+        return removed;
+      })
       // As on the two routes above, and here the mistaken answer would be the worst of the three:
       // an unguarded throw is a plain-text 500, and the composer's only other reading of a failed
       // withdrawal is that the file is still staged. Say that the store could not be reached.
@@ -1761,7 +1861,13 @@ export function createAttachmentRoutes(
           eq(channelMemberships.userId, actor.id),
         ),
       )
-      .where(and(eq(attachments.id, id), eq(attachments.uploadedBy, actor.id)))
+      .where(
+        and(
+          eq(attachments.id, id),
+          eq(attachments.uploadedBy, actor.id),
+          scopedChannel(scope, principal, "write"),
+        ),
+      )
       // Only the explanation is left to find, but a failure to find it is still not a 404: the
       // delete above already declined to withdraw anything, and answering "no such attachment"
       // because the second query failed would tell the composer to drop a row that is still there.
@@ -1786,6 +1892,7 @@ export function createAttachmentRoutes(
     if (!row) {
       return noSuchAttachment(context);
     }
+    await currentScope(scope, principal);
 
     // Once an attachment rides in a sent message, it is part of that message's record: pulling it
     // out from under a message that already claims it would leave the message pointing at nothing.

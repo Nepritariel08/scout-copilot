@@ -19,7 +19,9 @@ remains untouched, so platform fixes can be pulled from CopilotKit.
 overlay, not an install script. It selects Scout, keeps all listeners on
 loopback, refuses unauthenticated single-user operation, disables optional
 telemetry/automatic learning assignment, and configures the OpenRouter protocol
-without a key. The model must support the required tools. Existing Anil-pilot
+without a key. That overlay describes upstream protocol qualification. The owned
+text pilot uses [owned.env.example](scout/owned.env.example) and its protected
+model policy; client tools and auxiliary model calls are not enabled. Existing Anil-pilot
 price/token ceilings do not carry over: qualify model routing, all auxiliary
 calls, cost limits and refusal paths before real inference.
 
@@ -64,12 +66,22 @@ recovery, interrupted resume and exact-run cancellation. The subsequent explicit
 [owned runtime integration](scout/OWNED-RUNTIME.md) wires the same app, native
 sign-in, channel creation and UI readers to that store. The subsequent
 [protected model port](scout/OWNED-MODEL.md) connects explicit OpenRouter/local
-chat completions with native policy and durable quotas/usage receipts. Real
-inference and deployment remain separately qualified. The requirements
-below describe the unchanged default licensed composition.
+chat completions with native policy and durable quotas/usage receipts. Native
+tenant scopes now intersect agent/channel/page/attachment SQL with existing
+visibility, ownership and membership rules; resources are stamped transactionally,
+unscoped legacy rows deny, and curated agent templates permit reads only. Standing
+instructions use the current deployment/tenant/native-user partition. Model context
+still excludes unadapted tools and business-record retrieval. Real inference,
+complete record/context controls and deployment remain separately qualified.
+See the [platform-owner and identity boundaries](scout/OWNED-RUNTIME.md#platform-ownership-and-identity-administration),
+including exact `SCOUT_PLATFORM_OWNER_IDS`, all seven SSO management endpoints and
+unavailable auth-admin/SCIM/remote callback paths. The following vendor requirements
+apply to the unchanged default licensed composition.
 
-Upstream `server/src/config.ts` requires Intelligence API, WebSocket and key
-settings. A local memory table fallback does not make durable threads optional.
+The upstream/default licensed `server/src/config.ts` composition requires
+Intelligence API, WebSocket and key settings. Explicit owned mode instead uses
+the public MIT runner and our durable PostgreSQL adapter; it needs no managed
+Intelligence project, license purchase or vendor entitlement simulation.
 The [local Intelligence evaluation](https://docs.copilotkit.ai/intelligence/self-hosting-local)
 currently requires macOS/Docker Desktop and at least 12 GiB Docker RAM; it is a
 licensed evaluation, not a supported install route on the existing 8 GB Linux
@@ -82,10 +94,13 @@ PostgreSQL/pgvector database credentials, service identity, private ports,
 resource budgets, rollback and matched key/data backups. Never use Odoo's
 superuser connection or grant a Bot shell access to the Community host. Upstream
 has no OpenDuet-specific published deploy image; plain OpenBot images are not
-equivalent to this source. Resolve Intelligence's approved deployment or design
-a separately tested local persistence adapter without bypassing license checks.
+equivalent to this source. The independently qualified local persistence adapter
+is implemented, rather than awaiting a paid Intelligence decision. It does not
+reproduce the vendor's licensed memory/learning service. Keep the current 8 GB
+Linode for the capped private pilot; measure Odoo/Scout load before resizing.
+Proposed MatePad model/execution capabilities still require actual-device evidence.
 
-The full [enterprise architecture and access criteria](https://github.com/Nepritariel08/scout-workspace/blob/scout/bootstrap-20261101/docs/SCOUT-ENTERPRISE-ARCHITECTURE.md)
+The full [enterprise architecture and access criteria](scout/ENTERPRISE-ARCHITECTURE.md)
 carry over. No staff/customer access, Linode deployment, phone installation,
 live CopilotKit inference or PC-off acceptance is claimed by this bootstrap.
 
@@ -106,8 +121,10 @@ app configuration also contained Scout branding. These selected tests use local
 fixtures; they are not a live provider, identity or end-to-end queue test.
 
 At the bootstrap checkpoint, the original OpenDuet package, platform server/shared
-code and Bun lockfile were unchanged. The queue port subsequently adds narrow
-server/schema/shared/UI wiring; the original package and lockfile remain intact.
+code and Bun lockfile were unchanged. Subsequent owned source adds reviewed
+server/schema/shared/UI wiring and one direct server declaration of the already
+locked model SDK version; it does not upgrade that dependency. The original
+upstream tenant package remains intact.
 The local Vite build reached transformation
 and was deliberately interrupted after host free RAM fell below1GiB; no frontend
 build pass is claimed. Exact-head CI is reported separately in the primary

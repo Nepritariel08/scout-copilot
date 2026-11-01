@@ -1,5 +1,4 @@
 import { and, eq, isNotNull, isNull, or } from "drizzle-orm";
-import { teamBotAccess } from "../team-bots/access";
 import type { ManagedAgentConfig } from "../config";
 import { type RegisteredAgent, registeredAgentFromRow } from "../copilot";
 import type { CredentialSecretReader } from "../credentials";
@@ -11,6 +10,8 @@ import {
   channelMemberships,
   channels,
 } from "../db/schema";
+import type { TenantPrincipal, TenantScope } from "../scout/owned/scope";
+import { teamBotAccess } from "../team-bots/access";
 import { agentAuthHeaders, authFromConfiguration } from "./auth-header";
 import { isManagedEndpoint } from "./managed-endpoint";
 import type { AgentActor } from "./profile-types";
@@ -28,12 +29,15 @@ export function createRuntimeAgentLoader(
   vault?: { reader: CredentialSecretReader; encryptionKey: string },
   /** Secret for the deployment-managed Bot. Never sent to customer-owned endpoints. */
   managedAgent?: ManagedAgentConfig,
+  scope?: TenantScope,
 ) {
   return async (actor: AgentActor): Promise<RegisteredAgent[]> => {
+    const principal = await scope?.resolve(actor.id);
     const [active, tombstones] = await Promise.all([
-      selectActiveAgents(database, actor),
-      selectTombstoneAgents(database, actor),
+      selectActiveAgents(database, actor, scope, principal),
+      selectTombstoneAgents(database, actor, scope, principal),
     ]);
+    if (scope && principal) await scope.assertCurrent(principal);
 
     // A row whose configuration cannot be understood is skipped rather than mounted as a broken
     // agent. Tombstones are appended after, and never overwrite a live agent of the same id.
@@ -87,11 +91,17 @@ export function createRuntimeAgentLoader(
       });
     }
 
+    if (scope && principal) await scope.assertCurrent(principal);
     return [...registered.values()];
   };
 }
 
-function selectActiveAgents(database: Database, actor: AgentActor) {
+function selectActiveAgents(
+  database: Database,
+  actor: AgentActor,
+  scope?: TenantScope,
+  principal?: TenantPrincipal,
+) {
   return database
     .select({
       id: agents.id,
@@ -106,6 +116,9 @@ function selectActiveAgents(database: Database, actor: AgentActor) {
     .where(
       and(
         isNull(agentProfiles.deletedAt),
+        scope && principal
+          ? scope.predicate(principal, "agent", agents.id)
+          : undefined,
         actor.role === "admin"
           ? undefined
           : or(
@@ -125,7 +138,12 @@ function selectActiveAgents(database: Database, actor: AgentActor) {
  * the agent worked in is what authorizes this, not the profile's visibility, which is why deleting
  * a coworker leaves its conversations readable instead of erasing them.
  */
-function selectTombstoneAgents(database: Database, actor: AgentActor) {
+function selectTombstoneAgents(
+  database: Database,
+  actor: AgentActor,
+  scope?: TenantScope,
+  principal?: TenantPrincipal,
+) {
   return database
     .selectDistinct({ id: agents.id, name: agents.name })
     .from(agents)
@@ -142,5 +160,15 @@ function selectTombstoneAgents(database: Database, actor: AgentActor) {
         eq(channelMemberships.userId, actor.id),
       ),
     )
-    .where(isNotNull(agentProfiles.deletedAt));
+    .where(
+      and(
+        isNotNull(agentProfiles.deletedAt),
+        scope && principal
+          ? scope.predicate(principal, "agent", agents.id)
+          : undefined,
+        scope && principal
+          ? scope.predicate(principal, "channel", channels.id)
+          : undefined,
+      ),
+    );
 }

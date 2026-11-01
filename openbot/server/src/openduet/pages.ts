@@ -9,14 +9,19 @@ import {
   THUMBNAIL_GUIDANCE,
 } from "@openbot/shared/thumbnail";
 import type { GrantedTool } from "@openbot/toolkit/granted-tool";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, or } from "drizzle-orm";
 import { Hono, type MiddlewareHandler } from "hono";
 import { z } from "zod";
+import type { AgentActor } from "../agents/profile-types";
 import type { AuditInitiator } from "../audit";
 import type { AppVariables } from "../auth/guards";
 import type { Database } from "../db/client";
+import { agents, channelMemberships, channels } from "../db/schema/core";
+import { agentProfiles } from "../db/schema/coworker";
 import { openduetPages, type StoredPageContent } from "../db/schema/openduet";
 import { REFUSAL_MARKER } from "../plugins/tools";
+import type { TenantPrincipal, TenantScope } from "../scout/owned/scope";
+import { teamBotAccess } from "../team-bots/access";
 import {
   closed,
   ENFORCED,
@@ -398,14 +403,97 @@ export type PageStore = ReturnType<typeof createPageStore>;
 /** Every read and write is the owner's: another person's page is the same as no page. */
 export function createPageStore(
   database: Database,
-  options: { now?: () => Date } = {},
+  options:
+    | TenantScope
+    | {
+        now?: () => Date;
+        scope?: TenantScope;
+        /** Trusted composition only: verify a fresh native session and owned platform-owner role. */
+        actorForRequest?: (request: Request) => Promise<AgentActor | null>;
+      } = {},
 ) {
-  const now = options.now ?? (() => new Date());
+  const scope = "resolve" in options ? options : options.scope;
+  const actorForRequest =
+    "resolve" in options ? undefined : options.actorForRequest;
+  const now =
+    ("resolve" in options ? undefined : options.now) ?? (() => new Date());
   // updatedAt is also the revision token: even same-clock writes must invalidate an older read.
   const after = (previous: Date) =>
     new Date(Math.max(now().getTime(), previous.getTime() + 1));
-  const owned = (owner: string, id: string) =>
-    and(eq(openduetPages.ownerUserId, owner), eq(openduetPages.id, id));
+  const owned = (owner: string, principal?: TenantPrincipal, id?: string) =>
+    and(
+      eq(openduetPages.ownerUserId, owner),
+      id !== undefined ? eq(openduetPages.id, id) : undefined,
+      principal && scope
+        ? scope.predicate(principal, "page", openduetPages.id)
+        : undefined,
+    );
+  const requireId = (id: string) => {
+    if (typeof id !== "string" || !id.trim()) throw new PageNotFoundError();
+  };
+  async function requestActor(owner: string, request?: Request) {
+    if (!scope || !request || !actorForRequest) return undefined;
+    const actor = await actorForRequest(request);
+    if (!actor || actor.id !== owner) throw new PageNotFoundError();
+    return actor;
+  }
+
+  /** Model-supplied references confer no grants, including a valid Bot from another tenant. */
+  async function references(
+    transaction: Parameters<Parameters<Database["transaction"]>[0]>[0],
+    principal: TenantPrincipal | undefined,
+    owner: string,
+    botId: string,
+    channelId: string | null,
+    actor: AgentActor | undefined,
+  ) {
+    if (!scope || !principal) return;
+    const [bot] = await transaction
+      .select({ id: agents.id })
+      .from(agents)
+      .innerJoin(agentProfiles, eq(agentProfiles.agentId, agents.id))
+      .where(
+        and(
+          eq(agents.id, botId),
+          isNull(agentProfiles.deletedAt),
+          actor?.role === "admin"
+            ? undefined
+            : or(
+                eq(agentProfiles.visibility, "public"),
+                eq(agentProfiles.ownerUserId, owner),
+                teamBotAccess(owner, agents.id),
+              ),
+          scope.predicate(principal, "agent", agents.id),
+        ),
+      )
+      .limit(1)
+      // Native profile mutations take the exclusive counterpart; keep visibility stable through save.
+      .for("share");
+    if (!bot) throw new PageNotFoundError();
+    if (channelId !== null) {
+      const [channel] = await transaction
+        .select({ id: channels.id })
+        .from(channels)
+        .innerJoin(
+          channelMemberships,
+          and(
+            eq(channelMemberships.channelId, channels.id),
+            eq(channelMemberships.userId, owner),
+          ),
+        )
+        .where(
+          and(
+            eq(channels.id, channelId),
+            isNull(channels.deletedAt),
+            scope.predicate(principal, "channel", channels.id),
+          ),
+        )
+        .limit(1)
+        // A native removal/soft deletion must commit before this check or after the entire page save.
+        .for("share");
+      if (!channel) throw new PageNotFoundError();
+    }
+  }
   return {
     /** Makes a page, or revises the owner's own one in place when `input.id` names it. */
     async save(
@@ -413,7 +501,19 @@ export function createPageStore(
       botId: string,
       input: PageInput,
       channelId: string | null = null,
+      /** An owned page-producing run must supply its native Request to use the admin read grant. */
+      request?: Request,
     ): Promise<PageRecord> {
+      const principal = await scope?.resolve(owner);
+      const referenceActor = await requestActor(owner, request);
+      const finish = async () => {
+        if (referenceActor) {
+          const current = await requestActor(owner, request);
+          if (!current || current.role !== referenceActor.role)
+            throw new PageNotFoundError();
+        }
+        if (principal) await scope?.assertCurrent(principal);
+      };
       const content: StoredPageContent = {
         ...(input.kind === "slides"
           ? {
@@ -431,41 +531,74 @@ export function createPageStore(
         theme: input.theme ?? "classic",
         content,
       };
-      if (input.id) {
+      if (input.id !== undefined) {
         const id = input.id;
+        requireId(id);
         return database.transaction(async (transaction) => {
+          if (principal) await scope?.assertCurrent(principal);
+          await references(
+            transaction,
+            principal,
+            owner,
+            botId,
+            channelId,
+            referenceActor,
+          );
           const [current] = await transaction
             .select()
             .from(openduetPages)
-            .where(owned(owner, id))
+            .where(owned(owner, principal, id))
             .for("update");
           if (!current) throw new PageNotFoundError();
+          await references(
+            transaction,
+            principal,
+            owner,
+            current.botId,
+            current.channelId,
+            referenceActor,
+          );
           if (input.expectedUpdatedAt !== current.updatedAt.toISOString())
             throw new PageRevisionConflictError();
           const [row] = await transaction
             .update(openduetPages)
             .set({ ...fields, updatedAt: after(current.updatedAt) })
-            .where(owned(owner, id))
+            .where(owned(owner, principal, id))
             .returning();
           if (!row) throw new PageNotFoundError();
+          await finish();
           return recordOf(row);
         });
       }
       const at = now();
-      const [row] = await database
-        .insert(openduetPages)
-        .values({
-          id: randomUUID(),
-          ownerUserId: owner,
+      return database.transaction(async (transaction) => {
+        if (principal) await scope?.assertCurrent(principal);
+        await references(
+          transaction,
+          principal,
+          owner,
           botId,
           channelId,
-          ...fields,
-          createdAt: at,
-          updatedAt: at,
-        })
-        .returning();
-      if (!row) throw new Error("The page was not saved.");
-      return recordOf(row);
+          referenceActor,
+        );
+        const [row] = await transaction
+          .insert(openduetPages)
+          .values({
+            id: randomUUID(),
+            ownerUserId: owner,
+            botId,
+            channelId,
+            ...fields,
+            createdAt: at,
+            updatedAt: at,
+          })
+          .returning();
+        if (!row) throw new Error("The page was not saved.");
+        if (principal)
+          await scope?.stamp(transaction, principal, "page", row.id);
+        await finish();
+        return recordOf(row);
+      });
     },
     /** Lock the page while updating one checkbox, so two tabs cannot overwrite each other. */
     async check(
@@ -479,11 +612,14 @@ export function createPageStore(
         expectedChecklistRevision?: string;
       },
     ): Promise<PageRecord> {
+      requireId(id);
+      const principal = await scope?.resolve(owner);
       return database.transaction(async (transaction) => {
+        if (principal) await scope?.assertCurrent(principal);
         const [row] = await transaction
           .select()
           .from(openduetPages)
-          .where(owned(owner, id))
+          .where(owned(owner, principal, id))
           .for("update");
         if (!row) throw new PageNotFoundError();
         if (change.expectedChecklistRevision !== checklistRevision(row.content))
@@ -505,36 +641,48 @@ export function createPageStore(
         const [updated] = await transaction
           .update(openduetPages)
           .set({ content, updatedAt: after(row.updatedAt) })
-          .where(owned(owner, id))
+          .where(owned(owner, principal, id))
           .returning();
         if (!updated) throw new PageNotFoundError();
+        if (principal) await scope?.assertCurrent(principal);
         return recordOf(updated);
       });
     },
     async delete(owner: string, id: string): Promise<void> {
-      const rows = await database
-        .delete(openduetPages)
-        .where(owned(owner, id))
-        .returning({ id: openduetPages.id });
-      if (!rows.length) throw new PageNotFoundError();
+      requireId(id);
+      const principal = await scope?.resolve(owner);
+      await database.transaction(async (transaction) => {
+        if (principal) await scope?.assertCurrent(principal);
+        const rows = await transaction
+          .delete(openduetPages)
+          .where(owned(owner, principal, id))
+          .returning({ id: openduetPages.id });
+        if (!rows.length) throw new PageNotFoundError();
+        if (principal) await scope?.assertCurrent(principal);
+      });
     },
     /** The owner's pages, most recently changed first. */
     async list(owner: string, limit = 100): Promise<PageSummary[]> {
+      const principal = await scope?.resolve(owner);
       const rows = await database
         .select()
         .from(openduetPages)
-        .where(eq(openduetPages.ownerUserId, owner))
+        .where(owned(owner, principal))
         .orderBy(desc(openduetPages.updatedAt), desc(openduetPages.id))
         .limit(limit);
+      if (principal) await scope?.assertCurrent(principal);
       return rows.map(summaryOf);
     },
     async get(owner: string, id: string): Promise<PageRecord> {
+      requireId(id);
+      const principal = await scope?.resolve(owner);
       const [row] = await database
         .select()
         .from(openduetPages)
-        .where(owned(owner, id))
+        .where(owned(owner, principal, id))
         .limit(1);
       if (!row) throw new PageNotFoundError();
+      if (principal) await scope?.assertCurrent(principal);
       return recordOf(row);
     },
   };

@@ -56,6 +56,7 @@ scheduler or managed memory service is required for this persistence slice.
 - Reuses `createApp`, native authentication/people/roles, profiles, channels,
   audit/credential administration, preferences, onboarding, pages and the DSH
   requester. No Intelligence client or second background scheduler is created.
+  Global administration remains a platform-owner function, as detailed below.
 - Requires sign-in plus protected current per-user tenant/requester policy.
   Every protected API route checks membership. History/run/stream checks refresh
   native identity and grants. Body fields, headers and prompts grant no rights.
@@ -72,11 +73,71 @@ scheduler or managed memory service is required for this persistence slice.
   `start.sh` refuses owned mode before secret rotation, Docker or process changes
   because that upstream development launcher owns a separate routines worker.
 
-History remains owner-bound in this private slice. Shared-channel history,
-multi-agent channel dispatch and tenant administration require their own
-authorization adaptation, as does tenant partitioning of other app records,
-before staff/customer rollout. Channel membership does
-not override history ownership or the thread's pinned agent.
+Owned source now applies immutable `scout_resource_scopes` to native agents,
+channels and pages. SQL intersects deployment/tenant scope with existing private/
+public/owner, channel membership and page-owner rules before pagination or
+disclosure. Channel attachments inherit their channel's scope and retain native
+uploader/sent-file restrictions, including HEAD and conditional reads. New
+resources receive their scope on the creation transaction; unscoped legacy rows
+are denied rather than claimed by the next reader. Curated package agents may
+be read as deployment templates under native access rules, but template grants
+do not authorize configuration writes or another tenant's channels. Native
+membership locks and current-binding checks protect dependent writes and queued
+work; websocket delivery revalidates the opening native session and channel grant.
+
+Standing instructions use `(deploymentId, tenantId, userId)` storage in owned
+mode, with no fallback to the old global-user row. Reassigning a subject to
+another tenant does not transfer old instructions, conversations, pages or
+channels. The protected model policy must also explicitly permit release of
+personal instructions; instructions never grant tool or record access.
+
+History remains owner-bound. Shared-channel history, multi-agent dispatch,
+tenant-specific administration and record/source/tool grants still require
+their own adaptations before staff/customer rollout. Native channel membership
+does not override history ownership or the thread's pinned agent. These source
+controls are not evidence that every enterprise workflow has been qualified.
+
+## Platform ownership and identity administration
+
+`SCOUT_PLATFORM_OWNER_IDS` is a comma-separated list of exact verified native
+subject IDs, not email addresses, domains, display names or roles. Whitespace
+around entries is trimmed; empty entries are discarded. The list allows at most
+100 unique IDs, each at most 200 characters without ASCII spaces/control bytes.
+Its empty default gives nobody platform administration. An ID on the list must
+also possess the native `admin` role and current protected tenant membership;
+the list does not elevate an ordinary user. A native admin absent from this list
+is exposed to owned routes as a user, so a tenant's admin cannot inherit global
+people, credential, audit or enterprise administration.
+
+All seven SSO management paths require this platform-owner boundary before the
+native auth handler:
+
+- `/api/auth/sso/register`
+- `/api/auth/sso/update-provider`
+- `/api/auth/sso/delete-provider`
+- `/api/auth/sso/providers`
+- `/api/auth/sso/get-provider`
+- `/api/auth/sso/request-domain-verification`
+- `/api/auth/sso/verify-domain`
+
+OIDC callbacks and the allowlisted SAML metadata/ACS/SLO/logout protocol routes remain authentication
+flows; this allowlist is not a blanket grant to arbitrary SSO endpoints.
+
+Unadapted `/api/auth/admin` and SCIM paths are unavailable in owned mode,
+including SCIM PUT/PATCH/DELETE. This is not a tenant-aware directory provisioning
+implementation. Remote-agent connection probes, bearer-only machine callbacks
+and remote-agent execution remain unavailable until a named-service, tenant-bound
+adapter is qualified. Local token issuance is not proof that a remote callback
+can authenticate. Native business administration and customer self-service need
+their own approved, resource-scoped flows; do not grant platform ownership as a
+shortcut. The default licensed composition retains its existing behavior.
+
+Native account token export/refresh, provider account-info and account listing
+are also unavailable through the owned auth handler. Native login/callback and
+session management remain identity flows; login credentials must not become an
+unqualified connector or provider-context route. Optional upstream memory,
+routine, proactive, tool, plugin and device APIs are not installed by the owned
+application composition; their availability requires separate scoped adapters.
 
 ## Operator entry and current limits
 
@@ -105,8 +166,9 @@ credential only through the protected deployment path; never source or chat.
 
 ## Evidence and next steps
 
-Local Windows/Bun1.4.3 qualification used a digest-pinned, loopback-only,
-resource-bounded PostgreSQL17/pgvector fixture with full platform migrations:
+The original runtime slice's local Windows/Bun1.4.3 qualification used a
+digest-pinned, loopback-only, resource-bounded PostgreSQL17/pgvector fixture with
+full platform migrations:
 
 - 46 backend checks passed: 31 retained history cases and 15 owned app/config
   cases, with real SQL/app/public SDK and synthetic identities, policy and agent.
@@ -124,10 +186,13 @@ resource-bounded PostgreSQL17/pgvector fixture with full platform migrations:
 
 This is synthetic source/runtime evidence, not Linode deployment, company SSO,
 live inference/Odoo, shared access or the deferred physical PC-off acceptance.
+The subsequent model/scope work also uses a separate PostgreSQL18.6 fixture to
+exercise the host's major version; integrated counts and exact-head CI remain
+in the primary checkpoint. A local fixture does not migrate the production host.
 
-1. Add the approved model port with native/tenant context-release policy, token,
-   concurrency and cost caps, durable usage receipts and refusal paths. Adapt
-   tool/source/record grants and AG-UI delegation without duplicating DSH.
+1. Qualify the implemented model port and native tenant scopes together. Add
+   tool/source/record grants, tenant administration and AG-UI delegation without
+   duplicating DSH; retain exact approval/revision/readback gates for actions.
 2. Reconcile queue provenance and the Community host owner, then qualify private
    same-Linode capacity, HTTPS/SSO, backup/restore, rollback and live isolation.
 3. Reconcile device ownership and validate MatePad/phone sign-in, history,

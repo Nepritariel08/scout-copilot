@@ -1,5 +1,6 @@
 import type { AbstractAgent } from "@ag-ui/client";
 import { UnavailableAgent } from "@openbot/toolkit/copilotkit/agents";
+import { and, eq, isNotNull } from "drizzle-orm";
 import { createAgentProfileStore } from "../../agents/profile-store";
 import { createRuntimeAgentLoader } from "../../agents/runtime-agents";
 import { createApp } from "../../app";
@@ -22,6 +23,10 @@ import {
   createCredentialStore,
 } from "../../credentials";
 import type { Database } from "../../db/client";
+import {
+  channelMemberships,
+  channels as nativeChannels,
+} from "../../db/schema/core";
 import { createDuetChannelStore } from "../../openduet/channels";
 import { createPageStore } from "../../openduet/pages";
 import { createOnboardingStore } from "../../people/onboarding";
@@ -42,8 +47,11 @@ import { createOwnedModelAgents } from "../owned-model/agents";
 import { createModelCallStore } from "../owned-model/store";
 import { createScoutService } from "../service";
 import { createScoutStore } from "../store";
+import { ScoutError } from "../types";
+import { createOwnedIdentity } from "./auth";
 import { type BindingReader, createOwnedAuthority } from "./authority";
 import { createOwnedRuntimeRoutes } from "./routes";
+import { createTenantScope } from "./scope";
 
 /** The existing Scout app with an owned composition; no vendor client or background work scheduler. */
 export async function createOwnedApplication(
@@ -71,19 +79,47 @@ export async function createOwnedApplication(
     );
   const audit = createAuditStore(database);
   const credentials = createCredentialStore(database);
-  const profiles = createAgentProfileStore(database, undefined, {
-    store: credentials,
-    encryptionKey: config.keyEncryptionKey,
-  });
   const tenantPackage = await loadTenantPackage(config.tenantPackageDirectory);
   await synchronizeTenantPackage(database, tenantPackage);
-  const binding =
+  const nativeBinding =
     options.binding ?? createScoutBindingReader(config.scoutQueueBindingsFile);
+  const deploymentId = config.deploymentId ?? tenantPackage.tenantId;
+  const binding: BindingReader = async (actor) => {
+    const policy = await nativeBinding(actor);
+    if (
+      policy.userId !== actor.id ||
+      policy.deploymentId !== deploymentId ||
+      !policy.tenantId ||
+      !policy.fingerprint
+    )
+      throw new ScoutError("SCOUT_ACCESS_DENIED", 403);
+    return policy;
+  };
+  const scope = createTenantScope({
+    binding,
+    deploymentId,
+  });
+  await database.transaction((tx) =>
+    scope.seedTemplates(
+      tx,
+      tenantPackage.tenantId,
+      tenantPackage.agents.map((agent) => agent.id),
+    ),
+  );
+  const profiles = createAgentProfileStore(
+    database,
+    undefined,
+    {
+      store: credentials,
+      encryptionKey: config.keyEncryptionKey,
+    },
+    scope,
+  );
   const people = createPeopleStore(
     database,
     config.auth?.initialAdminEmails ?? [],
   );
-  const auth =
+  const nativeAuth =
     options.auth ??
     (config.organizationAuthUrl
       ? createOrganizationAuth({
@@ -102,7 +138,12 @@ export async function createOwnedApplication(
           (email) => people.isRevoked(email),
           audit,
         ));
-  const roles = createRoleRepository(database);
+  const { auth, roles } = createOwnedIdentity({
+    auth: nativeAuth,
+    roles: createRoleRepository(database),
+    scope,
+    platformOwnerIds: config.scoutPlatformOwnerIds,
+  });
   const historyStore = createHistoryStore(database);
   const historyEngine = createHistoryEngine(historyStore);
   const threadIdentity = createThreadIdentity(
@@ -129,6 +170,7 @@ export async function createOwnedApplication(
       if (current.fingerprint !== policy.fingerprint)
         throw new Error("SCOUT_ACCESS_DENIED");
     },
+    scope,
   );
   const authority = createOwnedAuthority({
     auth,
@@ -137,7 +179,12 @@ export async function createOwnedApplication(
     profiles,
     channels,
   });
-  const loadAgents = createRuntimeAgentLoader(database);
+  const loadAgents = createRuntimeAgentLoader(
+    database,
+    undefined,
+    undefined,
+    scope,
+  );
   const modelCalls = createModelCallStore(database);
   const agents =
     options.agents ??
@@ -149,6 +196,7 @@ export async function createOwnedApplication(
           history: historyStore,
           calls: modelCalls,
           transport: options.modelFetch,
+          scope,
         })
       : async (actor: AuthenticatedActor) =>
           Object.fromEntries(
@@ -196,8 +244,52 @@ export async function createOwnedApplication(
       Boolean(await channels.get({ id: actor.id, role: "user" }, channelId)),
     connect: createScoutConnector(),
   });
-  const pages = createPageStore(database);
-  const duetChannels = createDuetChannelStore({ database, channels });
+  const pages = createPageStore(database, {
+    scope,
+    actorForRequest: authority.actor,
+  });
+  const duetChannels = createDuetChannelStore({ database, channels, scope });
+  const channelEvents = createChannelEventHub(async (userId, request) => {
+    if (!request || (await authority.actor(request)).id !== userId)
+      throw new ScoutError("SCOUT_ACCESS_DENIED", 403);
+    const principal = await scope.resolve(userId);
+    return async (event) => {
+      if ((await authority.actor(request)).id !== userId) return false;
+      await scope.assertCurrent(principal);
+      if ("resync" in event) return true;
+      // Deleted channels are intentionally absent from get(); their current members still need
+      // the tombstone to remove them from an open roster. Keep this narrowly scoped SQL grant.
+      const allowed = event.deleted
+        ? Boolean(
+            (
+              await database
+                .select({ id: nativeChannels.id })
+                .from(nativeChannels)
+                .innerJoin(
+                  channelMemberships,
+                  and(
+                    eq(channelMemberships.channelId, nativeChannels.id),
+                    eq(channelMemberships.userId, userId),
+                  ),
+                )
+                .where(
+                  and(
+                    eq(nativeChannels.id, event.channelId),
+                    isNotNull(nativeChannels.deletedAt),
+                    scope.predicate(principal, "channel", nativeChannels.id),
+                  ),
+                )
+                .limit(1)
+            )[0],
+          )
+        : Boolean(
+            await channels.get({ id: userId, role: "user" }, event.channelId),
+          );
+      if ((await authority.actor(request)).id !== userId) return false;
+      await scope.assertCurrent(principal);
+      return allowed;
+    };
+  });
   const app = createApp(
     config,
     auth,
@@ -210,7 +302,7 @@ export async function createOwnedApplication(
     undefined,
     profiles,
     channels,
-    createChannelEventHub(),
+    channelEvents,
     audit,
     undefined,
     undefined,
@@ -223,7 +315,7 @@ export async function createOwnedApplication(
     undefined,
     undefined,
     createOnboardingStore(database),
-    createUserInstructionsStore(database),
+    createUserInstructionsStore(database, scope),
     database,
     undefined,
     undefined,
@@ -235,7 +327,18 @@ export async function createOwnedApplication(
     undefined,
     {
       scout,
-      scoutOwned: { requireTenant: authority.requireTenant },
+      scoutOwned: {
+        requireTenant: authority.requireTenant,
+        scope,
+        requirePlatformAdmin: async (request) => {
+          const { person } = await authority.binding(request);
+          if (
+            person.role !== "admin" ||
+            !config.scoutPlatformOwnerIds.includes(person.id)
+          )
+            throw new ScoutError("SCOUT_ACCESS_DENIED", 403);
+        },
+      },
       openduet: { pages, channels: duetChannels },
     },
   );
@@ -243,6 +346,8 @@ export async function createOwnedApplication(
     app,
     authority,
     profiles,
+    scope,
+    channelEvents,
     channels,
     historyStore,
     historyEngine,

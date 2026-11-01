@@ -1,6 +1,8 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Database } from "./db/client";
 import { userInstructions } from "./db/schema";
+import { scoutTenantInstructions } from "./db/schema/scout-scope";
+import type { TenantScope } from "./scout/owned/scope";
 
 /**
  * One person's standing instructions: the thing every coworker they run is told, in every channel.
@@ -59,7 +61,67 @@ export class InstructionsTooLongError extends Error {
 
 export function createUserInstructionsStore(
   database: Database,
+  scope?: TenantScope,
 ): UserInstructionsStore {
+  if (scope)
+    return {
+      async read(userId) {
+        const principal = await scope.resolve(userId);
+        const [row] = await database
+          .select({ instructions: scoutTenantInstructions.instructions })
+          .from(scoutTenantInstructions)
+          .where(
+            and(
+              eq(scoutTenantInstructions.userId, userId),
+              eq(scoutTenantInstructions.tenantId, principal.tenantId),
+              eq(scoutTenantInstructions.deploymentId, principal.deploymentId),
+            ),
+          );
+        await scope.assertCurrent(principal);
+        return row?.instructions ?? null;
+      },
+      async write(userId, text) {
+        const instructions = text.trim();
+        if (instructions.length > INSTRUCTIONS_LIMIT)
+          throw new InstructionsTooLongError();
+        const principal = await scope.resolve(userId);
+        return database.transaction(async (tx) => {
+          await scope.assertCurrent(principal);
+          if (!instructions)
+            await tx
+              .delete(scoutTenantInstructions)
+              .where(
+                and(
+                  eq(scoutTenantInstructions.userId, userId),
+                  eq(scoutTenantInstructions.tenantId, principal.tenantId),
+                  eq(
+                    scoutTenantInstructions.deploymentId,
+                    principal.deploymentId,
+                  ),
+                ),
+              );
+          else
+            await tx
+              .insert(scoutTenantInstructions)
+              .values({
+                deploymentId: principal.deploymentId,
+                tenantId: principal.tenantId,
+                userId,
+                instructions,
+              })
+              .onConflictDoUpdate({
+                target: [
+                  scoutTenantInstructions.deploymentId,
+                  scoutTenantInstructions.tenantId,
+                  scoutTenantInstructions.userId,
+                ],
+                set: { instructions, updatedAt: new Date() },
+              });
+          await scope.assertCurrent(principal);
+          return instructions;
+        });
+      },
+    };
   return {
     async read(userId) {
       const [row] = await database

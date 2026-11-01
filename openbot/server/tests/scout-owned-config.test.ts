@@ -12,6 +12,24 @@ const environment = {
   OPENBOT_HOST: "127.0.0.1",
 };
 describe("explicit owned runtime configuration", () => {
+  test("platform owners are exact bounded native subjects and absent configuration grants none", () => {
+    expect(loadOwnedConfig(environment).scoutPlatformOwnerIds).toEqual([]);
+    expect(
+      loadOwnedConfig({
+        ...environment,
+        SCOUT_PLATFORM_OWNER_IDS: " native-owner-a, native-owner-b ",
+      }).scoutPlatformOwnerIds,
+    ).toEqual(["native-owner-a", "native-owner-b"]);
+    for (const value of [
+      "x".repeat(201),
+      "native-owner-a,native-owner-a",
+      "native-owner\u0000a",
+      Array.from({ length: 101 }, (_, index) => `subject-${index}`).join(","),
+    ])
+      expect(() =>
+        loadOwnedConfig({ ...environment, SCOUT_PLATFORM_OWNER_IDS: value }),
+      ).toThrow("SCOUT_PLATFORM_OWNER_IDS");
+  });
   test("unadapted transcription and voice cannot inherit ambient provider credentials", () => {
     const config = loadOwnedConfig({
       ...environment,

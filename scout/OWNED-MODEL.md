@@ -7,9 +7,9 @@ directly by the server. This declaration does not upgrade the dependency or
 create a CopilotKit Intelligence entitlement. The default licensed composition
 retains its existing contract.
 
-The model integration, its migration and its qualification are being completed.
-This document describes the source contract, not a deployed, live or accepted
-service. Exact-head test evidence and deployment ownership belong in the
+The source contains the model integration, its migration and synthetic SQL/SDK
+qualification. This document describes the source contract, not a deployed,
+live or accepted service. Exact-head test evidence and deployment ownership belong in the
 [primary checkpoint](https://github.com/Nepritariel08/ssc-ai-enablement/issues/4#issuecomment-6547459663).
 Do not provision staff or customer access from this example.
 
@@ -92,6 +92,10 @@ and `limits`. User/agent IDs are trimmed strings of length 1–200; the agent
 list has 1–50 entries. `allowConversationContext: false` is not a supported
 execution mode: remove or deactivate the binding to deny conversation release.
 Personal instructions remain excluded unless explicitly enabled.
+In owned mode those instructions are read only from the current native subject,
+tenant and deployment partition. The legacy global-user instruction row is not
+a fallback, and changing a subject's tenant does not release its old instructions
+into the new tenant's model context.
 
 | Field | Accepted integer range | Example cap |
 | --- | --- | --- |
@@ -203,7 +207,10 @@ synthetic keys and loopback providers first; no real model spend or live
 business-data test follows from this document.
 
 Shared employee/customer access also needs qualified tenant partitioning across
-the whole app, record-level Odoo/source authorization, permission-aware retrieval,
+the whole app. The current source adds immutable native agent/channel/page scopes,
+channel-bound attachment access, scoped standing instructions and an exact native
+platform-owner boundary; these still need integrated live qualification. It also
+needs record-level Odoo/source authorization, permission-aware retrieval,
 document deletion/revocation, shared-channel rules, tool approvals, audit and
 deployment/device acceptance. The current owner-bound history and model binding
 are prerequisites; they are not proof of the entire enterprise boundary. Keep

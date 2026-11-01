@@ -31,7 +31,7 @@ const ASKER = `handoff-asker-${suite}`;
 const TARGET = `handoff-target-${suite}`;
 const ACTOR = `handoff-actor-${suite}`;
 
-const profiles = createAgentProfileStore(database);
+const profiles = createAgentProfileStore(database, undefined);
 const queue = createWorkQueue(database);
 const desk = createHandoffDesk({
   queue,
