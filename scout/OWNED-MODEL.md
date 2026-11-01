@@ -260,8 +260,25 @@ on Windows or macOS.
 The owned runtime now exposes authenticated, self-service grant controls:
 `POST /api/scout/odoo/context-grants` verifies a submitted key belongs to the
 server-bound nonadmin UID and stores it encrypted; `GET` returns only scoped
-grant/provider status; `POST /release` records explicit consent for the current
-server-selected provider and model-policy fingerprint; `DELETE /release`
+grant/provider status and a public `route` with `provider`, `model`, opaque
+`policyFingerprint` and `expiresAt`. It exposes no endpoint, key or credential
+path. `POST /release` requires `{agentId, consent: true, expectedProvider,
+expectedModel, expectedPolicyFingerprint}` copied from that displayed route.
+Missing/malformed challenges are refused; a stale provider, model or policy
+fingerprint returns `409 MODEL_CONFLICT` without issuing consent. Clients must
+refresh, show the new route and obtain another explicit choice; they must not
+retry consent automatically. Older clients sending only `agentId` and `consent`
+must migrate to this contract before granting new consent.
+
+The policy fingerprint covers the full parsed model policy, including route,
+model, policy revision/expiry, context flags, per-user limits and global limits.
+Changing a provider endpoint or model within the same provider therefore also
+invalidates prior challenges and existing release grants. Rotating a credential
+at the same protected key path does not change the approved route; no key bytes
+are included in the public challenge. Native membership and independent Odoo
+admission remain mandatory, and consent rechecks their immutable principal plus
+current model policy after transaction lock/read/audit waits; failure rolls back
+both the grant and audit row. `DELETE /release`
 withdraws that user's fixed-source consents across prior binding revisions;
 and `DELETE /context-grants` revokes that exact deployment/tenant/user's
 fixed-source grants and local credentials across prior binding revisions.

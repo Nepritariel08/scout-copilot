@@ -1,8 +1,17 @@
 import { queryOptions } from "@tanstack/react-query";
 import { client } from "./client";
 
+/** Public consent precondition. It contains no provider endpoint or credential. */
+export type OwnedOdooModelRoute = {
+  provider: "openrouter" | "local";
+  model: string;
+  policyFingerprint: string;
+  expiresAt: string;
+};
+
 export type OwnedOdooContextStatus = {
   provider: "openrouter" | "local";
+  route: OwnedOdooModelRoute;
   record: {
     active: boolean;
     credentialStored: boolean;
@@ -50,11 +59,23 @@ export async function submitOdooApiKey(apiKey: string) {
   }>;
 }
 
-export async function consentOdooContextRelease(agentId: string) {
+export async function consentOdooContextRelease(
+  agentId: string,
+  route: OwnedOdooModelRoute,
+) {
+  if (!(Date.parse(route.expiresAt) > Date.now()))
+    throw new Error("The model route expired. Refresh and review it again.");
   const response = await client("/api/scout/odoo/context-grants/release", {
     method: "POST",
-    body: { agentId, consent: true },
-    fallback: "Couldn't save model-sharing consent.",
+    body: {
+      agentId,
+      consent: true,
+      expectedProvider: route.provider,
+      expectedModel: route.model,
+      expectedPolicyFingerprint: route.policyFingerprint,
+    },
+    fallback:
+      "Couldn't save model-sharing consent. Refresh Odoo access and review the current model route.",
   });
   return response.json();
 }

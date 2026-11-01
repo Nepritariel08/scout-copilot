@@ -14,6 +14,7 @@ import userEvent from "@testing-library/user-event";
 import { ScoutOdooContext } from "../src/components/scout/odoo-context";
 import { type AuthenticatedUser, authKeys } from "../src/lib/auth/queries";
 import {
+  consentOdooContextRelease,
   type OwnedOdooContextStatus,
   withOdooTaskSelection,
 } from "../src/lib/scout-odoo";
@@ -30,6 +31,12 @@ const owner: AuthenticatedUser = {
   email: "employee@fixture.example",
   role: "user",
   onboarding: null,
+};
+const activeRoute = {
+  provider: "openrouter" as const,
+  model: "synthetic-model",
+  policyFingerprint: "a".repeat(64),
+  expiresAt: "2099-01-01T00:00:00.000Z",
 };
 const activeRecord = {
   active: true,
@@ -48,13 +55,20 @@ let cache: QueryClient;
 let status: OwnedOdooContextStatus;
 let calls: { path: string; method: string; body: unknown }[];
 let fetchSpy: ReturnType<typeof spyOn<typeof globalThis, "fetch">>;
+let rotateOnConsent = false;
 
 beforeEach(() => {
+  rotateOnConsent = false;
   cache = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   cache.setQueryData(authKeys.currentUser(), owner);
-  status = { provider: "openrouter", record: null, release: null };
+  status = {
+    route: activeRoute,
+    provider: "openrouter",
+    record: null,
+    release: null,
+  };
   calls = [];
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -82,7 +96,24 @@ beforeEach(() => {
           return Response.json({ revision: 1, projectCount: 4 });
         }
         if (url.pathname.endsWith("/release") && init?.method === "POST") {
-          status = { ...status, release: activeRelease };
+          if (rotateOnConsent) {
+            status = {
+              ...status,
+              provider: "local",
+              route: {
+                ...activeRoute,
+                provider: "local",
+                model: "new-local-model",
+                policyFingerprint: "b".repeat(64),
+              },
+              release: null,
+            };
+            return Response.json({ code: "MODEL_CONFLICT" }, { status: 409 });
+          }
+          status = {
+            ...status,
+            release: { ...activeRelease, provider: status.provider },
+          };
           return Response.json({ revision: 1, provider: "openrouter" });
         }
         if (url.pathname.endsWith("/release") && init?.method === "DELETE") {
@@ -158,7 +189,12 @@ test("the one-shot Odoo key is sent once and cleared without browser storage", a
 });
 
 test("model-release controls use the server-selected provider and can be withdrawn", async () => {
-  status = { provider: "openrouter", record: activeRecord, release: null };
+  status = {
+    route: activeRoute,
+    provider: "openrouter",
+    record: activeRecord,
+    release: null,
+  };
   const view = mount();
   await view.findByText(/Model sharing: not allowed to OpenRouter/);
   fireEvent.click(
@@ -170,7 +206,13 @@ test("model-release controls use the server-selected provider and can be withdra
   expect(calls[0]).toEqual({
     path: "/api/scout/odoo/context-grants/release",
     method: "POST",
-    body: { agentId: "scout", consent: true },
+    body: {
+      agentId: "scout",
+      consent: true,
+      expectedProvider: activeRoute.provider,
+      expectedModel: activeRoute.model,
+      expectedPolicyFingerprint: activeRoute.policyFingerprint,
+    },
   });
   fireEvent.click(
     view.getByRole("button", { name: "Withdraw model-sharing consent" }),
@@ -183,8 +225,84 @@ test("model-release controls use the server-selected provider and can be withdra
   });
 });
 
+test("a changed route is refreshed for review without retrying consent automatically", async () => {
+  status = {
+    provider: "openrouter",
+    route: activeRoute,
+    record: activeRecord,
+    release: null,
+  };
+  rotateOnConsent = true;
+  const view = mount();
+  await view.findByText(/model synthetic-model/);
+  fireEvent.click(
+    view.getByRole("button", {
+      name: "Allow task summaries to reach this model",
+    }),
+  );
+  await view.findByText(/model new-local-model/);
+  expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
+  expect(calls[0]?.body).toEqual({
+    agentId: "scout",
+    consent: true,
+    expectedProvider: "openrouter",
+    expectedModel: "synthetic-model",
+    expectedPolicyFingerprint: activeRoute.policyFingerprint,
+  });
+  expect(view.queryByText("Model-sharing consent recorded.")).toBeNull();
+  rotateOnConsent = false;
+  fireEvent.click(
+    view.getByRole("button", {
+      name: "Allow task summaries to reach this model",
+    }),
+  );
+  await view.findByText("Model-sharing consent recorded.");
+  expect(calls.filter((call) => call.method === "POST")).toHaveLength(2);
+  expect(calls[1]?.body).toEqual({
+    agentId: "scout",
+    consent: true,
+    expectedProvider: "local",
+    expectedModel: "new-local-model",
+    expectedPolicyFingerprint: "b".repeat(64),
+  });
+});
+
+test("missing or expired status challenges cannot enable consent and expired helper calls make no request", async () => {
+  for (const route of [
+    undefined,
+    { ...activeRoute, expiresAt: "2000-01-01T00:00:00Z" },
+  ]) {
+    status = {
+      provider: "openrouter",
+      route,
+      record: activeRecord,
+      release: null,
+    } as OwnedOdooContextStatus;
+    const view = mount();
+    await view.findByText(/Odoo access: active/);
+    expect(
+      (
+        view.getByRole("button", {
+          name: "Allow task summaries to reach this model",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    cleanup();
+    cache.clear();
+    cache.setQueryData(authKeys.currentUser(), owner);
+  }
+  await expect(
+    consentOdooContextRelease("scout", {
+      ...activeRoute,
+      expiresAt: "2000-01-01T00:00:00Z",
+    }),
+  ).rejects.toThrow("model route expired");
+  expect(calls).toHaveLength(0);
+});
+
 test("the rendered status contains no credential reference and task selection requires both grants", async () => {
   status = {
+    route: activeRoute,
     provider: "openrouter",
     record: { ...activeRecord, credentialRef: "must-not-render" } as never,
     release: activeRelease,
@@ -198,6 +316,7 @@ test("the rendered status contains no credential reference and task selection re
 
 test("expired record access keeps a revoke action while its key remains stored", async () => {
   status = {
+    route: activeRoute,
     provider: "openrouter",
     record: {
       ...activeRecord,
@@ -214,7 +333,12 @@ test("expired record access keeps a revoke action while its key remains stored",
 });
 
 test("revoking the stored key removes the revoke action after status refresh", async () => {
-  status = { provider: "openrouter", record: activeRecord, release: null };
+  status = {
+    route: activeRoute,
+    provider: "openrouter",
+    record: activeRecord,
+    release: null,
+  };
   const view = mount();
   const button = await view.findByRole("button", {
     name: "Revoke Scout's Odoo access",
