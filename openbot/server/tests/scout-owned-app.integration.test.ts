@@ -580,22 +580,27 @@ describe("owned composition through the actual Scout app", () => {
   test.skipIf(process.platform !== "linux")(
     "configured key qualification rejects a tenant binding that changes during the Odoo lookup",
     async () => {
+      const statusPath = `/api/scout/odoo/context-grants?agentId=${encodeURIComponent(agentId)}`;
+      const before = await requestConfiguredGrant("GET", statusPath);
+      expect(before.status).toBe(200);
+      const beforeStatus = await before.json();
       changingPolicy = true;
       policyReads = 0;
-      const response = await requestConfiguredGrant(
-        "POST",
-        "/api/scout/odoo/context-grants",
-        { apiKey: "synthetic-changing-binding-key" },
-      );
+      let response: Response;
+      try {
+        response = await requestConfiguredGrant(
+          "POST",
+          "/api/scout/odoo/context-grants",
+          { apiKey: "synthetic-changing-binding-key" },
+        );
+      } finally {
+        changingPolicy = false;
+      }
       expect(response.status).toBe(403);
       expect(odooFixtureCalls).toBeGreaterThan(0);
 
-      changingPolicy = false;
-      const status = await requestConfiguredGrant(
-        "GET",
-        `/api/scout/odoo/context-grants?agentId=${encodeURIComponent(agentId)}`,
-      );
-      expect(await status.json()).toMatchObject({ record: null });
+      const after = await requestConfiguredGrant("GET", statusPath);
+      expect(await after.json()).toEqual(beforeStatus);
     },
   );
   test("direct chat server mint persists native ownership and rejects injected identity", async () => {
