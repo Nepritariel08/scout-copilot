@@ -11,17 +11,14 @@ const identifier = z
   .regex(/^[A-Za-z0-9:_-]+$/);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const timestamp = z.iso.datetime();
-const requestSchema = z.strictObject({
+const commonRequestFields = {
   version: z.literal(1),
   operationId: z.uuid(),
-  action: z.enum(["enroll", "withdraw"]),
   target: z.strictObject({
     database: z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}$/),
     role: z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}$/),
   }),
   tenantId: guid,
-  issuer: z.string().max(150),
-  objectId: guid,
   nativeUser: z.strictObject({
     id: identifier,
     email: z.email().max(254),
@@ -45,23 +42,48 @@ const requestSchema = z.strictObject({
       .max(200)
       .regex(/^[A-Za-z0-9:/#_.-]+$/),
   }),
+};
+const identityRequestSchema = z.strictObject({
+  ...commonRequestFields,
+  action: z.enum(["enroll", "withdraw"]),
+  issuer: z.string().max(150),
+  objectId: guid,
 });
-export type EntraIdentityRequest = z.infer<typeof requestSchema>;
+const contactRequestSchema = z.strictObject({
+  ...commonRequestFields,
+  action: z.literal("create_contact"),
+});
+const requestSchema = z.discriminatedUnion("action", [
+  identityRequestSchema,
+  contactRequestSchema,
+]);
+/** Existing authentication-binding payload. A contact request has no issuer/object or grant fields. */
+export type EntraIdentityRequest = z.infer<typeof identityRequestSchema>;
+export type NativeContactRequest = z.infer<typeof contactRequestSchema>;
+export type EntraOperatorRequest = z.infer<typeof requestSchema>;
 const planSchema = z.strictObject({
   version: z.literal(1),
   request: requestSchema,
   createdAt: timestamp,
   expiresAt: timestamp,
   observedDigest: digest,
-  effect: z.enum(["insert_binding", "remove_binding", "binding_unchanged"]),
+  effect: z.enum([
+    "insert_binding",
+    "remove_binding",
+    "binding_unchanged",
+    "insert_contact",
+  ]),
 });
 export type EntraIdentityPlan = z.infer<typeof planSchema>;
 const receiptSchema = z.strictObject({
-  kind: z.literal("scout.entra.identity.operation.v1"),
+  kind: z.enum([
+    "scout.entra.identity.operation.v1",
+    "scout.native.contact.operation.v1",
+  ]),
   operationId: z.uuid(),
   requestDigest: digest,
   planDigest: digest,
-  action: z.enum(["enroll", "withdraw"]),
+  action: z.enum(["enroll", "withdraw", "create_contact"]),
   effect: planSchema.shape.effect,
   postIdentityDigest: digest,
   removedSessions: z.number().int().min(0).max(1000),
@@ -99,10 +121,24 @@ export type EntraIdentitySnapshot = {
   revoked: boolean;
   accounts: Account[];
   sessions: { id: string; createdAt: string; expiresAt: string }[];
+  /** Present only for contact creation: exact candidate IDs and target's normal native defaults. */
+  contactBootstrap?: {
+    matchingUserIds: string[];
+    roles: string[];
+    defaults: {
+      image: string | null;
+      preferences: unknown;
+      groups: string[];
+      onboardingStep: number;
+      onboardingCompletedAt: string | null;
+      lastSignedInAt: string | null;
+    } | null;
+  };
 };
 export type EntraIdentityTransaction = {
-  snapshot(request: EntraIdentityRequest): Promise<EntraIdentitySnapshot>;
+  snapshot(request: EntraOperatorRequest): Promise<EntraIdentitySnapshot>;
   receipt(operationId: string): Promise<unknown | null>;
+  insertContact(request: NativeContactRequest): Promise<void>;
   insertBinding(request: EntraIdentityRequest): Promise<void>;
   removeBinding(accountId: string): Promise<void>;
   removeSessions(userId: string): Promise<number>;
@@ -153,7 +189,7 @@ export function entraIdentityDigest(value: unknown): string {
 export function parseEntraIdentityRequest(
   input: unknown,
 ): EntraIdentityRequest {
-  const parsed = requestSchema.safeParse(input);
+  const parsed = identityRequestSchema.safeParse(input);
   if (
     !parsed.success ||
     parsed.data.issuer !==
@@ -163,8 +199,17 @@ export function parseEntraIdentityRequest(
   }
   return parsed.data;
 }
-function validatedSnapshot(
-  request: EntraIdentityRequest,
+export function parseEntraOperatorRequest(
+  input: unknown,
+): EntraOperatorRequest {
+  const parsed = requestSchema.safeParse(input);
+  if (!parsed.success) throw new EntraOperatorError("ENTRA_INPUT_REFUSED");
+  return parsed.data.action === "create_contact"
+    ? parsed.data
+    : parseEntraIdentityRequest(parsed.data);
+}
+function assertTarget(
+  request: EntraOperatorRequest,
   snapshot: EntraIdentitySnapshot,
 ) {
   if (
@@ -173,6 +218,84 @@ function validatedSnapshot(
   ) {
     throw new EntraOperatorError("ENTRA_TARGET_REFUSED");
   }
+}
+function assertAbsentContact(
+  request: NativeContactRequest,
+  snapshot: EntraIdentitySnapshot,
+) {
+  assertTarget(request, snapshot);
+  const bootstrap = snapshot.contactBootstrap;
+  if (
+    snapshot.user ||
+    snapshot.revoked ||
+    !bootstrap ||
+    bootstrap.matchingUserIds.length !== 0 ||
+    bootstrap.defaults !== null ||
+    bootstrap.roles.length !== 0 ||
+    snapshot.accounts.length !== 0 ||
+    snapshot.sessions.length !== 0
+  ) {
+    throw new EntraOperatorError("ENTRA_CONTACT_REFUSED");
+  }
+}
+function assertCreatedContact(
+  request: NativeContactRequest,
+  snapshot: EntraIdentitySnapshot,
+) {
+  assertTarget(request, snapshot);
+  const user = snapshot.user;
+  const bootstrap = snapshot.contactBootstrap;
+  const defaults = bootstrap?.defaults;
+  if (
+    !user ||
+    user.id !== request.nativeUser.id ||
+    user.email !== request.nativeUser.email ||
+    user.name !== request.nativeUser.name ||
+    user.emailVerified !== false ||
+    snapshot.revoked ||
+    !bootstrap ||
+    bootstrap.matchingUserIds.length !== 1 ||
+    bootstrap.matchingUserIds[0] !== request.nativeUser.id ||
+    bootstrap.roles.length !== 0 ||
+    !defaults ||
+    defaults.image !== null ||
+    !defaults.preferences ||
+    typeof defaults.preferences !== "object" ||
+    Array.isArray(defaults.preferences) ||
+    Object.keys(defaults.preferences).length !== 0 ||
+    !Array.isArray(defaults.groups) ||
+    defaults.groups.length !== 0 ||
+    defaults.onboardingStep !== 0 ||
+    defaults.onboardingCompletedAt !== null ||
+    defaults.lastSignedInAt !== null ||
+    snapshot.accounts.length !== 0 ||
+    snapshot.sessions.length !== 0
+  ) {
+    throw new EntraOperatorError("ENTRA_POSTCONDITION_REFUSED");
+  }
+}
+function bindingEffect(
+  request: EntraIdentityRequest,
+  account: Account | undefined,
+) {
+  return request.action === "enroll"
+    ? account
+      ? "binding_unchanged"
+      : "insert_binding"
+    : account
+      ? "remove_binding"
+      : "binding_unchanged";
+}
+function receiptKind(request: EntraOperatorRequest) {
+  return request.action === "create_contact"
+    ? ("scout.native.contact.operation.v1" as const)
+    : ("scout.entra.identity.operation.v1" as const);
+}
+function validatedSnapshot(
+  request: EntraIdentityRequest,
+  snapshot: EntraIdentitySnapshot,
+) {
+  assertTarget(request, snapshot);
   const user = snapshot.user;
   if (
     !user ||
@@ -232,7 +355,7 @@ export function createEntraIdentityOperator(
     throw new EntraOperatorError("ENTRA_TARGET_REFUSED");
   const now = configuration.now ?? Date.now;
   function requestForDeployment(input: unknown) {
-    const request = parseEntraIdentityRequest(input);
+    const request = parseEntraOperatorRequest(input);
     if (request.tenantId !== configuration.tenantId)
       throw new EntraOperatorError("ENTRA_TARGET_REFUSED");
     return request;
@@ -247,7 +370,12 @@ export function createEntraIdentityOperator(
           if (await transaction.receipt(request.operationId))
             throw new EntraOperatorError("ENTRA_OPERATION_CONFLICT");
           const snapshot = await transaction.snapshot(request);
-          const account = validatedSnapshot(request, snapshot);
+          if (request.action === "create_contact")
+            assertAbsentContact(request, snapshot);
+          const account =
+            request.action === "create_contact"
+              ? undefined
+              : validatedSnapshot(request, snapshot);
           const createdAt = now();
           const plan: EntraIdentityPlan = {
             version: 1,
@@ -256,13 +384,9 @@ export function createEntraIdentityOperator(
             expiresAt: new Date(createdAt + 15 * 60_000).toISOString(),
             observedDigest: entraIdentityDigest(snapshot),
             effect:
-              request.action === "enroll"
-                ? account
-                  ? "binding_unchanged"
-                  : "insert_binding"
-                : account
-                  ? "remove_binding"
-                  : "binding_unchanged",
+              request.action === "create_contact"
+                ? "insert_contact"
+                : bindingEffect(request, account),
           };
           return { plan, digest: entraIdentityDigest(plan) };
         });
@@ -296,7 +420,10 @@ export function createEntraIdentityOperator(
             throw new EntraOperatorError("ENTRA_PLAN_REFUSED");
           // Locks and a new snapshot come from the store, never the preview transaction.
           const snapshot = await transaction.snapshot(request);
-          const account = validatedSnapshot(request, snapshot);
+          const account =
+            request.action === "create_contact"
+              ? undefined
+              : validatedSnapshot(request, snapshot);
           const previous = await transaction.receipt(request.operationId);
           if (previous) {
             const receipt = receiptSchema.safeParse(previous);
@@ -306,29 +433,40 @@ export function createEntraIdentityOperator(
               receipt.data.planDigest !== planDigest ||
               receipt.data.operationId !== request.operationId ||
               receipt.data.action !== request.action ||
-              receipt.data.effect !== plan.effect
+              receipt.data.effect !== plan.effect ||
+              receipt.data.kind !== receiptKind(request) ||
+              (request.action === "create_contact" &&
+                receipt.data.removedSessions !== 0)
             )
               throw new EntraOperatorError("ENTRA_OPERATION_CONFLICT");
+            if (request.action === "create_contact")
+              assertCreatedContact(request, snapshot);
             if (
-              identityDigest(snapshot) !== receipt.data.postIdentityDigest ||
+              (request.action === "create_contact"
+                ? entraIdentityDigest(snapshot)
+                : identityDigest(snapshot)) !==
+                receipt.data.postIdentityDigest ||
               (request.action === "withdraw" && snapshot.sessions.length !== 0)
             )
               throw new EntraOperatorError("ENTRA_POSTCONDITION_REFUSED");
             return result(receipt.data, true);
           }
+          if (request.action === "create_contact")
+            assertAbsentContact(request, snapshot);
           if (entraIdentityDigest(snapshot) !== plan.observedDigest)
             throw new EntraOperatorError("ENTRA_PLAN_STALE");
           const effect =
-            request.action === "enroll"
-              ? account
-                ? "binding_unchanged"
-                : "insert_binding"
-              : account
-                ? "remove_binding"
-                : "binding_unchanged";
+            request.action === "create_contact"
+              ? "insert_contact"
+              : bindingEffect(request, account);
           if (plan.effect !== effect)
             throw new EntraOperatorError("ENTRA_PLAN_REFUSED");
-          if (effect === "insert_binding")
+          if (request.action === "create_contact")
+            await transaction.insertContact(request);
+          if (
+            effect === "insert_binding" &&
+            request.action !== "create_contact"
+          )
             await transaction.insertBinding(request);
           if (effect === "remove_binding" && account)
             await transaction.removeBinding(account.id);
@@ -337,21 +475,28 @@ export function createEntraIdentityOperator(
               ? await transaction.removeSessions(request.nativeUser.id)
               : 0;
           const after = await transaction.snapshot(request);
-          const afterAccount = validatedSnapshot(request, after);
-          if (
-            (request.action === "enroll") !== Boolean(afterAccount) ||
-            ((request.action === "withdraw" || effect === "insert_binding") &&
-              after.sessions.length !== 0)
-          )
-            throw new EntraOperatorError("ENTRA_POSTCONDITION_REFUSED");
+          if (request.action === "create_contact")
+            assertCreatedContact(request, after);
+          else {
+            const afterAccount = validatedSnapshot(request, after);
+            if (
+              (request.action === "enroll") !== Boolean(afterAccount) ||
+              ((request.action === "withdraw" || effect === "insert_binding") &&
+                after.sessions.length !== 0)
+            )
+              throw new EntraOperatorError("ENTRA_POSTCONDITION_REFUSED");
+          }
           const receipt: EntraIdentityReceipt = {
-            kind: "scout.entra.identity.operation.v1",
+            kind: receiptKind(request),
             operationId: request.operationId,
             requestDigest: entraIdentityDigest(request),
             planDigest,
             action: request.action,
             effect,
-            postIdentityDigest: identityDigest(after),
+            postIdentityDigest:
+              request.action === "create_contact"
+                ? entraIdentityDigest(after)
+                : identityDigest(after),
             removedSessions,
             operatorDigest: entraIdentityDigest(request.review.operatorUserId),
             reviewDigest: entraIdentityDigest(request.review.reference),

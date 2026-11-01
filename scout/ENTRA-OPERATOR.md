@@ -1,4 +1,4 @@
-# Entra identity operator: preview, bind and withdraw
+# Entra identity operator: prepare contact, bind and withdraw
 
 This source-only operator tool supplies the exact account-mapping step in
 [OWNED-ENTRA.md](OWNED-ENTRA.md). It has not run against a live database,
@@ -8,12 +8,13 @@ Shared access and deployment retain their separate qualification requirements.
 
 ## Authority and prerequisites
 
-The tool binds an **existing, exactly reviewed native user** to one resource
-tenant's Microsoft Entra object. It does not create users, reconcile legacy
-accounts, search by email, invite guests, register an app or call Microsoft.
-Creating the exact native `users` row remains a separately authorized operator
-prerequisite. Do not create a placeholder person or copy an employee/owner
-account to get through the preview.
+The `enroll` action binds an **existing, exactly reviewed native user** to one
+resource tenant's Microsoft Entra object. If that exact native contact does not
+exist, a separate `create_contact` action can prepare it under its own reviewed
+plan. Contact creation never binds an identity or grants access. Do not create a
+placeholder person or copy an employee/owner account to get through the preview.
+The tool never reconciles legacy accounts, selects an identity by email,
+invites guests, registers an app or calls Microsoft.
 
 An authorized operator must independently verify the database/host and native
 user/contact, resource tenant GUID, resource-tenant `oid`, and owner-reviewed
@@ -24,11 +25,15 @@ identity. Possession of the protected database connection is privileged
 maintenance access. This is a local operator program, absent from Scout's HTTP,
 model/tool and startup composition.
 
-The tool never writes native roles, groups, platform-owner configuration,
+The tool never grants native roles, groups, platform-owner configuration,
 membership policy, Odoo/company/project grants, provider-release consent or
 credentials. An Entra mapping grants authentication only. It is not full user
 onboarding, employee access acceptance or customer isolation. Separate reviewed
 grants and acceptance remain required even after the mapping is installed.
+Contact creation writes only the exact native ID/email/name and fixed normal
+defaults: unverified email, empty groups/preferences, null image/last-sign-in/
+onboarding completion, and onboarding step zero. There is no password, token,
+account row, session, role or implicit tenant membership.
 
 Run only on the qualified Linux release with Bun 1.4.3, reviewed migrations
 through issuer-account uniqueness, protected database custody and released
@@ -65,20 +70,57 @@ write bit. Input/plan files must be regular files owned by root or the operator,
 with mode 0600 or stricter. Symlink paths are refused. The CLI refuses Windows
 and macOS because their native ACL protections are not implemented here.
 
-This deliberately synthetic shape is not a deployment payload:
+Use `create_contact` only when the exact reviewed native ID and its email are
+both absent. The case-insensitive email check is a conflict check, not an
+account lookup or relink. It rejects existing IDs even when the contact text
+matches, addresses already used under any casing, and revoked addresses.
+The request has no issuer/object, role, group, verification flag or other
+custom-default fields; unknown fields fail closed. The configured resource
+tenant still scopes this operator action but grants no authentication.
+
+This deliberately synthetic contact request is not a deployment payload:
 
 ```json
 {
   "version": 1,
   "operationId": "d7fda99e-e51a-4ec8-8c64-f2b3b95bd6a0",
+  "action": "create_contact",
+  "target": { "database": "scout_pilot", "role": "scout_operator" },
+  "tenantId": "8f2c1e40-0000-0000-0000-000000000000",
+  "nativeUser": {
+    "id": "synthetic-new-reviewed-native-user",
+    "email": "synthetic-new@fixture.invalid",
+    "name": "Synthetic reviewed contact"
+  },
+  "review": {
+    "operatorUserId": "synthetic-operator",
+    "reference": "synthetic-approved-contact-change/42"
+  }
+}
+```
+
+Preview and explicitly approve that contact plan using the commands below.
+The only selected effect is `insert_contact`. If the intended person already
+exists, preserve that person's native ID/history and use a separately reviewed
+enrollment request instead. Never use contact creation to replace, restore,
+adopt or rename an existing person.
+
+After a new contact is created, use a **new operation ID and separate reviewed
+enrollment plan** for the immutable resource-tenant issuer/OID binding. The
+following deliberately synthetic shape is not a deployment payload:
+
+```json
+{
+  "version": 1,
+  "operationId": "985720cc-e7a7-4da8-9704-de86891a20c3",
   "action": "enroll",
   "target": { "database": "scout_pilot", "role": "scout_operator" },
   "tenantId": "8f2c1e40-0000-0000-0000-000000000000",
   "issuer": "https://login.microsoftonline.com/8f2c1e40-0000-0000-0000-000000000000/v2.0",
   "objectId": "4e70e6f1-0000-0000-0000-000000000000",
   "nativeUser": {
-    "id": "synthetic-existing-native-user",
-    "email": "synthetic@fixture.invalid",
+    "id": "synthetic-new-reviewed-native-user",
+    "email": "synthetic-new@fixture.invalid",
     "name": "Synthetic reviewed contact"
   },
   "review": {
@@ -88,12 +130,12 @@ This deliberately synthetic shape is not a deployment payload:
 }
 ```
 
-The exact native ID, email and name must match the existing contact. A null
-name is supported when the existing name is null. Contact values are not
-rewritten or normalized, and email never selects an identity. GUIDs must be
+For enrollment/withdrawal, the exact native ID, email and name must match the
+existing contact. A null name is supported for either contact action. Values
+are not rewritten or normalized, and email never selects an identity. GUIDs must be
 lowercase; the exact issuer is derived from and checked against the configured
 tenant. Unknown fields, including roles/credentials/membership, are refused.
-There is one requested identity per operation, no batch enrollment. Use a new
+There is one contact or requested identity per operation, no batch. Use a new
 UUID for each reviewed operation; an old operation ID cannot name a new plan.
 
 ## Preview and explicit apply
@@ -136,9 +178,11 @@ and change reference.
 
 ## Transaction, retries and withdrawal
 
-Apply takes short `SHARE ROW EXCLUSIVE` locks on `users`, `accounts`, `sessions`
-and `revoked_access`, then rechecks the state. These table locks fence native
-writers that do not participate in an operator advisory-lock protocol and cover
+Apply takes short `SHARE ROW EXCLUSIVE` locks on `users`, `accounts`, `sessions`,
+`revoked_access` and `user_roles`, then rechecks the state. The role table is
+read/locked to fence the contact's no-role postcondition, never written. These
+locks fence native writers that do not participate in an operator advisory-lock
+protocol and cover
 absent account/session rows. They temporarily block writes to those tables, so
 schedule the operation under bounded identity maintenance with sign-in/callback
 traffic quiesced. Lock acquisition times out after three seconds and individual
@@ -147,6 +191,14 @@ retry, migration, service restart or background process.
 Both transaction paths explicitly use the existing `public` identity tables,
 with `pg_catalog, public` as their local search path; an alternate-schema
 deployment is not supported by this operator tool.
+
+Contact creation inserts only its reviewed `users` row and verifies its fixed
+defaults, absence of role/account/session and unique case-insensitive email
+before recording the receipt. Contact insertion and audit commit together;
+any mismatch or audit error rolls back the new contact. It never deletes an
+existing row or session. Its redacted receipt kind is
+`scout.native.contact.operation.v1`; enrollment/withdrawal retain
+`scout.entra.identity.operation.v1` and their existing strict payload shape.
 
 New enrollment inserts only the Microsoft provider/issuer/OID/native-user row,
 with no password or provider tokens, and deletes prior Scout sessions so old
@@ -158,7 +210,7 @@ orphan sessions when the binding is already absent. It retains the local
 contact, roles, history and all separately governed grants. Full offboarding
 must separately withdraw those grants and any upstream identity access.
 
-Mutation, session deletion and a redacted append-only `configuration.changed`
+Mutation, any required session deletion and a redacted append-only `configuration.changed`
 receipt with target `scout_entra_identity_operation` commit together. A failed
 audit insert rolls back the entire operation. The receipt records plan/request
 digests, effect and removed-session count, without raw tenant/OID/contact,
@@ -168,7 +220,10 @@ Failures expose a stable refusal code, never a database-driver exception.
 
 Within the plan's validity window, retrying that same plan/digest returns its
 one receipt without another account, audit row or session deletion, provided
-the resulting identity still matches. A withdrawal retry also requires no
+the resulting state still matches. Contact retry requires the exact unchanged
+contact/defaults/timestamps and no new roles/accounts/sessions or duplicate email;
+later enrollment or onboarding therefore causes a refusal, never a reset.
+A withdrawal retry also requires no
 sessions to have reappeared. Conflicting operation reuse or a changed
 postcondition is refused for reconciliation. A timed-out/disconnected apply
 has an unknown commit outcome until the same exact-plan retry reads the
@@ -188,7 +243,9 @@ separate tasks.
 Focused pure/CLI tests exercise exact-contact/tenant admission, conflicting
 provider/issuer/OID/native identities, legacy denial, approval/stale/expired
 plans, idempotent retry, withdrawal and rollback with an in-memory transaction
-fixture. PostgreSQL integration tests use only `TEST_DATABASE_URL` through the
+fixture. Contact tests additionally cover strict no-grant payloads, existing or
+revoked contact refusal, stale target/email state, exact replay, later-onboarding
+refusal and rollback. PostgreSQL integration tests use only `TEST_DATABASE_URL` through the
 existing dedicated-database guard. They exercise the actual account reader,
 no privilege/Odoo/release-grant changes, isolated session deletion, concurrent
 retry, native-writer lock fencing and rollback after an actual audit insert.
@@ -200,10 +257,11 @@ obtain exact-head PostgreSQL CI and independent review before release. These
 tests do not prove live Entra, target-host custody, customer record access,
 production migration or deployed operator acceptance.
 
-Local Bun 1.4.3 qualification passed 33 unit/CLI tests with 88 assertions,
-scoped Biome, the new files' focused TypeScript dependency graph, and whitespace
-checks. The full production server typecheck did not pass locally: unchanged
-`src/telemetry/otel.ts:165` reports TS2739 for `OTLPLogExporter` versus
-`LogRecordExporter`. Dependencies were reused through existing local junctions;
-no fresh install is claimed. The lockfile is unchanged. Clean frozen-install CI
-is the definitive full dependency/type and SQL gate, not the local focused pass.
+Local Bun 1.4.3 qualification used an isolated fresh frozen install with
+`--ignore-scripts` (1,177 packages), without dependency junctions or lockfile
+changes. The operator's 47 unit/CLI tests passed with 156 assertions; the combined
+operator, Entra and membership boundary suites passed 66 tests with 210 assertions.
+The full production server typecheck, both operator test files' focused TypeScript
+dependency graph, scoped Biome and whitespace checks passed. Exact-head CI,
+including the dedicated PostgreSQL suites, remains required before release.
+No live identity, provider, model or host operation was executed.

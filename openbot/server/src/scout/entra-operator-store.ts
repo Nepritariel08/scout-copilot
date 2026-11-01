@@ -6,14 +6,15 @@ import {
   auditEvents,
   revokedAccess,
   sessions,
+  userRoles,
   users,
 } from "../db/schema";
 import {
-  type EntraIdentityRequest,
   type EntraIdentitySnapshot,
   type EntraIdentityStore,
   type EntraIdentityTransaction,
   EntraOperatorError,
+  type EntraOperatorRequest,
 } from "./entra-operator";
 
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -21,7 +22,7 @@ export const ENTRA_OPERATOR_TARGET = "scout_entra_identity_operation";
 function transactionPort(transaction: Transaction): EntraIdentityTransaction {
   return {
     async snapshot(
-      request: EntraIdentityRequest,
+      request: EntraOperatorRequest,
     ): Promise<EntraIdentitySnapshot> {
       const targets = await transaction.execute(
         sql`select current_database() as database, current_user as role, inet_server_addr()::text as "serverAddress", inet_server_port() as "serverPort"`,
@@ -52,10 +53,12 @@ function transactionPort(transaction: Transaction): EntraIdentityTransaction {
         })
         .from(accounts)
         .where(
-          or(
-            eq(accounts.userId, request.nativeUser.id),
-            sql`lower(${accounts.accountId}) = ${request.objectId}`,
-          ),
+          request.action === "create_contact"
+            ? eq(accounts.userId, request.nativeUser.id)
+            : or(
+                eq(accounts.userId, request.nativeUser.id),
+                sql`lower(${accounts.accountId}) = ${request.objectId}`,
+              ),
         )
         .orderBy(accounts.id)
         .limit(101);
@@ -69,13 +72,68 @@ function transactionPort(transaction: Transaction): EntraIdentityTransaction {
         .where(eq(sessions.userId, request.nativeUser.id))
         .orderBy(sessions.id)
         .limit(1001);
-      const withdrawn = user
+      const withdrawnEmail =
+        user?.email ??
+        (request.action === "create_contact"
+          ? request.nativeUser.email
+          : undefined);
+      const withdrawn = withdrawnEmail
         ? await transaction
             .select({ email: revokedAccess.email })
             .from(revokedAccess)
-            .where(eq(revokedAccess.email, user.email.toLowerCase()))
+            .where(
+              request.action === "create_contact"
+                ? sql`lower(${revokedAccess.email}) = lower(${withdrawnEmail})`
+                : eq(revokedAccess.email, withdrawnEmail.toLowerCase()),
+            )
             .limit(1)
         : [];
+      let contactBootstrap: EntraIdentitySnapshot["contactBootstrap"];
+      if (request.action === "create_contact") {
+        const candidates = await transaction
+          .select({ id: users.id })
+          .from(users)
+          .where(
+            or(
+              eq(users.id, request.nativeUser.id),
+              sql`lower(${users.email}) = lower(${request.nativeUser.email})`,
+            ),
+          )
+          .orderBy(users.id)
+          .limit(2);
+        const roles = await transaction
+          .select({ role: userRoles.role })
+          .from(userRoles)
+          .where(eq(userRoles.userId, request.nativeUser.id))
+          .orderBy(userRoles.role)
+          .limit(3);
+        const [defaults] = user
+          ? await transaction
+              .select({
+                image: users.image,
+                preferences: users.preferences,
+                groups: users.groups,
+                onboardingStep: users.onboardingStep,
+                onboardingCompletedAt: users.onboardingCompletedAt,
+                lastSignedInAt: users.lastSignedInAt,
+              })
+              .from(users)
+              .where(eq(users.id, request.nativeUser.id))
+              .limit(1)
+          : [];
+        contactBootstrap = {
+          matchingUserIds: candidates.map((candidate) => candidate.id),
+          roles: roles.map((row) => row.role),
+          defaults: defaults
+            ? {
+                ...defaults,
+                onboardingCompletedAt:
+                  defaults.onboardingCompletedAt?.toISOString() ?? null,
+                lastSignedInAt: defaults.lastSignedInAt?.toISOString() ?? null,
+              }
+            : null,
+        };
+      }
       return {
         target,
         user: user
@@ -96,6 +154,7 @@ function transactionPort(transaction: Transaction): EntraIdentityTransaction {
           createdAt: row.createdAt.toISOString(),
           expiresAt: row.expiresAt.toISOString(),
         })),
+        ...(contactBootstrap ? { contactBootstrap } : {}),
       };
     },
     async receipt(operationId) {
@@ -109,6 +168,21 @@ function transactionPort(transaction: Transaction): EntraIdentityTransaction {
       if (matches.length > 1)
         throw new EntraOperatorError("ENTRA_OPERATION_CONFLICT");
       return matches[0]?.payload ?? null;
+    },
+    async insertContact(request) {
+      // Fixed native defaults only. No role, account, credential, tenant or source grant is written.
+      await transaction.insert(users).values({
+        id: request.nativeUser.id,
+        email: request.nativeUser.email,
+        name: request.nativeUser.name,
+        emailVerified: false,
+        image: null,
+        preferences: {},
+        groups: [],
+        onboardingStep: 0,
+        onboardingCompletedAt: null,
+        lastSignedInAt: null,
+      });
     },
     async insertBinding(request) {
       await transaction.insert(accounts).values({
@@ -175,7 +249,7 @@ export function createEntraIdentityStore(
         // Advisory locks would not fence native/older auth writers. These short table locks also
         // cover absent account/session rows and revoke/contact races without a new schema index.
         await transaction.execute(
-          sql`lock table users, accounts, sessions, revoked_access in share row exclusive mode`,
+          sql`lock table users, accounts, sessions, revoked_access, user_roles in share row exclusive mode`,
         );
         return use(transactionPort(transaction));
       }),
