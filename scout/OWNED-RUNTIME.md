@@ -53,6 +53,38 @@ scheduler or managed memory service is required for this persistence slice.
 
 ## Same app, explicit authority
 
+Owned startup opens independent bounded SQL clients for application data (7)
+and native identity (1), plus the existing separate `LISTEN` client (1): nine
+configured connections per process. Fresh identity/role checks can run while a
+data transaction waits on consent validation. `createOwnedApplication` requires
+its caller to supply `options.identityDatabase` with a distinct SQL client and
+rejects a missing/shared client before database work. Merely wrapping the same
+client twice does not isolate its pool. Only the explicit trusted synthetic
+`options.auth` test seam may omit the identity database; production supplies no
+issuer override. Every existing native-auth dependency, including exact Entra
+mapping, organization materialization, revocation and auth audit, uses the
+identity client. No authentication checks or tenant/source/model grants are
+cached, removed or broadened by this split. The default licensed composition is
+unchanged. See the [pilot connection budget](PRIVATE-PILOT-DEPLOYMENT.md).
+
+Owned mode already refuses SCIM routes and does not provide tenant-aware
+directory provisioning. It now also refuses startup/direct identity assembly
+when the server's actual `SCIM_BEARER_TOKEN` environment value is configured.
+Unset it for owned mode; this is an explicit unsupported-capability/configuration
+mismatch, not a way to enable directory administration. This early refusal
+precedes database acquisition/work and avoids installing SCIM interactive
+transactions whose native hooks can reenter the one-connection identity pool.
+The default licensed authentication/SCIM implementation is unchanged.
+
+The pool regression includes bounded synthetic saturation/lifecycle checks and a
+separate PostgreSQL test using real native Better Auth session/Entra/role reads
+inside the actual consent route and grant transaction with `max: 1` clients.
+The latter uses explicitly seeded synthetic signed sessions and policies; it is
+not a live Entra sign-in or provider test. It requires a dedicated migrated
+`TEST_DATABASE_URL` and never falls back to the application database. SQL CI and
+runtime connection readback remain required before deployment; local synthetic
+pool checks alone do not qualify the database transaction path.
+
 - Reuses `createApp`, native authentication/people/roles, profiles, channels,
   audit/credential administration, preferences, onboarding, pages and the DSH
   requester. No Intelligence client or second background scheduler is created.
