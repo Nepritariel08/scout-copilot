@@ -867,7 +867,7 @@ describe("owned model: real SQL and SDK chat-completions", () => {
     expect(contextReadCount).toBe(4);
     expect(providerCalls).toBe(0);
     expect(await rows()).toMatchObject([
-      { status: "refused", errorCode: "MODEL_ACCESS_DENIED" },
+      { status: "uncertain", errorCode: "MODEL_ACCESS_DENIED" },
     ]);
   });
   test("a native binding change during the final task read cannot reach the provider", async () => {
@@ -890,7 +890,7 @@ describe("owned model: real SQL and SDK chat-completions", () => {
     expect(aliceRequesterUid).toBe(301);
     expect(providerCalls).toBe(0);
     expect(await rows()).toMatchObject([
-      { status: "refused", errorCode: "MODEL_ACCESS_DENIED" },
+      { status: "uncertain", errorCode: "MODEL_ACCESS_DENIED" },
     ]);
   });
   test("changed ACL visibility under an unchanged grant prevents model egress", async () => {
