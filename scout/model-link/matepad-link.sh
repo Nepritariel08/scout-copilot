@@ -3,16 +3,17 @@
 # It never starts/stops arbitrary processes and never sources local policy.
 set -uo pipefail
 
+SCOUT_HOME="${HOME:-}"
 TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
-PROFILE_FILE="${HOME:-}/.config/scout-matepad-link/profile.conf"
-CONFIG_DIR="${HOME:-}/.config/scout-matepad-link"
+PROFILE_FILE="${SCOUT_HOME}/.config/scout-matepad-link/profile.conf"
+CONFIG_DIR="${SCOUT_HOME}/.config/scout-matepad-link"
 SSH_BIN="$TERMUX_PREFIX/bin/ssh"
 SSH_KEYGEN="$TERMUX_PREFIX/bin/ssh-keygen"
 SHA256_BIN="$TERMUX_PREFIX/bin/sha256sum"
 STAT_BIN="$TERMUX_PREFIX/bin/stat"
 MODEL_KEY_FILE="$CONFIG_DIR/model-api-key"
-KNOWN_HOSTS_FILE="${HOME:-}/.ssh/scout-matepad-known_hosts"
-SSH_KEY_FILE="${HOME:-}/.ssh/scout-matepad-link"
+KNOWN_HOSTS_FILE="${SCOUT_HOME}/.ssh/scout-matepad-known_hosts"
+SSH_KEY_FILE="${SCOUT_HOME}/.ssh/scout-matepad-link"
 SERVER_BIN="$TERMUX_PREFIX/bin/llama-server"
 PYTHON_BIN="$TERMUX_PREFIX/bin/python3"
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -81,7 +82,7 @@ load_profile() {
     && "${PROFILE[device_target]}" == '127.0.0.1:8081' \
     && "${PROFILE[model_id]}" == 'Qwen3-0.6B' ]] || { refuse 'profile target or model drifted'; return 1; }
 
-  [[ "${PROFILE[model_file]}" == "${HOME}/models/Qwen3-0.6B"*.gguf ]] || { refuse 'model is outside the one-model allowlist'; return 1; }
+  [[ "${PROFILE[model_file]}" == "${SCOUT_HOME}/models/Qwen3-0.6B"*.gguf ]] || { refuse 'model is outside the one-model allowlist'; return 1; }
   [[ "${PROFILE[model_sha256]}" =~ ^[a-f0-9]{64}$ \
     && "${PROFILE[llama_server_sha256]}" == '6e8f34cac967060aa042a8bd2f65f06cf960c3c58063d0fb1876a3fc755e02b8' ]] || { refuse 'model or approved server digest is absent or changed'; return 1; }
   [[ "${PROFILE[host_key_fingerprint]}" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || { refuse 'pinned host fingerprint is absent'; return 1; }

@@ -10,19 +10,28 @@ cleanup() {
 }
 trap cleanup EXIT
 
-export HOME="$TEST_ROOT/home"
-export PREFIX="$TEST_ROOT/termux"
-mkdir -p "$HOME/.config/scout-matepad-link" "$HOME/.ssh" "$HOME/models" "$PREFIX/bin"
-chmod 700 "$HOME/.config/scout-matepad-link" "$HOME/.ssh"
+SCOUT_TEST_HOME="$TEST_ROOT/home"
+SCOUT_TEST_PREFIX="$TEST_ROOT/termux"
+SCOUT_ORIGINAL_HOME="${HOME-}"
+SCOUT_ORIGINAL_PREFIX="${PREFIX-}"
+mkdir -p "$SCOUT_TEST_HOME/.config/scout-matepad-link" "$SCOUT_TEST_HOME/.ssh" "$SCOUT_TEST_HOME/models" "$SCOUT_TEST_PREFIX/bin"
+chmod 700 "$SCOUT_TEST_HOME/.config/scout-matepad-link" "$SCOUT_TEST_HOME/.ssh"
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$SCRIPT_DIR/matepad-link.sh"
+SCOUT_HOME="$SCOUT_TEST_HOME"
+TERMUX_PREFIX="$SCOUT_TEST_PREFIX"
+PROFILE_FILE="$SCOUT_HOME/.config/scout-matepad-link/profile.conf"
+CONFIG_DIR="$SCOUT_HOME/.config/scout-matepad-link"
+MODEL_KEY_FILE="$CONFIG_DIR/model-api-key"
+KNOWN_HOSTS_FILE="$SCOUT_HOME/.ssh/scout-matepad-known_hosts"
+SSH_KEY_FILE="$SCOUT_HOME/.ssh/scout-matepad-link"
 STAT_BIN=$(command -v stat)
 SHA256_BIN=$(command -v sha256sum)
-SSH_KEYGEN="$PREFIX/bin/ssh-keygen"
-SSH_BIN="$PREFIX/bin/ssh"
-SERVER_BIN="$PREFIX/bin/llama-server"
-PYTHON_BIN="$PREFIX/bin/python3"
+SSH_KEYGEN="$TERMUX_PREFIX/bin/ssh-keygen"
+SSH_BIN="$TERMUX_PREFIX/bin/ssh"
+SERVER_BIN="$TERMUX_PREFIX/bin/llama-server"
+PYTHON_BIN="$TERMUX_PREFIX/bin/python3"
 
 fail_test() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 expect_refusal() {
@@ -60,13 +69,13 @@ file_sha256() {
   fi
 }
 
-printf '%s\n' 'test-only-not-a-real-private-key' > "$HOME/.ssh/scout-matepad-link"
-printf '%s\n' 'test-only-not-a-real-model-api-key-32chars' > "$HOME/.config/scout-matepad-link/model-api-key"
-printf '%s\n' 'scout-pilot-linode ssh-ed25519 TESTONLY-PUBLIC-KEY' > "$HOME/.ssh/scout-matepad-known_hosts"
-printf '%s\n' 'synthetic model bytes, not a model' > "$HOME/models/Qwen3-0.6B-Q4_0.gguf"
-chmod 600 "$HOME/.ssh/scout-matepad-link" "$HOME/.config/scout-matepad-link/model-api-key" "$HOME/.ssh/scout-matepad-known_hosts"
+printf '%s\n' 'test-only-not-a-real-private-key' > "$SCOUT_HOME/.ssh/scout-matepad-link"
+printf '%s\n' 'test-only-not-a-real-model-api-key-32chars' > "$SCOUT_HOME/.config/scout-matepad-link/model-api-key"
+printf '%s\n' 'scout-pilot-linode ssh-ed25519 TESTONLY-PUBLIC-KEY' > "$SCOUT_HOME/.ssh/scout-matepad-known_hosts"
+printf '%s\n' 'synthetic model bytes, not a model' > "$SCOUT_HOME/models/Qwen3-0.6B-Q4_0.gguf"
+chmod 600 "$SCOUT_HOME/.ssh/scout-matepad-link" "$SCOUT_HOME/.config/scout-matepad-link/model-api-key" "$SCOUT_HOME/.ssh/scout-matepad-known_hosts"
 
-MODEL_HASH=$(file_sha256 "$HOME/models/Qwen3-0.6B-Q4_0.gguf")
+MODEL_HASH=$(file_sha256 "$SCOUT_HOME/models/Qwen3-0.6B-Q4_0.gguf")
 cat > "$PROFILE_FILE" <<EOF
 format=1
 linode_host=172.104.173.160
@@ -75,7 +84,7 @@ remote_user=scout-matepad-forward
 remote_listen=127.0.0.1:18088
 device_target=127.0.0.1:8081
 model_id=Qwen3-0.6B
-model_file=$HOME/models/Qwen3-0.6B-Q4_0.gguf
+model_file=$SCOUT_HOME/models/Qwen3-0.6B-Q4_0.gguf
 model_sha256=$MODEL_HASH
 llama_server_sha256=6e8f34cac967060aa042a8bd2f65f06cf960c3c58063d0fb1876a3fc755e02b8
 host_key_fingerprint=SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
@@ -109,16 +118,16 @@ expect_refusal
 sed -i '/^fallback_provider=/d' "$PROFILE_FILE"
 chmod 600 "$PROFILE_FILE"
 
-rm -f "$HOME/.config/scout-matepad-link/model-api-key"
+rm -f "$SCOUT_HOME/.config/scout-matepad-link/model-api-key"
 expect_refusal
-printf '%s\n' 'test-only-not-a-real-model-api-key-32chars' > "$HOME/.config/scout-matepad-link/model-api-key"
-chmod 600 "$HOME/.config/scout-matepad-link/model-api-key"
-chmod 644 "$HOME/.config/scout-matepad-link/model-api-key"
+printf '%s\n' 'test-only-not-a-real-model-api-key-32chars' > "$SCOUT_HOME/.config/scout-matepad-link/model-api-key"
+chmod 600 "$SCOUT_HOME/.config/scout-matepad-link/model-api-key"
+chmod 644 "$SCOUT_HOME/.config/scout-matepad-link/model-api-key"
 expect_refusal
-chmod 600 "$HOME/.config/scout-matepad-link/model-api-key"
-chmod 755 "$HOME/.config/scout-matepad-link"
+chmod 600 "$SCOUT_HOME/.config/scout-matepad-link/model-api-key"
+chmod 755 "$SCOUT_HOME/.config/scout-matepad-link"
 expect_refusal
-chmod 700 "$HOME/.config/scout-matepad-link"
+chmod 700 "$SCOUT_HOME/.config/scout-matepad-link"
 
 export DIRECT_CALLS_FILE="$TEST_ROOT/direct-calls" SUPERVISOR_CALLS_FILE="$TEST_ROOT/supervisor-calls"
 main --check
@@ -131,5 +140,6 @@ if main --run >/dev/null 2>&1; then fail_test 'failed managed run unexpectedly s
 [[ "$(tail -n 1 "$SUPERVISOR_CALLS_FILE")" == *'verify_auth.py --run' ]] || fail_test 'run action changed'
 [[ ! -e "$DIRECT_CALLS_FILE" ]] || fail_test 'shell launcher directly started a model server or SSH process'
 if grep -Fq 'test-only-not-a-real-model-api-key' "$SUPERVISOR_CALLS_FILE"; then fail_test 'model API key leaked into supervisor argv'; fi
+[[ "${HOME-}" == "$SCOUT_ORIGINAL_HOME" && "${PREFIX-}" == "$SCOUT_ORIGINAL_PREFIX" ]] || fail_test 'test changed process HOME or PREFIX'
 
 printf 'PASS: strict profile, artifact pin, protected file checks, and single managed-supervisor handoff\n'

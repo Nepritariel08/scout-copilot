@@ -8,7 +8,9 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -385,6 +387,30 @@ class ManagedRunTests(unittest.TestCase):
                 verify_auth.run_managed(self.home, self.prefix)
         self.assertEqual(called, [])
         self.assertTrue(server.socket.fileno() >= 0)
+
+    def test_real_ssh_effective_config_keeps_only_the_fixed_reverse_forward(self):
+        ssh_client = shutil.which("ssh")
+        if ssh_client is None:
+            self.skipTest("OpenSSH client is unavailable")
+        with patch.object(verify_auth, "SERVER_BINARY_SHA256", self.server_hash):
+            snapshot = verify_auth._capture_snapshot(self.home, self.prefix)
+        argv = verify_auth._ssh_argv(snapshot)
+        result = subprocess.run(
+            [ssh_client, "-G", *argv[1:]],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        options = [line for line in result.stdout.splitlines() if line.startswith((
+            "clearallforwardings ", "localforward ", "remoteforward ", "dynamicforward "
+        ))]
+        self.assertEqual([line for line in options if line.startswith("clearallforwardings ")], ["clearallforwardings no"])
+        remote = [line.partition(" ")[2] for line in options if line.startswith("remoteforward ")]
+        self.assertEqual(len(remote), 1)
+        self.assertRegex(remote[0], r"^\[?127\.0\.0\.1\]?:18088 \[?127\.0\.0\.1\]?:8081$")
+        self.assertFalse(any(line.startswith(("localforward ", "dynamicforward ")) for line in options))
 
     def test_foreign_listener_cannot_pass_without_owned_child_readiness_marker(self):
         port = self._free_port()

@@ -420,7 +420,7 @@ def _ssh_argv(snapshot: Snapshot) -> list[str]:
         "-o",
         "ControlPath=none",
         "-o",
-        "ClearAllForwardings=yes",
+        "ClearAllForwardings=no",
         "-o",
         "ConnectTimeout=10",
         "-o",
