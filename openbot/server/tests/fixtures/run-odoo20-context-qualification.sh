@@ -62,7 +62,7 @@ if ! docker start --attach "$init_name" >"$private_dir/odoo-init.log" 2>&1; then
 fi
 docker rm -fv "$init_name" >/dev/null
 
-if ! docker create --platform linux/amd64 --name "$seed_name" --network "$network" \
+if ! docker create --interactive --platform linux/amd64 --name "$seed_name" --network "$network" \
   --env HOST=pg --env PORT=5432 --env USER=odoo --env "PASSWORD=$pg_password" \
   "$odoo_image" odoo shell -d "$database" --no-http --db_host=pg --db_port=5432 \
   --db_user=odoo --db_password="$pg_password" >/dev/null; then
