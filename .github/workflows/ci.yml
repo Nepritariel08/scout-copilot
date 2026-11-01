@@ -397,6 +397,7 @@ jobs:
   matepad-model-link:
     name: MatePad model-link offline regressions
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     defaults:
       run:
         working-directory: .
@@ -410,6 +411,10 @@ jobs:
       - name: MatePad model-link syntax and behavior
         run: |
           set -euo pipefail
+          if ! command -v ssh >/dev/null; then
+            echo "::error::OpenSSH client is required for the local ssh -G regression"
+            exit 1
+          fi
           bash -n scout/model-link/matepad-link.sh scout/model-link/tests/test_model_link.sh
           python -m unittest discover -s scout/model-link/tests -p 'test_*.py' -v
           bash scout/model-link/tests/test_model_link.sh
@@ -809,7 +814,7 @@ jobs:
     name: verify
     runs-on: ubuntu-latest
     if: always()
-    needs: [static, deployables, mobile, computer-browser, chart, test, startup, python-harness, build, scout-pilot-artifact, migrations, image, component-dockerfiles]
+    needs: [static, deployables, mobile, computer-browser, chart, test, startup, python-harness, matepad-model-link, build, scout-pilot-artifact, migrations, image, component-dockerfiles]
     # Nothing is checked out here, so the workflow's default `openbot` folder does not exist.
     defaults:
       run:
