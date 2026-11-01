@@ -78,6 +78,14 @@ including exact `SCOUT_PLATFORM_OWNER_IDS`, all seven SSO management endpoints a
 unavailable auth-admin/SCIM/remote callback paths. The following vendor requirements
 apply to the unchanged default licensed composition.
 
+For new owned Scout access, Microsoft Entra is now the selected source-level
+identity route: employees use the resource directory and customers must first
+redeem a B2B guest invitation there. The adapter admits only an exact
+preprovisioned `(issuer, oid)` mapping; local role, owner, tenant and Odoo
+requester grants remain separate. Its application registration, credentials,
+legacy Microsoft-account reconciliation, and live login are still unqualified;
+see [the Entra setup and acceptance guide](scout/OWNED-ENTRA.md).
+
 The upstream/default licensed `server/src/config.ts` composition requires
 Intelligence API, WebSocket and key settings. Explicit owned mode instead uses
 the public MIT runner and our durable PostgreSQL adapter; it needs no managed

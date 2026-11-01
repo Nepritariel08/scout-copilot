@@ -512,6 +512,13 @@
       "when": 1793521754141,
       "tag": "0072_happy_scorpion",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1793539086289,
+      "tag": "0073_accounts_issuer_identity",
+      "breakpoints": true
     }
   ]
 }

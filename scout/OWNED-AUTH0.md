@@ -1,5 +1,10 @@
 # Existing Auth0 sign-in for owned Scout
 
+This is the retained legacy Auth0 adapter and qualification record. Microsoft
+Entra is now the selected identity route for new owned Scout staff and invited
+customer accounts; see [OWNED-ENTRA.md](OWNED-ENTRA.md). Existing deployments
+are not changed by this source guide.
+
 Prepared 2026-11-01 for the owner-private pilot. This is a source and operator
 review packet, not an executed account grant, credential migration or live login.
 The primary record remains [SSC AI Enablement #4](https://github.com/Nepritariel08/ssc-ai-enablement/issues/4#issuecomment-6547459663).

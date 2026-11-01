@@ -34,6 +34,10 @@ import {
   createScoutAuth0AccountReader,
   createScoutAuth0Adapter,
 } from "./scout-auth0";
+import {
+  createScoutEntraAccountReader,
+  createScoutEntraAdapter,
+} from "./scout-entra";
 
 /** What a person sees when SSO is required and they tried another way in. */
 /** The native app's custom scheme (mobile/app.config.ts). */
@@ -196,22 +200,33 @@ export function createAuth(
     throw new Error(
       "Auth0 sign-in currently requires Scout's owned composition.",
     );
+  const scoutEntra =
+    authConfig.microsoft && config.runtime?.mode === "owned"
+      ? createScoutEntraAdapter(
+          authConfig.microsoft,
+          createScoutEntraAccountReader(database),
+        )
+      : undefined;
   const scoutAuth0 = authConfig.auth0
     ? createScoutAuth0Adapter(
         authConfig.auth0,
         createScoutAuth0AccountReader(database),
       )
     : undefined;
+  if (scoutEntra && scoutAuth0)
+    throw new Error(
+      "Owned Scout must use one closed native identity adapter at a time.",
+    );
+  const identityBefore = scoutEntra?.before ?? scoutAuth0?.before;
 
   /*
-   * Okta goes through the generic OAuth plugin, the other two do not.
+   * Owned Entra and Auth0, plus Okta, go through the generic OAuth plugin.
    *
-   * Google and Entra are named providers that Better Auth knows the endpoints of. Okta is not one
-   * place: every customer has their own issuer, so it is OIDC discovery against a URL rather than a
-   * provider with a fixed address. The plugin is only registered when Okta is configured, so a
-   * deployment that does not use it carries no extra routes.
+   * The owned Entra adapter pins a resource-tenant GUID and closes enrollment against a provisioned
+   * (tenant, object) binding. Other compositions keep Better Auth's named Microsoft provider.
+   * Okta is OIDC discovery against its exact issuer rather than a fixed provider address.
    *
-   * They converge again at the browser: `signIn.social({ provider })` starts all three, so the
+   * They converge again at the browser: `signIn.social({ provider })` starts each one, so the
    * sign-in screen has one code path and does not need to know which kind each provider is.
    */
   const scimDeps = {
@@ -236,7 +251,7 @@ export function createAuth(
      */
     ...(scimPluginOptions ? [scim(scimPluginOptions)] : []),
     electron({ clientID: "openbot-desktop", codeExpiresIn: 120 }),
-    ...(authConfig.okta || scoutAuth0
+    ...(authConfig.okta || scoutAuth0 || scoutEntra
       ? [
           genericOAuth({
             config: [
@@ -249,6 +264,7 @@ export function createAuth(
                     }),
                   ]
                 : []),
+              ...(scoutEntra ? [scoutEntra.provider] : []),
               ...(scoutAuth0 ? [scoutAuth0.provider] : []),
             ],
           }),
@@ -298,6 +314,9 @@ export function createAuth(
         },
       },
       validateUserInfo: async ({ user, source }) => {
+        if (source.oauth?.providerId === "microsoft" && scoutEntra) {
+          await scoutEntra.validateUserInfo(user, source.oauth.profile);
+        }
         if (source.oauth?.providerId === "auth0") {
           if (!scoutAuth0)
             throw new APIError("FORBIDDEN", {
@@ -306,7 +325,12 @@ export function createAuth(
           await scoutAuth0.validateUserInfo(user, source.oauth.profile);
         }
         const verdict = await decideSignInMethod({
-          method: source.method,
+          // This specific, closed Entra adapter is the owned deployment's SSO route. Other generic
+          // OAuth providers continue to require the existing SSO policy or a named break-glass admin.
+          method:
+            source.oauth?.providerId === "microsoft" && scoutEntra
+              ? "sso-oidc"
+              : source.method,
           email: typeof user.email === "string" ? user.email : undefined,
           ssoRequired: async () =>
             (await enterpriseStore.settings()).ssoRequired,
@@ -345,7 +369,7 @@ export function createAuth(
     },
     baseURL: authConfig.baseUrl,
     secret: authConfig.secret,
-    ...(scoutAuth0 ? { hooks: { before: scoutAuth0.before } } : {}),
+    ...(identityBefore ? { hooks: { before: identityBefore } } : {}),
     trustedOrigins: [
       ...authConfig.trustedOrigins,
       ...(nativeApp ? [NATIVE_APP_ORIGIN] : []),
@@ -392,14 +416,14 @@ export function createAuth(
        * accounts of everybody who has already signed in.
        */
       encryptOAuthTokens: true,
-      ...(scoutAuth0
+      ...(scoutAuth0 || scoutEntra
         ? { accountLinking: { enabled: false, disableImplicitLinking: true } }
         : {}),
     },
     plugins,
     socialProviders: {
       ...(authConfig.google ? { google: authConfig.google } : {}),
-      ...(authConfig.microsoft
+      ...(authConfig.microsoft && !scoutEntra
         ? {
             microsoft: {
               clientId: authConfig.microsoft.clientId,
@@ -482,6 +506,7 @@ export function createAuth(
            * new one, so without this a removed person signs straight back in.
            */
           before: async (session) => {
+            await scoutEntra?.assertSessionUser(session.userId);
             await scoutAuth0?.assertSessionUser(session.userId);
             const [user] = await database
               .select({ email: users.email })

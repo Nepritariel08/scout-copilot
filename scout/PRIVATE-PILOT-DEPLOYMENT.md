@@ -84,7 +84,7 @@ Release: Scout validation or safe rollback completed; no owned migration/test
          WI75 explicitly cleared and read back, with unfinished work assigned.
 ```
 
-Missing owner email or Auth0 subject does not block source qualification or an
+Missing owner email or Entra `tid`/`oid` mapping does not block source qualification or an
 off-host artifact build. A fresh verified **preparation-only** WI75 claim may
 cover isolated source/Bun staging, dedicated Scout-only database roles/schema,
 and an empty database backup/isolated restore. Before those mutations, establish
@@ -92,7 +92,7 @@ the current host target and released ownership, reviewed source/terminal CI and
 artifact hashes, path/database/role collisions, resource headroom, protected DB
 and backup custody, and targeted rollback. Narrow the claim above to that scope.
 Keep the Scout service **disabled and not started**, and leave ingress unchanged.
-Do not provision a placeholder person, Auth0 account or requester merely to pass
+Do not provision a placeholder person, Entra account or requester merely to pass
 startup. Empty-schema recovery is not authenticated conversation-restore acceptance.
 
 Before Scout startup or activation, the deployment record must additionally supply:
@@ -102,15 +102,14 @@ Before Scout startup or activation, the deployment record must additionally supp
 - The exact HTTPS private origin, DNS/TLS custody and ingress restriction to
   the owner. `scout-pilot.example.invalid` below is deliberately unusable.
   No DNS, certificate or public distribution is implied.
-- A verified native IdP route: configured Google/Microsoft/Okta native auth,
-  the closed [owned Auth0 adapter](OWNED-AUTH0.md), or
+- The selected closed [owned Microsoft Entra adapter](OWNED-ENTRA.md), with
+  exact resource tenant, application registration, preprovisioned identity and
+  verified callback; or
   a specifically approved OpenBot organization authority. The latter implements
   its own `/api/me` and ticket/cookie handoff; an arbitrary Odoo/OIDC URL is not
   an interchangeable authority. Issuer, audience, callbacks, subject and revocation
-  must be tested. The existing Auth0 issuer and Scout callback are the current
-  reuse candidate; application allowlist/credentials, exact owner subject and
-  live HTTPS/login remain unverified. No additional identity service is needed
-  to qualify that candidate.
+  must be tested. The Entra app registration, exact owner mapping and live
+  HTTPS/login remain unverified. No separate identity service is required.
 - Exact native owner subject, native admin role, tenant/deployment and current
   protected membership/requester mapping. `SCOUT_PLATFORM_OWNER_IDS` alone never
   elevates a user; email/domain/header claims do not substitute for the subject.

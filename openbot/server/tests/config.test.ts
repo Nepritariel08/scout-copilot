@@ -1,6 +1,12 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { configuredAuthProviders, loadConfig } from "../src/config";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  configuredAuthProviders,
+  loadConfig,
+  loadOwnedConfig,
+} from "../src/config";
 
 // Intelligence is part of the MINIMUM contract, so it belongs in the base environment every other
 // case builds on. Leaving it out of the base would make most of this file assert the behaviour of a
@@ -429,6 +435,81 @@ describe("deployment configuration", () => {
 
     expect(config.auth?.microsoft?.tenantId).toBe(
       "8f2c1e40-0000-0000-0000-000000000000",
+    );
+  });
+
+  test("owned Scout requires a concrete single-tenant Entra authority", () => {
+    const owned = {
+      ...withoutSignIn,
+      ...SESSION,
+      SCOUT_RUNTIME_MODE: "owned",
+      DATABASE_URL:
+        "postgres://fixture:fixture@127.0.0.1:25434/scout_model_test",
+      KEY_ENCRYPTION_KEY: Buffer.alloc(32, 19).toString("base64"),
+      SCOUT_QUEUE_BINDINGS_FILE: join(
+        tmpdir(),
+        "scout-owned-entra-config-test.json",
+      ),
+      MICROSOFT_OAUTH_CLIENT_ID: "entra-client-id",
+      MICROSOFT_OAUTH_CLIENT_SECRET: "entra-client-secret",
+      MICROSOFT_OAUTH_TENANT_ID: "8f2c1e40-0000-0000-0000-000000000000",
+    };
+    expect(loadOwnedConfig(owned).auth?.microsoft?.tenantId).toBe(
+      "8f2c1e40-0000-0000-0000-000000000000",
+    );
+    for (const tenantId of [
+      "common",
+      "organizations",
+      "consumers",
+      "not-a-guid",
+    ])
+      expect(() =>
+        loadOwnedConfig({ ...owned, MICROSOFT_OAUTH_TENANT_ID: tenantId }),
+      ).toThrow("exact resource-tenant GUID");
+  });
+
+  test("owned Entra identity refuses an additional social sign-in path", () => {
+    const owned = {
+      ...withoutSignIn,
+      ...SESSION,
+      SCOUT_RUNTIME_MODE: "owned",
+      DATABASE_URL:
+        "postgres://fixture:fixture@127.0.0.1:25434/scout_model_test",
+      KEY_ENCRYPTION_KEY: Buffer.alloc(32, 19).toString("base64"),
+      SCOUT_QUEUE_BINDINGS_FILE: join(
+        tmpdir(),
+        "scout-owned-entra-config-test.json",
+      ),
+      MICROSOFT_OAUTH_CLIENT_ID: "entra-client-id",
+      MICROSOFT_OAUTH_CLIENT_SECRET: "entra-client-secret",
+      MICROSOFT_OAUTH_TENANT_ID: "8f2c1e40-0000-0000-0000-000000000000",
+      GOOGLE_OAUTH_CLIENT_ID: "other-client-id",
+      GOOGLE_OAUTH_CLIENT_SECRET: "other-client-secret",
+    };
+    expect(() => loadOwnedConfig(owned)).toThrow(
+      "must be the only configured social provider",
+    );
+  });
+
+  test("owned Entra identity refuses a second organization authority", () => {
+    const owned = {
+      ...withoutSignIn,
+      ...SESSION,
+      SCOUT_RUNTIME_MODE: "owned",
+      DATABASE_URL:
+        "postgres://fixture:fixture@127.0.0.1:25434/scout_model_test",
+      KEY_ENCRYPTION_KEY: Buffer.alloc(32, 19).toString("base64"),
+      SCOUT_QUEUE_BINDINGS_FILE: join(
+        tmpdir(),
+        "scout-owned-entra-config-test.json",
+      ),
+      MICROSOFT_OAUTH_CLIENT_ID: "entra-client-id",
+      MICROSOFT_OAUTH_CLIENT_SECRET: "entra-client-secret",
+      MICROSOFT_OAUTH_TENANT_ID: "8f2c1e40-0000-0000-0000-000000000000",
+      OPENBOT_ORGANIZATION_AUTH_URL: "https://openbot.company.example",
+    };
+    expect(() => loadOwnedConfig(owned)).toThrow(
+      "must be the only identity route",
     );
   });
 

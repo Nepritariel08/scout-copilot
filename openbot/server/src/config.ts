@@ -111,6 +111,9 @@ export type ScoutAuth0Config = OAuthClient & {
   redirectURI: string;
 };
 
+/** Closed, single-resource-tenant Entra registration for owned Scout. */
+export type ScoutEntraConfig = OAuthClient & { tenantId: string };
+
 export type GithubAppConfig = {
   clientId: string;
   clientSecret: string;
@@ -829,6 +832,21 @@ function authConfig(
   const okta = oktaAuth(environment);
   const auth0 = scoutAuth0Config(environment);
 
+  if (environment.SCOUT_RUNTIME_MODE?.trim() === "owned" && microsoft) {
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        microsoft.tenantId,
+      )
+    )
+      throw new Error(
+        "Owned Scout Entra sign-in requires MICROSOFT_OAUTH_TENANT_ID to be the exact resource-tenant GUID; common, organizations and consumers are not admitted.",
+      );
+    if (google || okta || auth0)
+      throw new Error(
+        "Owned Scout Entra sign-in must be the only configured social provider; remove Google, Okta or Auth0 from this owned identity route.",
+      );
+  }
+
   const secret = optional(environment, "BETTER_AUTH_SECRET");
   const baseUrl = url(environment, "BETTER_AUTH_URL");
 
@@ -1465,6 +1483,10 @@ export function loadOwnedConfig(
   if (config.singleUser || (!config.auth && !config.organizationAuthUrl))
     throw new Error(
       "Owned Scout requires verified organization sign-in; single-user mode is refused.",
+    );
+  if (config.auth?.microsoft && config.organizationAuthUrl)
+    throw new Error(
+      "Owned Scout Entra sign-in must be the only identity route; unset OPENBOT_ORGANIZATION_AUTH_URL.",
     );
   if (!config.scoutQueueBindingsFile)
     throw new Error(
