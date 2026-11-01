@@ -12,6 +12,20 @@ const environment = {
   OPENBOT_HOST: "127.0.0.1",
 };
 describe("explicit owned runtime configuration", () => {
+  test("model policy is optional for unavailable agents and requires an absolute protected path when enabled", () => {
+    expect(loadOwnedConfig(environment).scoutModelPolicyFile).toBeUndefined();
+    const path = join(tmpdir(), "scout-model-policy.json");
+    expect(
+      loadOwnedConfig({ ...environment, SCOUT_MODEL_POLICY_FILE: path })
+        .scoutModelPolicyFile,
+    ).toBe(path);
+    expect(() =>
+      loadOwnedConfig({
+        ...environment,
+        SCOUT_MODEL_POLICY_FILE: "relative-policy.json",
+      }),
+    ).toThrow("absolute protected file path");
+  });
   test("requires no vendor key, emits no fabricated Intelligence settings, and turns off licensed auto assignment", () => {
     const config = loadOwnedConfig(environment);
     expect(config.runtime).toEqual({ mode: "owned", durableHistory: true });

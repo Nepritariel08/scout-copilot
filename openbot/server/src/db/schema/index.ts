@@ -22,6 +22,7 @@ export * from "./responsibilities";
 export * from "./scim";
 export * from "./scout";
 export * from "./scout-history";
+export * from "./scout-model";
 export * from "./shared-use";
 export * from "./team-bots";
 export * from "./voice";

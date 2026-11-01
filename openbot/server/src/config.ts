@@ -1376,7 +1376,10 @@ export function loadConfig(
 }
 
 export type AnyDeploymentConfig = DeploymentConfig<RuntimeCapabilities>;
-export type OwnedDeploymentConfig = DeploymentConfig<OwnedRuntimeCapabilities>;
+export type OwnedDeploymentConfig =
+  DeploymentConfig<OwnedRuntimeCapabilities> & {
+    scoutModelPolicyFile?: string;
+  };
 
 /** An explicit public-SDK composition; never supplies fabricated Intelligence credentials. */
 export function loadOwnedConfig(
@@ -1398,7 +1401,17 @@ export function loadOwnedConfig(
     throw new Error(
       "Owned Scout requires SCOUT_QUEUE_BINDINGS_FILE for current tenant/requester policy.",
     );
-  return { ...config, learningAutoAssign: false, selfHostBanner: false };
+  const scoutModelPolicyFile = optional(environment, "SCOUT_MODEL_POLICY_FILE");
+  if (scoutModelPolicyFile && !isAbsolute(scoutModelPolicyFile))
+    throw new Error(
+      "SCOUT_MODEL_POLICY_FILE must be an absolute protected file path.",
+    );
+  return {
+    ...config,
+    learningAutoAssign: false,
+    selfHostBanner: false,
+    ...(scoutModelPolicyFile ? { scoutModelPolicyFile } : {}),
+  };
 }
 
 function readDeploymentConfig<Runtime extends RuntimeCapabilities>(

@@ -1,0 +1,788 @@
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
+import { randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { and, eq } from "drizzle-orm";
+import { createDatabase } from "../src/db/client";
+import { users } from "../src/db/schema";
+import {
+  scoutHistoryRuns as historyRuns,
+  scoutHistoryThreads as threads,
+} from "../src/db/schema/scout-history";
+import { scoutModelCalls as calls } from "../src/db/schema/scout-model";
+import { createHistoryStore } from "../src/scout/history/store";
+import { OwnedTextModel } from "../src/scout/owned-model/model";
+import {
+  type ModelGrant,
+  parseModelPolicy,
+} from "../src/scout/owned-model/policy";
+import {
+  createModelCallStore,
+  type ModelCallStore,
+  type ModelRun,
+} from "../src/scout/owned-model/store";
+import { TEST_POOL, testDatabaseUrl } from "./support/database";
+
+const database = createDatabase(testDatabaseUrl(), TEST_POOL);
+const history = createHistoryStore(database);
+const store = createModelCallStore(database);
+const prefix = `model-edge-${randomUUID()}`;
+const userId = `${prefix}-user`;
+const agentId = `${prefix}-agent`;
+const principal = {
+  userId,
+  tenantId: "edge-tenant",
+  deploymentId: prefix,
+  agentId,
+};
+const syntheticKey = "synthetic-edge-key-never-real";
+let directory = "",
+  keyFile = "";
+let providerCalls = 0;
+type Options = Parameters<OwnedTextModel["doGenerate"]>[0];
+const options = (): Options => ({
+  prompt: [
+    {
+      role: "user",
+      content: [{ type: "text", text: "Synthetic edge request" }],
+    },
+  ],
+});
+
+function grantFor() {
+  return parseModelPolicy(
+    {
+      version: 1,
+      deploymentId: prefix,
+      globalMaxConcurrent: 4,
+      globalMaxCallsPerDay: 100,
+      bindings: [
+        {
+          userId,
+          tenantId: principal.tenantId,
+          revision: 1,
+          active: true,
+          expiresAt: "2099-01-01T00:00:00Z",
+          agentIds: [agentId],
+          allowConversationContext: true,
+          allowPersonalInstructions: false,
+          route: {
+            provider: "local",
+            model: "fixture-edge",
+            baseUrl: "http://127.0.0.1:25435/v1",
+            apiKeyFile: keyFile,
+          },
+          limits: {
+            maxInputBytes: 65536,
+            maxOutputTokens: 16,
+            maxOutputBytes: 4096,
+            maxCallsPerRun: 1,
+            maxCallsPerDay: 100,
+            maxConcurrent: 4,
+            timeoutMs: 1000,
+          },
+        },
+      ],
+    },
+    principal,
+  );
+}
+
+async function run(): Promise<ModelRun> {
+  const thread = await history.mint(principal, { agentId });
+  const runId = randomUUID();
+  await history.start(principal, agentId, {
+    threadId: thread.id,
+    runId,
+    state: {},
+    context: [],
+    tools: [],
+    forwardedProps: {},
+    messages: [
+      { id: randomUUID(), role: "user", content: "Synthetic edge request" },
+    ],
+  });
+  return { ...principal, threadId: thread.id, runId };
+}
+
+async function receipts() {
+  return database.select().from(calls).where(eq(calls.deploymentId, prefix));
+}
+
+async function terminalReceipt() {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const [receipt] = await receipts();
+    if (receipt && !["reserved", "dispatched"].includes(receipt.status))
+      return receipt;
+    await Bun.sleep(10);
+  }
+  throw new Error("Synthetic model receipt did not settle");
+}
+
+function transport(
+  body: string | ((init: RequestInit) => Response | Promise<Response>),
+): typeof fetch {
+  return Object.assign(
+    async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      providerCalls++;
+      expect((await receipts())[0]?.status).toBe("dispatched");
+      if (typeof body === "function") return body(init ?? {});
+      return new Response(body, {
+        headers: { "content-type": "text/event-stream" },
+      });
+    },
+    { preconnect: fetch.preconnect },
+  );
+}
+
+function packet(value: unknown) {
+  return `data: ${JSON.stringify(value)}\n\n`;
+}
+
+const success = () =>
+  packet({
+    id: "edge",
+    choices: [
+      {
+        index: 0,
+        delta: { role: "assistant", content: "EDGE_OK" },
+        finish_reason: null,
+      },
+    ],
+  }) +
+  packet({
+    id: "edge",
+    choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+  }) +
+  "data: [DONE]\n\n";
+
+function model(
+  scope: ModelRun,
+  grant: ModelGrant,
+  fetcher: typeof fetch,
+  authorize = async () => grant,
+  signal = new AbortController().signal,
+  callStore: ModelCallStore = store,
+) {
+  return new OwnedTextModel(
+    scope,
+    grant,
+    authorize,
+    callStore,
+    signal,
+    fetcher,
+  );
+}
+
+beforeAll(async () => {
+  directory = await mkdtemp(join(tmpdir(), "scout-model-edge-"));
+  keyFile = join(directory, "synthetic-key");
+  await database
+    .insert(users)
+    .values({ id: userId, email: `${userId}@fixture.example` });
+});
+beforeEach(async () => {
+  providerCalls = 0;
+  await database.delete(calls).where(eq(calls.deploymentId, prefix));
+  await writeFile(keyFile, syntheticKey, { mode: 0o600 });
+});
+afterAll(async () => {
+  await database.delete(calls).where(eq(calls.deploymentId, prefix));
+  await database.delete(users).where(eq(users.id, userId));
+  await database.$client.close();
+  await rm(directory, { recursive: true, force: true });
+});
+
+describe("owned model adversarial SQL/public-SDK boundaries", () => {
+  test("denies media, tool transcripts and structured output before reserving or dispatching", async () => {
+    const inputs: Options[] = [
+      {
+        prompt: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "file",
+                mediaType: "image/png",
+                data: new URL(
+                  "https://never-fetch.fixture.example/private.png",
+                ),
+              },
+            ],
+          },
+        ],
+      },
+      {
+        prompt: [
+          {
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "invented",
+                toolName: "private",
+                output: { type: "text", value: "untrusted" },
+              },
+            ],
+          },
+        ],
+      },
+      { ...options(), responseFormat: { type: "json" } },
+    ];
+    const scope = await run(),
+      grant = grantFor();
+    for (const input of inputs) {
+      await expect(
+        model(scope, grant, transport(success())).doGenerate(input),
+      ).rejects.toThrow("MODEL_ACCESS_DENIED");
+    }
+    expect(providerCalls).toBe(0);
+    expect(await receipts()).toHaveLength(0);
+  });
+
+  test("provider options, headers, tool definitions and tool choice cannot override the protected outbound request", async () => {
+    let sentBody: unknown, sentHeaders: Headers | undefined;
+    const input: Options = {
+      ...options(),
+      tools: [
+        {
+          type: "function",
+          name: "private",
+          description: "untrusted",
+          inputSchema: { type: "object" },
+        },
+      ],
+      toolChoice: { type: "tool", toolName: "private" },
+      providerOptions: {
+        openai: {
+          model: "unapproved-paid-model",
+          apiKey: "unapproved-key",
+          baseURL: "https://never-fetch.fixture.example/v1",
+        },
+      },
+      headers: {
+        authorization: "Bearer unapproved-key",
+        "x-untrusted-header": "untrusted",
+      },
+      maxOutputTokens: 10000,
+    };
+    await model(
+      await run(),
+      grantFor(),
+      transport((init) => {
+        sentBody = JSON.parse(String(init.body));
+        sentHeaders = new Headers(init.headers);
+        return new Response(success(), {
+          headers: { "content-type": "text/event-stream" },
+        });
+      }),
+    ).doGenerate(input);
+    expect(sentBody).toMatchObject({ model: "fixture-edge", max_tokens: 16 });
+    expect(sentBody).not.toHaveProperty("tools");
+    expect(sentBody).not.toHaveProperty("tool_choice");
+    expect(JSON.stringify(sentBody)).not.toContain("unapproved");
+    expect(sentHeaders?.get("authorization")).toBe(`Bearer ${syntheticKey}`);
+    expect(sentHeaders?.has("x-untrusted-header")).toBe(false);
+  });
+
+  test("reads a key rotated after durable reservation rather than caching the initial secret", async () => {
+    const rotated = "synthetic-edge-rotated-key";
+    const captured: { authorization: string | null } = { authorization: null };
+    const wrapped = {
+      ...store,
+      reserve: async (...args: Parameters<ModelCallStore["reserve"]>) => {
+        const call = await store.reserve(...args);
+        await writeFile(keyFile, rotated);
+        return call;
+      },
+    };
+    const result = await model(
+      await run(),
+      grantFor(),
+      transport((init) => {
+        captured.authorization = new Headers(init.headers).get("authorization");
+        return new Response(success(), {
+          headers: { "content-type": "text/event-stream" },
+        });
+      }),
+      undefined,
+      undefined,
+      wrapped,
+    ).doGenerate(options());
+    expect(result.content).toEqual([{ type: "text", text: "EDGE_OK" }]);
+    expect(captured.authorization).toBe(`Bearer ${rotated}`);
+    expect(JSON.stringify(await receipts())).not.toContain(rotated);
+  });
+
+  test("invalid replacement key refuses a reserved call without sending either secret", async () => {
+    const wrapped = {
+      ...store,
+      reserve: async (...args: Parameters<ModelCallStore["reserve"]>) => {
+        const call = await store.reserve(...args);
+        await writeFile(keyFile, "synthetic\ninvalid-key");
+        return call;
+      },
+    };
+    await expect(
+      model(
+        await run(),
+        grantFor(),
+        transport(success()),
+        undefined,
+        undefined,
+        wrapped,
+      ).doGenerate(options()),
+    ).rejects.toThrow("MODEL_NOT_CONFIGURED");
+    expect(providerCalls).toBe(0);
+    expect((await terminalReceipt()).status).toBe("refused");
+  });
+
+  test("policy change immediately after durable dispatch prevents network egress and records uncertainty", async () => {
+    let changed = false;
+    const grant = grantFor();
+    const wrapped = {
+      ...store,
+      dispatch: async (...args: Parameters<ModelCallStore["dispatch"]>) => {
+        await store.dispatch(...args);
+        changed = true;
+      },
+    };
+    await expect(
+      model(
+        await run(),
+        grant,
+        transport(success()),
+        async () =>
+          changed
+            ? { ...grant, fingerprint: "f".repeat(64), revision: 2 }
+            : grant,
+        undefined,
+        wrapped,
+      ).doGenerate(options()),
+    ).rejects.toThrow("MODEL_ACCESS_DENIED");
+    expect(providerCalls).toBe(0);
+    const receipt = await terminalReceipt();
+    expect(receipt.status).toBe("uncertain");
+    expect(receipt.errorCode).toBe("MODEL_ACCESS_DENIED");
+  });
+
+  test("changed history producer token fences a reserved call before dispatch", async () => {
+    const scope = await run(),
+      grant = grantFor();
+    const wrapped = {
+      ...store,
+      reserve: async (...args: Parameters<ModelCallStore["reserve"]>) => {
+        const call = await store.reserve(...args);
+        await database
+          .update(historyRuns)
+          .set({ leaseToken: randomUUID() })
+          .where(
+            and(
+              eq(historyRuns.threadId, scope.threadId),
+              eq(historyRuns.id, scope.runId),
+            ),
+          );
+        return call;
+      },
+    };
+    await expect(
+      model(
+        scope,
+        grant,
+        transport(success()),
+        undefined,
+        undefined,
+        wrapped,
+      ).doGenerate(options()),
+    ).rejects.toThrow("MODEL_CONFLICT");
+    expect(providerCalls).toBe(0);
+    expect((await terminalReceipt()).status).toBe("refused");
+  });
+
+  test("expired dispatched receipt becomes uncertain even when the next admission is denied by the exhausted daily quota", async () => {
+    const scope = await run(),
+      grant = { ...grantFor(), globalMaxCallsPerDay: 1 };
+    const call = await store.reserve(scope, grant, {
+      digest: "a".repeat(64),
+      bytes: 100,
+      endpointOrigin: "http://127.0.0.1:25435",
+    });
+    await store.dispatch(scope, call, grant);
+    await database
+      .update(calls)
+      .set({ expiresAt: new Date(0) })
+      .where(eq(calls.id, call.id));
+    await expect(
+      createModelCallStore(database).reserve(await run(), grant, {
+        digest: "b".repeat(64),
+        bytes: 100,
+        endpointOrigin: "http://127.0.0.1:25435",
+      }),
+    ).rejects.toThrow("MODEL_LIMIT");
+    const [receipt] = await receipts();
+    expect(receipt?.id).toBe(call.id);
+    expect(receipt?.status).toBe("uncertain");
+    expect(receipt?.errorCode).toBe("MODEL_LEASE_EXPIRED");
+    expect(providerCalls).toBe(0);
+    await expect(store.finish(call, "completed")).rejects.toThrow(
+      "MODEL_CONFLICT",
+    );
+  });
+
+  test("an owner receipt read alone recovers an expired dispatch while foreign tenant reads cannot mutate it", async () => {
+    const scope = await run(),
+      grant = grantFor();
+    const call = await store.reserve(scope, grant, {
+      digest: "c".repeat(64),
+      bytes: 100,
+      endpointOrigin: "http://127.0.0.1:25435",
+    });
+    await store.dispatch(scope, call, grant);
+    await database
+      .update(calls)
+      .set({ expiresAt: new Date(0) })
+      .where(eq(calls.id, call.id));
+    expect(
+      await createModelCallStore(database).receipts(
+        { ...principal, tenantId: "foreign-tenant" },
+        scope.threadId,
+      ),
+    ).toHaveLength(0);
+    expect((await receipts())[0]?.status).toBe("dispatched");
+    const [receipt] = await createModelCallStore(database).receipts(
+      principal,
+      scope.threadId,
+    );
+    expect(receipt?.id).toBe(call.id);
+    expect(receipt?.status).toBe("uncertain");
+    expect(receipt?.errorCode).toBe("MODEL_LEASE_EXPIRED");
+    expect((await receipts())[0]?.status).toBe("uncertain");
+    expect(providerCalls).toBe(0);
+  });
+
+  for (const change of ["producer-token", "stopped-history"] as const) {
+    test(`${change} after dispatch fences terminal output and prevents a completed receipt`, async () => {
+      const scope = await run(),
+        grant = grantFor();
+      const emitted: unknown[] = [];
+      let caught: unknown;
+      const fetcher = transport(async () => {
+        if (change === "producer-token") {
+          await database
+            .update(historyRuns)
+            .set({ leaseToken: randomUUID() })
+            .where(
+              and(
+                eq(historyRuns.threadId, scope.threadId),
+                eq(historyRuns.id, scope.runId),
+              ),
+            );
+        } else {
+          await history.stop(principal, scope.threadId, scope.runId);
+        }
+        return new Response(success(), {
+          headers: { "content-type": "text/event-stream" },
+        });
+      });
+      try {
+        const result = await model(scope, grant, fetcher).doStream(options());
+        for await (const part of result.stream) emitted.push(part);
+      } catch (error) {
+        caught = error;
+      }
+      expect(String(caught)).toContain("MODEL_CONFLICT");
+      expect(
+        emitted.some((part) => (part as { type?: string }).type === "finish"),
+      ).toBe(false);
+      expect(providerCalls).toBe(1);
+      const receipt = await terminalReceipt();
+      expect(receipt.status).toBe("uncertain");
+      expect(receipt.errorCode).toBe("MODEL_CONFLICT");
+    });
+  }
+
+  test("malformed/error SSE and invalid usage reject with sanitized errors and retain the dispatched receipt", async () => {
+    const bodies = [
+      `data: {malformed-${syntheticKey}\n\n`,
+      packet({ error: { message: syntheticKey, code: "provider_error" } }),
+      packet({
+        id: "edge",
+        choices: [],
+        usage: { prompt_tokens: -1, completion_tokens: 2 },
+      }),
+      packet({
+        id: "edge",
+        choices: [],
+        usage: { prompt_tokens: 1.5, completion_tokens: 2 },
+      }),
+      packet({ id: "edge", choices: [], usage: { cost: "0" } }),
+    ];
+    for (const body of bodies) {
+      let caught: unknown;
+      try {
+        await model(await run(), grantFor(), transport(body)).doGenerate(
+          options(),
+        );
+      } catch (error) {
+        caught = error;
+      }
+      expect(String(caught)).toContain("MODEL_UNAVAILABLE");
+      expect(String(caught)).not.toContain(syntheticKey);
+    }
+    expect(providerCalls).toBe(bodies.length);
+    const rows = await receipts();
+    expect(rows).toHaveLength(bodies.length);
+    expect(rows.every((row) => row.status === "uncertain")).toBe(true);
+    expect(
+      rows.every(
+        (row) =>
+          row.inputTokens === null &&
+          row.outputTokens === null &&
+          row.reportedCostUsd === null,
+      ),
+    ).toBe(true);
+  });
+
+  const partial = packet({
+    id: "edge",
+    choices: [
+      {
+        index: 0,
+        delta: { role: "assistant", content: "INCOMPLETE_PARTIAL" },
+        finish_reason: null,
+      },
+    ],
+  });
+  for (const [name, body] of [
+    ["empty clean EOF", ""],
+    ["partial text followed by clean EOF", partial],
+    [
+      "DONE marker without provider terminal reason",
+      `${partial}data: [DONE]\n\n`,
+    ],
+  ] as const) {
+    test(`${name} cannot be mistaken for successful provider completion`, async () => {
+      const emitted: unknown[] = [];
+      let caught: unknown;
+      try {
+        const result = await model(
+          await run(),
+          grantFor(),
+          transport(body),
+        ).doStream(options());
+        for await (const part of result.stream) emitted.push(part);
+      } catch (error) {
+        caught = error;
+      }
+      expect(String(caught)).toContain("MODEL_UNAVAILABLE");
+      expect(
+        emitted.some((part) => (part as { type?: string }).type === "finish"),
+      ).toBe(false);
+      expect(providerCalls).toBe(1);
+      const receipt = await terminalReceipt();
+      expect(receipt.status).toBe("uncertain");
+      expect(receipt.errorCode).toBe("MODEL_UNAVAILABLE");
+    });
+  }
+
+  test("unexpected provider images are rejected before any assistant content reaches the caller", async () => {
+    const body = packet({
+      id: "edge",
+      choices: [
+        {
+          index: 0,
+          delta: {
+            content: "NEVER_FORWARD",
+            images: [
+              { image_url: "https://never-fetch.fixture.example/private.png" },
+            ],
+          },
+          finish_reason: null,
+        },
+      ],
+    });
+    const emitted: unknown[] = [];
+    let caught: unknown;
+    try {
+      const result = await model(
+        await run(),
+        grantFor(),
+        transport(body),
+      ).doStream(options());
+      for await (const part of result.stream) emitted.push(part);
+    } catch (error) {
+      caught = error;
+    }
+    expect(String(caught)).toContain("MODEL_ACCESS_DENIED");
+    expect(JSON.stringify(emitted)).not.toContain("NEVER_FORWARD");
+    expect((await terminalReceipt()).status).toBe("uncertain");
+  });
+
+  test("timeout aborts an in-flight provider once, retains quota and cannot become completed later", async () => {
+    let aborted = 0;
+    const scope = await run(),
+      grant = grantFor();
+    const fetcher = transport(
+      (init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const abort = () => {
+            aborted++;
+            reject(new Error(`provider aborted ${syntheticKey}`));
+          };
+          init.signal?.addEventListener("abort", abort, { once: true });
+          if (init.signal?.aborted) abort();
+        }),
+    );
+    const started = Date.now();
+    await expect(
+      model(scope, grant, fetcher).doGenerate(options()),
+    ).rejects.toThrow("MODEL_UNAVAILABLE");
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(aborted).toBe(1);
+    expect(providerCalls).toBe(1);
+    expect((await terminalReceipt()).status).toBe("uncertain");
+    await expect(
+      model(scope, grant, transport(success())).doGenerate(options()),
+    ).rejects.toThrow("MODEL_LIMIT");
+    expect(providerCalls).toBe(1);
+  }, 5000);
+
+  test("run cancellation propagates through the public SDK and leaves no completed receipt", async () => {
+    const controller = new AbortController();
+    let aborted = 0;
+    const fetcher = transport(
+      (init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener(
+            "abort",
+            () => {
+              aborted++;
+              reject(new Error("synthetic run cancelled"));
+            },
+            { once: true },
+          );
+          queueMicrotask(() => controller.abort());
+        }),
+    );
+    await expect(
+      model(
+        await run(),
+        grantFor(),
+        fetcher,
+        undefined,
+        controller.signal,
+      ).doGenerate(options()),
+    ).rejects.toThrow("MODEL_UNAVAILABLE");
+    expect(aborted).toBe(1);
+    expect(providerCalls).toBe(1);
+    expect((await terminalReceipt()).status).toBe("uncertain");
+  });
+
+  test("abort while completed receipt persistence awaits suppresses successful finish without downgrading or replaying the committed call", async () => {
+    const controller = new AbortController();
+    const scope = await run(),
+      grant = grantFor();
+    let committedBeforeAbort = false;
+    const wrapped = {
+      ...store,
+      finish: async (...args: Parameters<ModelCallStore["finish"]>) => {
+        await store.finish(...args);
+        if (args[1] === "completed") {
+          committedBeforeAbort = (await receipts())[0]?.status === "completed";
+          controller.abort();
+        }
+      },
+    };
+    const emitted: unknown[] = [];
+    let caught: unknown;
+    try {
+      const result = await model(
+        scope,
+        grant,
+        transport(success()),
+        undefined,
+        controller.signal,
+        wrapped,
+      ).doStream(options());
+      for await (const part of result.stream) emitted.push(part);
+    } catch (error) {
+      caught = error;
+    }
+    expect(committedBeforeAbort).toBe(true);
+    expect(String(caught)).toContain("MODEL_UNAVAILABLE");
+    expect(
+      emitted.some((part) => (part as { type?: string }).type === "finish"),
+    ).toBe(false);
+    expect(providerCalls).toBe(1);
+    const receipt = await terminalReceipt();
+    expect(receipt.status).toBe("completed");
+    expect(receipt.errorCode).toBeNull();
+    expect(receipt.outputBytes).toBe(Buffer.byteLength("EDGE_OK"));
+    await expect(
+      model(scope, grant, transport(success())).doGenerate(options()),
+    ).rejects.toThrow("MODEL_LIMIT");
+    expect(providerCalls).toBe(1);
+    expect((await receipts())[0]?.status).toBe("completed");
+  });
+
+  test("revocation while streaming prevents a successful terminal receipt", async () => {
+    let revoked = false;
+    const grant = grantFor();
+    const fetcher = transport(() => {
+      revoked = true;
+      return new Response(success(), {
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    await expect(
+      model(await run(), grant, fetcher, async () =>
+        revoked
+          ? { ...grant, fingerprint: "e".repeat(64), revision: 2 }
+          : grant,
+      ).doGenerate(options()),
+    ).rejects.toThrow("MODEL_ACCESS_DENIED");
+    expect(providerCalls).toBe(1);
+    expect((await terminalReceipt()).status).toBe("uncertain");
+  });
+
+  test("deleting conversation history preserves durable daily usage and protected receipt scope", async () => {
+    const scope = await run(),
+      grant = { ...grantFor(), globalMaxCallsPerDay: 1 };
+    await model(scope, grant, transport(success())).doGenerate(options());
+    await database.delete(threads).where(eq(threads.id, scope.threadId));
+    expect(await receipts()).toHaveLength(1);
+    await expect(
+      model(await run(), grant, transport(success())).doGenerate(options()),
+    ).rejects.toThrow("MODEL_LIMIT");
+    expect(
+      await store.receipts(
+        { ...principal, tenantId: "other-tenant" },
+        scope.threadId,
+      ),
+    ).toHaveLength(0);
+    expect(
+      await store.receipts(
+        { ...principal, userId: `${prefix}-other-user` },
+        scope.threadId,
+      ),
+    ).toHaveLength(0);
+    expect(
+      await store.receipts(
+        { ...principal, deploymentId: `${prefix}-other-deployment` },
+        scope.threadId,
+      ),
+    ).toHaveLength(0);
+    const [receipt] = await store.receipts(principal, scope.threadId);
+    expect(receipt?.status).toBe("completed");
+    expect(receipt).not.toHaveProperty("leaseToken");
+    expect(providerCalls).toBe(1);
+  });
+});
