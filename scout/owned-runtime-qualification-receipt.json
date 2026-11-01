@@ -62,6 +62,7 @@
     "openbot/app/src/lib/copilot/provider.tsx": "9907f2f931421589fc74f0226e3bbee26aee0d1e38ec265b5fc656b4a5de77a2",
     "openbot/app/src/lib/deployment/queries.ts": "4afbc729346d1cb9b352418aa18aa4006b6266327ce68d57aa510136d0ff2b7e",
     "openbot/app/src/routes/_authed/_app/bot.tsx": "37c6e10571b84f1bf27c3a2cbee8edcf058da13cedf3d857c567bfbe8a81583c",
+    "openbot/app/tests/first-day.test.tsx": "8311d4a9e41b830753c79615c30ebe5418c6eadb5f2ce3c979b1e3148cfd4618",
     "openbot/app/tests/scout-owned-bot-thread.test.tsx": "8a8a2845c5f37f4f78087fafc120c5c743c4cefb72bc9f927b4ed7d77f7e76df",
     "openbot/docker/s6/s6-rc.d/api/run": "6665b0a97189ce8dacb2c55359cdbde3acae4c0408a0ace63f176efe4262ad9a",
     "openbot/scripts/start-restart-guard.test.ts": "02adbf326da6d2285c7299a7721325da6ac7d1a5f4c410b97a16caf553a26b41",
@@ -80,9 +81,10 @@
     "openbot/server/src/scout/owned/authority.ts": "d9ef3d66b9a445c1d30750acdf29aab516498ee13b2415363d97ea195e07a904",
     "openbot/server/src/scout/owned/routes.ts": "e7aa37da40075651b4c77a35d4583afd3ca422adbe8bd1252d7fba4264611f26",
     "openbot/server/src/scout/owned/start.ts": "f6ddb7986db66b7e52de3590e6f4c3b36cec428557c352164f0dbace0a140525",
+    "openbot/server/tests/health.test.ts": "8c2b1f24e44705a5a0c0b8c81231abdb2c921d84d8a9cbe1d2c55f12e48dea15",
     "openbot/server/tests/scout-owned-app.integration.test.ts": "0dd9a9cd7b9ce4fdcddaea50d7c2c67f9e6e353692d036188cc0093af075b9ab",
     "openbot/server/tests/scout-owned-config.test.ts": "bb7ea84d21325c5cad52c476727526a886f9b1a49b362c951b081661e06a96bb",
-    "scout/OWNED-RUNTIME.md": "6c02dcc28a22e9fc68b9cb48635af76cf08bdfbc2a45badbc681db6d94a604f7",
+    "scout/OWNED-RUNTIME.md": "9f32a151b7cfdea092a26d1d1472714fbaf53a548590b4396522e937e9f2cca5",
     "scout/PERSISTENCE.md": "25e2385cd06985ae1f6e4cea90576c4c12f9c2008026da3f6ac4c1d608df73e8",
     "scout/owned.env.example": "0677ce8a720e117bbc882de74e50d1b1006395561212f9065a102228e0185141"
   },
@@ -93,6 +95,37 @@
     "copilot-owned-start-01a19336.log": "3f696b5adde31ad579473cec516017ef41744be1604f52f5e4eb12cae0016fc7",
     "copilot-owned-tsc-01a19336.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "copilot-owned-app-tsc-01a19336.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "copilot-owned-migration-01a19336.log": "d45906130046f6766f712cbbb48ef4e5a09f9bbf5c73e87ec0118c7bf35ce95e"
+    "copilot-owned-migration-01a19336.log": "d45906130046f6766f712cbbb48ef4e5a09f9bbf5c73e87ec0118c7bf35ce95e",
+    "copilot-owned-ci-health-repair-01a19336.log": "3a22de220c85ecde4ff7d1ac2937e7aa0551cf85dd60a11636d4815eda5b091b",
+    "copilot-owned-ci-ui-repair-01a19336.log": "edd6fbbe04d886838ec1149c52435c35d6bffdfaed9c2de27d733dc1f74c5392"
+  },
+  "ciFollowup": {
+    "initialSourceCommit": "1c291042d99922a3605b5f53f1ae35c06cd79736",
+    "initialRun": 41266725668,
+    "initialFullTests": {
+      "passed": 10208,
+      "skipped": 75,
+      "failed": 3,
+      "total": 10286,
+      "files": 828
+    },
+    "repair": "Updated existing capability whitelist/expected response and the first-day pagination fixture's capabilities response; production behavior and assertions preserved.",
+    "localRepairTests": {
+      "health": 19,
+      "firstDayAndOwnedUi": 48,
+      "failed": 0
+    },
+    "fullExactHeadRerun": "pending"
+  },
+  "capacityObservation": {
+    "observedOn": "2026-11-01",
+    "target": "Community Linode107087677",
+    "readOnly": true,
+    "vcpus": 4,
+    "totalRamMiB": 7936,
+    "availableRamMiB": 6085,
+    "rootFreeGiB": 66.1,
+    "loadTested": false,
+    "resizedOrDeployed": false
   }
 }

@@ -424,6 +424,8 @@ describe("Chat on the first day", () => {
     const transport = Object.assign(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const path = String(input);
+        if (path === "/api/capabilities")
+          return Response.json({ mode: "intelligence", serverTurns: true });
         if (path === "/api/bots/attention") return Response.json({ bots: [] });
         if (path === "/api/channels") return refresh.promise;
         if (path === "/api/channels?cursor=older") {

@@ -26,6 +26,32 @@ It does not implement licensed memory, learning or managed Channels. OpenRouter
 still receives approved prompt context for inference; retention, context release,
 spend limits and receipts require separate qualification.
 
+## Infrastructure for our own intelligence layer
+
+Read-only host verification on 2026-11-01 confirmed the existing Community Linode
+at `172.104.173.160`: 4 vCPUs, 7936 MiB RAM, 6085 MiB currently available, and 66.1 GiB
+free on the root filesystem. This is a point-in-time observation, not a load test.
+
+Use that host for a capped private pilot: the existing Caddy/HTTPS front door,
+one separately owned Scout API service, a dedicated PostgreSQL/pgvector database
+and role, protected model/policy credentials, existing native/company sign-in,
+and encrypted off-host database/key/document backups. Keep the existing DSH/Odoo
+queue as delegated execution. MatePad/phone remain clients and consent-bound
+device executors; durable storage and unattended server execution stay on Linode.
+
+Engineering sizing target for an initial small staff/customer rollout is 16 GB
+RAM with 4–6 vCPUs and 100–200 GB usable SSD, then load-test document ingestion,
+concurrent chats, Odoo contention and restore before increasing access. These
+are planning estimates for our implementation, not CopilotKit vendor minima.
+Current [Akamai shared-CPU pricing](https://www.akamai.com/cloud/pricing/cpu)
+lists 16 GB/6 vCPU/320 GB at USD96/month; region, backups and inference are extra
+considerations. No infrastructure change was made.
+
+OpenRouter inference needs no local GPU. A fully local model can use a separate
+CPU/GPU inference node later, sized after choosing the model, context and load.
+The first owned implementation can use systemd and PostgreSQL; no additional
+scheduler or managed memory service is required for this persistence slice.
+
 ## Same app, explicit authority
 
 - Reuses `createApp`, native authentication/people/roles, profiles, channels,
