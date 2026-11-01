@@ -148,6 +148,8 @@ function NewBotFlow({ onCreated }: { onCreated: (agentId: string) => void }) {
    */
   const { data: capabilities } = useQuery(agentCapabilitiesQueryOptions());
   const builtInAvailable = capabilities?.builtInAvailable ?? true;
+  // Wait for the composition before offering a connection test it may not support.
+  const remoteAvailable = capabilities?.remoteAvailable ?? false;
   const [step, setStep] = useState<Step>("runtime");
   const [direction, setDirection] = useState(1);
   const [name, setName] = useState("");
@@ -255,6 +257,7 @@ function NewBotFlow({ onCreated }: { onCreated: (agentId: string) => void }) {
    * agent, not editing what was typed.
    */
   const connect = async () => {
+    if (!remoteAvailable) return;
     const focusAddress = () =>
       // Focus would otherwise fall to the page while the button below is busy or disabled.
       document.getElementById("new-bot-endpoint")?.focus();
@@ -351,6 +354,7 @@ function NewBotFlow({ onCreated }: { onCreated: (agentId: string) => void }) {
               <RuntimeStep
                 builtInAvailable={builtInAvailable}
                 onChoose={setRuntime}
+                remoteAvailable={remoteAvailable}
                 runtime={runtime}
               />
             ) : (
@@ -652,11 +656,13 @@ const OPTION_CLASSES =
  */
 function RuntimeStep({
   builtInAvailable,
+  remoteAvailable,
   runtime,
   onChoose,
 }: {
   /** Whether this deployment has a Bot of its own to run one here on. */
   builtInAvailable: boolean;
+  remoteAvailable: boolean;
   runtime: Runtime | null;
   onChoose: (runtime: Runtime) => void;
 }) {
@@ -693,31 +699,34 @@ function RuntimeStep({
         </span>
       </button>
 
-      <div className="flex items-center gap-2 py-1 text-muted-foreground text-xs">
-        <span className="h-px flex-1 bg-border" />
-        or connect one you run
-        <span className="h-px flex-1 bg-border" />
-      </div>
+      {remoteAvailable && (
+        <div className="flex items-center gap-2 py-1 text-muted-foreground text-xs">
+          <span className="h-px flex-1 bg-border" />
+          or connect one you run
+          <span className="h-px flex-1 bg-border" />
+        </div>
+      )}
 
-      {WEB_HARNESSES.map((harness) => (
-        <button
-          aria-pressed={
-            runtime?.kind === "managed" && runtime.harness === harness.id
-          }
-          className={OPTION_CLASSES}
-          key={harness.id}
-          onClick={() => onChoose({ kind: "managed", harness: harness.id })}
-          type="button"
-        >
-          <HarnessMark id={harness.mark} name={harness.name} />
-          <span className="min-w-0">
-            <span className="block font-medium text-sm">{harness.name}</span>
-            <span className="block text-pretty text-muted-foreground text-xs">
-              {summaryFor(harness)}
+      {remoteAvailable &&
+        WEB_HARNESSES.map((harness) => (
+          <button
+            aria-pressed={
+              runtime?.kind === "managed" && runtime.harness === harness.id
+            }
+            className={OPTION_CLASSES}
+            key={harness.id}
+            onClick={() => onChoose({ kind: "managed", harness: harness.id })}
+            type="button"
+          >
+            <HarnessMark id={harness.mark} name={harness.name} />
+            <span className="min-w-0">
+              <span className="block font-medium text-sm">{harness.name}</span>
+              <span className="block text-pretty text-muted-foreground text-xs">
+                {summaryFor(harness)}
+              </span>
             </span>
-          </span>
-        </button>
-      ))}
+          </button>
+        ))}
     </div>
   );
 }

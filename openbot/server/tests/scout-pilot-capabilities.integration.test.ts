@@ -8,7 +8,7 @@ import {
   test,
 } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -16,7 +16,7 @@ import {
   type BaseEvent,
   type RunAgentInput,
 } from "@ag-ui/client";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { Observable } from "rxjs";
 import { loadOwnedConfig } from "../src/config";
@@ -30,9 +30,11 @@ import {
   workItems,
 } from "../src/db/schema";
 import { scoutHistoryThreads } from "../src/db/schema/scout-history";
+import { scoutModelCalls } from "../src/db/schema/scout-model";
 import { scoutResourceScopes } from "../src/db/schema/scout-scope";
 import { parseScoutBinding } from "../src/scout/binding";
 import { createOwnedApplication } from "../src/scout/owned/application";
+import { createModelPolicyReader } from "../src/scout/owned-model/policy";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
@@ -46,6 +48,7 @@ let fixtureUsersCreated = false;
 let owned: Awaited<ReturnType<typeof createOwnedApplication>>;
 let createFixture: (
   delegatedDrafts?: boolean,
+  modelPolicyFile?: string,
 ) => ReturnType<typeof createOwnedApplication>;
 let sink: ReturnType<typeof Bun.serve>;
 let nativeSessionActive = true,
@@ -57,9 +60,11 @@ let revision = 1,
   authDispatches = 0,
   futureDispatches = 0,
   futureNetworkRequests = 0,
+  modelRequests = 0,
   runs = 0;
 const channelIds: string[] = [],
-  threadIds: string[] = [];
+  threadIds: string[] = [],
+  agentIds: string[] = [botId];
 
 const policy = () => ({
   version: 1,
@@ -193,7 +198,7 @@ beforeAll(async () => {
       role: "admin" as const,
     })),
   );
-  createFixture = (delegatedDrafts = false) =>
+  createFixture = (delegatedDrafts = false, modelPolicyFile) =>
     createOwnedApplication(
       loadOwnedConfig({
         DATABASE_URL: testDatabaseUrl(),
@@ -208,6 +213,9 @@ beforeAll(async () => {
         OPENBOT_HOST: "127.0.0.1",
         OPENBOT_GENERATIVE_UI: "false",
         SCOUT_DELEGATED_DRAFTS_ENABLED: String(delegatedDrafts),
+        ...(modelPolicyFile
+          ? { SCOUT_MODEL_POLICY_FILE: modelPolicyFile }
+          : {}),
       }),
       database,
       {
@@ -236,7 +244,39 @@ beforeAll(async () => {
           },
         },
         binding: async (actor) => parseScoutBinding(policy(), actor),
-        agents: async () => ({ [botId]: new CoreAgent() }),
+        ...(modelPolicyFile
+          ? {
+              modelFetch: Object.assign(async () => {
+                modelRequests++;
+                const packets = [
+                  {
+                    id: "synthetic-pilot",
+                    model: "synthetic-model",
+                    choices: [
+                      {
+                        index: 0,
+                        delta: { role: "assistant", content: marker },
+                        finish_reason: null,
+                      },
+                    ],
+                  },
+                  {
+                    id: "synthetic-pilot",
+                    choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+                  },
+                  {
+                    id: "synthetic-pilot",
+                    choices: [],
+                    usage: { prompt_tokens: 12, completion_tokens: 4 },
+                  },
+                ];
+                return new Response(
+                  `${packets.map((value) => `data: ${JSON.stringify(value)}\n\n`).join("")}data: [DONE]\n\n`,
+                  { headers: { "content-type": "text/event-stream" } },
+                );
+              }, fetch),
+            }
+          : { agents: async () => ({ [botId]: new CoreAgent() }) }),
       },
     );
   owned = await createFixture();
@@ -293,6 +333,7 @@ beforeEach(() => {
   authDispatches = 0;
   futureDispatches = 0;
   futureNetworkRequests = 0;
+  modelRequests = 0;
   runs = 0;
 });
 afterAll(async () => {
@@ -300,6 +341,9 @@ afterAll(async () => {
     await owned?.close();
     await sink?.stop(true);
     if (fixtureUsersCreated) {
+      await database
+        .delete(scoutModelCalls)
+        .where(eq(scoutModelCalls.deploymentId, prefix));
       if (channelIds.length)
         await database.delete(channels).where(inArray(channels.id, channelIds));
       if (threadIds.length)
@@ -309,7 +353,7 @@ afterAll(async () => {
       await database
         .delete(users)
         .where(inArray(users.id, [owner, nativeAdmin]));
-      await database.delete(agents).where(eq(agents.id, botId));
+      await database.delete(agents).where(inArray(agents.id, agentIds));
       await database
         .delete(deploymentPackages)
         .where(eq(deploymentPackages.tenantId, prefix));
@@ -346,11 +390,193 @@ describe("actual owned pilot capability boundary", () => {
       durableHistory: true,
       serverTurns: false,
     });
+    expect(await (await request("/api/agents/capabilities")).json()).toEqual({
+      capabilities: { builtInAvailable: true, remoteAvailable: false },
+    });
     expect(
       await (await request("/api/me", "GET", undefined, nativeAdmin)).json(),
     ).toMatchObject({ user: { id: nativeAdmin, role: "user" } });
     expect(futureDispatches).toBe(0);
     expect(futureNetworkRequests).toBe(0);
+  });
+
+  test("native built-in creation needs no connection probe and retains immutable scope without an automatic model grant", async () => {
+    const modelPolicyFile = join(directory, "synthetic-built-in-policy.json");
+    const modelPolicy = JSON.stringify({
+      version: 1,
+      deploymentId: prefix,
+      globalMaxConcurrent: 1,
+      globalMaxCallsPerDay: 10,
+      bindings: [
+        {
+          userId: owner,
+          tenantId: "tenant-a",
+          revision: 1,
+          active: true,
+          expiresAt: "2099-01-01T00:00:00Z",
+          agentIds: [botId],
+          allowConversationContext: true,
+          allowPersonalInstructions: false,
+          route: {
+            provider: "local",
+            model: "synthetic-model",
+            baseUrl: "http://127.0.0.1:1/v1",
+          },
+          limits: {
+            maxInputBytes: 65536,
+            maxOutputTokens: 32,
+            maxOutputBytes: 4096,
+            maxCallsPerRun: 1,
+            maxCallsPerDay: 10,
+            maxConcurrent: 1,
+            timeoutMs: 3000,
+          },
+        },
+      ],
+    });
+    await writeFile(modelPolicyFile, modelPolicy, { mode: 0o600 });
+    const modeled = await createFixture(false, modelPolicyFile);
+    const call = (
+      path: string,
+      method = "GET",
+      body?: unknown,
+      userId = owner,
+    ) =>
+      modeled.app.request(path, {
+        method,
+        headers: {
+          "x-synthetic-session": userId,
+          "content-type": "application/json",
+          "x-tenant-id": "tenant-b",
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    const run = async (agentId: string) => {
+      const minted = await call("/api/threads/mint", "POST", { agentId });
+      expect(minted.status).toBe(200);
+      const { threadId } = (await minted.json()) as { threadId: string };
+      threadIds.push(threadId);
+      const response = await call(
+        `/api/copilotkit/agent/${agentId}/run`,
+        "POST",
+        input(threadId),
+      );
+      expect(response.status).toBe(200);
+      return response.text();
+    };
+    const body = {
+      name: "Synthetic owned Bot",
+      title: "Fixture",
+      roleDescription: "Synthetic instruction only.",
+      visibility: "private",
+      endpoint: "",
+      tenantId: "tenant-b",
+      ownerUserId: nativeAdmin,
+    };
+    try {
+      // This composition uses the real protected model port rather than the CoreAgent test seam.
+      expect(await run(botId)).toContain(marker);
+      expect(modelRequests).toBe(1);
+      const created = await call("/api/agents", "POST", body);
+      expect(created.status).toBe(201);
+      const { agent } = (await created.json()) as {
+        agent: { id: string; builtIn: boolean };
+      };
+      agentIds.push(agent.id);
+      expect(agent.builtIn).toBe(true);
+      expect(modelRequests).toBe(1);
+      expect(
+        await database.select().from(agents).where(eq(agents.id, agent.id)),
+      ).toMatchObject([
+        {
+          type: "built_in",
+          packageId: null,
+          configuration: { systemPrompt: body.roleDescription },
+        },
+      ]);
+      const ownership = () =>
+        database
+          .select({
+            deploymentId: scoutResourceScopes.deploymentId,
+            tenantId: scoutResourceScopes.tenantId,
+            scopeKind: scoutResourceScopes.scopeKind,
+          })
+          .from(scoutResourceScopes)
+          .where(
+            and(
+              eq(scoutResourceScopes.resourceKind, "agent"),
+              eq(scoutResourceScopes.resourceId, agent.id),
+            ),
+          );
+      const originalScope = await ownership();
+      expect(originalScope).toEqual([
+        { deploymentId: prefix, tenantId: "tenant-a", scopeKind: "tenant" },
+      ]);
+      const restored = await call(`/api/agents/${agent.id}`);
+      expect(restored.status).toBe(200);
+      expect(await restored.json()).toMatchObject({
+        agent: { id: agent.id, builtIn: true },
+      });
+      expect(
+        (await call(`/api/agents/${agent.id}`, "GET", undefined, nativeAdmin))
+          .status,
+      ).toBe(404);
+      expect(
+        (
+          await call(`/api/agents/${agent.id}`, "PATCH", {
+            ...body,
+            visibility: "public",
+          })
+        ).status,
+      ).toBe(200);
+      // Public native visibility still intersects the immutable tenant grant.
+      expect(
+        (await call(`/api/agents/${agent.id}`, "GET", undefined, nativeAdmin))
+          .status,
+      ).toBe(404);
+      const denied = await run(agent.id);
+      // The public history stream masks the internal policy error and never reports completion.
+      expect(denied).toContain('"type":"RUN_ERROR"');
+      expect(denied).toContain('"code":"INCOMPLETE_STREAM"');
+      expect(denied).not.toContain('"type":"RUN_FINISHED"');
+      expect(denied).not.toContain(marker);
+      expect(modelRequests).toBe(1);
+      expect(await readFile(modelPolicyFile, "utf8")).toBe(modelPolicy);
+      await expect(
+        createModelPolicyReader(modelPolicyFile)({
+          userId: owner,
+          tenantId: "tenant-a",
+          deploymentId: prefix,
+          agentId: agent.id,
+        }),
+      ).rejects.toThrow("MODEL_ACCESS_DENIED");
+      expect(
+        await database
+          .select({ id: scoutModelCalls.id })
+          .from(scoutModelCalls)
+          .where(eq(scoutModelCalls.agentId, agent.id)),
+      ).toHaveLength(0);
+      ownerTenant = "tenant-b";
+      revision++;
+      expect((await call(`/api/agents/${agent.id}`)).status).toBe(404);
+      expect(
+        (await call(`/api/agents/${agent.id}`, "PATCH", body)).status,
+      ).toBe(404);
+      expect((await call(`/api/agents/${agent.id}`, "DELETE")).status).toBe(
+        404,
+      );
+      expect(await ownership()).toEqual(originalScope);
+      ownerTenant = "tenant-a";
+      revision++;
+      expect((await call(`/api/agents/${agent.id}`)).status).toBe(200);
+      await unavailable("/api/agents/test-connection", "POST", {
+        endpoint: "https://synthetic-agent.fixture.invalid",
+      });
+      expect(futureDispatches).toBe(0);
+      expect(futureNetworkRequests).toBe(0);
+    } finally {
+      await modeled.close();
+    }
   });
 
   test("delegated drafts stay unavailable by default and opt-in preserves protected native admission", async () => {

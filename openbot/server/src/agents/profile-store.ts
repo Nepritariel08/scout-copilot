@@ -162,6 +162,7 @@ const joinedProjection = {
   deletedAt: agentProfiles.deletedAt,
   /* The hash, only so a surface can say whether one exists. It never leaves this module. */
   callbackTokenHash: agentProfiles.callbackTokenHash,
+  type: agents.type,
   configuration: agents.configuration,
 };
 
@@ -215,6 +216,8 @@ function mapProfile(
     assignedToMe: Boolean(row.assignedToMe),
     deletedAt: row.deletedAt,
     endpoint: endpointOf(row.configuration),
+    nativeBuiltIn:
+      row.type === "built_in" && systemPromptOf(row.configuration) !== null,
     // Whether a key is set, never which. The form needs to show "a key is set" so a person does not
     // wipe one by saving an unrelated edit; showing the value would put a secret in a screenshot.
     hasAuth: authFromConfiguration(row.configuration) !== null,

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "recordedAt": "2026-11-01T04:19:46.494Z",
+  "recordedAt": "2026-11-01T04:41:31.934Z",
   "branch": "scout/pilot-capabilities-20261101",
   "base": "30472ae6281a8066270784f77171ee144369b6e1",
   "runtime": {
@@ -22,15 +22,21 @@
     "tmpfsMiB": 512,
     "fullPlatformMigrationsApplied": true,
     "migrationsThrough": "0071_scout_tenant_scope",
-    "finalStatus": "exited",
-    "exitCode": 0,
+    "finalStatus": "retained-running-for-isolated-auth0-qualification",
+    "exitCode": null,
     "oomKilled": false,
-    "boundedWslHelperExited": 0,
-    "recoveredTransportFailure": "Initial inline cross-shell helper ended early and stopped fixture (137/OOMfalse), so SQL suites could not connect. Replaced with literal LF script and bounded helper28424, reapplied migrations, verified readiness and reran successfully. No source failure inferred from unavailable transport."
+    "boundedWslHelperExited": null,
+    "recoveredTransportFailure": "Initial inline cross-shell helper ended early and stopped fixture (137/OOMfalse), so SQL suites could not connect. Replaced with literal LF script and bounded helper28424, reapplied migrations, verified readiness and reran successfully. No source failure inferred from unavailable transport.",
+    "priorStoppedReadback": {
+      "exitCode": 0,
+      "oomKilled": false,
+      "boundedWslHelperExited": 0
+    },
+    "retainedBy": "Root synthetic fixture owner; same exact bounded helper17116, only isolated Auth0 native-signin source tests. Final cleanup readback will be in primary checkpoint; no host/device deployment."
   },
   "passed": {
-    "uniqueFocusedTests": 212,
-    "uniqueFocusedFiles": 19,
+    "uniqueFocusedTests": 314,
+    "uniqueFocusedFiles": 24,
     "combinedAttempt": {
       "passed": 211,
       "failed": 1,
@@ -56,18 +62,54 @@
       "files": 4,
       "assertions": 594
     },
-    "note": "Counts overlap. All212 distinct cases qualified after the corrected native-app rerun; no all-green combined rerun claimed.",
+    "note": "Counts overlap. Initial212qualifiedcases plus102newly covered existing/new UI/profile cases give314distinct cases across24files, using the recorded split runs. Source correction qualified without a full local combined rerun; fresh exact-head CI is separate.",
     "serverProductionTypecheck": true,
     "appProductionTypecheck": true,
     "testProjectBaseline": {
-      "existingDiagnostics": 236,
+      "existingDiagnostics": 234,
       "newDiagnostics": 0,
-      "removedDiagnostics": 0,
+      "removedObsoleteDiagnostics": 2,
       "windowsPathsNormalized": true
     },
-    "scopedBiomeFiles": 12,
+    "scopedBiomeFiles": 22,
     "dependencyChanges": false,
-    "schemaChanges": false
+    "schemaChanges": false,
+    "nativeBotUiCorrection": {
+      "actualOwnedApp": {
+        "passed": 13,
+        "assertions": 823,
+        "includesOriginal12": true
+      },
+      "agentRouteUnit": {
+        "passed": 52,
+        "assertions": 167
+      },
+      "nativeProfileSql": {
+        "passed": 26,
+        "assertions": 103
+      },
+      "agentQueryAndNewBotUi": {
+        "passed": 17,
+        "assertions": 59
+      },
+      "serverProductionTypecheck": true,
+      "appProductionTypecheck": true,
+      "testProjectBaseline": {
+        "existingDiagnostics": 234,
+        "newDiagnostics": 0,
+        "removedObsoleteDiagnostics": 2
+      },
+      "note": "These108cases overlap12original admission cases. All308distinct cases qualified across split runs; no single all-green aggregate run claimed. First13-case attempt passed original12 but used an internal MODEL_ACCESS_DENIED SSE expectation; corrected to public RUN_ERROR/INCOMPLETE_STREAM while separately asserting protected model-policy denial, no provider dispatch, no new receipt or grant.",
+      "profileFixtureRepair": {
+        "passed": 58,
+        "assertions": 204,
+        "files": 2,
+        "overlapsAgentRoute52": true,
+        "policyCasesAdded": 6,
+        "existingDiagnosticsFixed": 2,
+        "note": "Completed two pre-existing incomplete profile fixtures; exact DTO expectation now includes endpoint/credential booleans. Firstrepairrun57pass/1staleDTOexpectation, correctedfinal58pass. No runtime/default privilege change."
+      }
+    }
   },
   "qualification": {
     "exactMethodAndPathApiAdmission": true,
@@ -84,12 +126,18 @@
     "ownedMissingCapabilityDeniesAndLicensedCompatibilityRetained": true,
     "directOnlyFirstDayWithoutNativeQueue": true,
     "unavailableModelErrorContractRetained": true,
-    "privatePilotDeploymentPacketPrepared": true
+    "privatePilotDeploymentPacketPrepared": true,
+    "nativeBotCreationUiAvailable": true,
+    "ownedRemoteChoicesHidden": true,
+    "nativeBuiltInPresentationFromStoredProof": true,
+    "newBotDoesNotGrantModelAccess": true,
+    "licensedAgentCapabilityDefaultsRetained": true
   },
   "corrections": [
     "Preserved existing MODEL_ROUTE_UNAVAILABLE response while adding capability admission; model13cases passed.",
     "Independent raw-request and real-HTTP tests found Hono decoded an encoded capabilities path before late admission. Moved admission ahead of public/auth/feature registration;12cases passed.",
-    "Disabled delegation now returns503 before auth/dispatch. Existing native-app regression still checks401 on admitted core routes and403 on current membership loss."
+    "Disabled delegation now returns503 before auth/dispatch. Existing native-app regression still checks401 on admitted core routes and403 on current membership loss.",
+    "Independent review caught built-in creation disabled when the owned composition has no managed endpoint. Owned capability projection now enables native creation and hides remote creation choices. Stored built_in+valid prompt controls its owned-only builtIn presentation, with no raw configuration/internal flag in JSON."
   ],
   "infrastructure": {
     "target": "Existing8GB/4vCPU Linode; no resize",
@@ -109,20 +157,42 @@
   ],
   "sourceHashNormalization": "UTF-8 text, CRLF normalized to LF; receipt excludes itself; exact tested head recorded in PR",
   "sourceHashes": {
+    "openbot/app/src/components/agents/new-bot-sheet.tsx": "f05b8ae3e16fc0551bbc60de7dd9ffd8e2db84d3c1c866a87ee4745ae489046c",
     "openbot/app/src/components/scout/drafts.tsx": "69d53c137bf0cd5ee3eb2874c76d434b9abb895d2e4f4c7caf099c76c380c8af",
+    "openbot/app/src/lib/agents/queries.ts": "5522cc6155aff535618df381674bbd0615d92e04c60b87124777ee1f2c9f2290",
     "openbot/app/src/lib/deployment/queries.ts": "e268d33181f24a4a6bb9911adbddc0cca27ec4ea3fc0729fccd7a4b2114f4b67",
+    "openbot/app/tests/agents.test.ts": "59a80605e3ad5cdcc3f5da7e50c728ea03450622b3500e58e7075ffea0307c52",
+    "openbot/app/tests/new-bot-sheet.test.tsx": "775acdd98538356a88fa1ec9ea83cf8c2861e8913880c0f62a73378aff27e443",
     "openbot/app/tests/scout-delegation-capabilities.test.ts": "22fba63444026ab140b2588d047b96dbd33c0952231492c52e1284e440a3b8d3",
     "openbot/app/tests/scout-drafts.test.tsx": "30fb69758063c3dd345fda57a9c52f7b7496738ee5e1d185aa1cd908fea5ecf9",
-    "openbot/server/src/app.ts": "f2f96b0afb28b66c3897dd2c7263e68733bdbde45ea0bc7b86c7a5fb8386405a",
+    "openbot/server/src/agents/profile-store.ts": "dc3c297aaf806a709220dfb92c9585936bf3ce331378d34174fcb89efd996bb0",
+    "openbot/server/src/agents/profile-types.ts": "ad52d67147359405d97f9a0945bc26e16a705020f850bc2f48c53914d08bca28",
+    "openbot/server/src/agents/routes.ts": "bd03cec72a7db8d734aff51f56fe95cc440a5afa718b8f911e84a74e9375cde0",
+    "openbot/server/src/app.ts": "307aa11ccc3575696130fcd347b2c453364ccb1dad099945fab04a2fdb84566d",
     "openbot/server/src/config.ts": "7eff60d85072503d349d9bd2e8eb76d4dcae39b4253f4da291805720d599c24c",
     "openbot/server/src/scout/owned/application.ts": "3e341bedc20db75b30ca69c43c62c90a11c056b1f1f4314a5b3ee2c7ccdcb60a",
     "openbot/server/src/scout/owned/capabilities.ts": "38311d9e28b15cf6ea9cf58bdfb2b35f5f1f41e3d6e389128792131d3ccd81ec",
+    "openbot/server/tests/agent-profile-policy.test.ts": "dc30b0e0b3fc3aca3705ec5078288a5a166a236cfa8110bb791d2b41dc7a3c87",
+    "openbot/server/tests/agent-profile-store.integration.test.ts": "ad4b1c7ee3b366b0234240ab0fa32898e3a9ec1402f4412bb7ede109be698116",
+    "openbot/server/tests/agent-routes.test.ts": "48077b0720cce561df2af731fad6adda657623cb9ac6fed055128763ee100e28",
     "openbot/server/tests/scout-owned-app.integration.test.ts": "841bc4a897b07c6bc710e898cdca79f4add178492ae16599c54d595d78730c02",
     "openbot/server/tests/scout-owned-capabilities.test.ts": "a337d3fdd3ffe4445f875ca7e2363c841ecfa43fd45761189007af4c8cae3c1f",
     "openbot/server/tests/scout-owned-config.test.ts": "f4ff41a44b2f6919aee3fb44b63df094570c2b84016a51f532b3a2fc606ce764",
-    "openbot/server/tests/scout-pilot-capabilities.integration.test.ts": "7293324f215fad7dfc08e90e4efac023d2ca1a453650a9c213ee79c23524a859",
+    "openbot/server/tests/scout-pilot-capabilities.integration.test.ts": "0fea634df1b73c9f0491ed8fe6612b99f4b1140941b613fc7714cdce740c9f08",
+    "openbot/server/tests/typecheck-baseline.txt": "8b3d1c1601a58fd712d508b545dc68f4bdac77761549e3cb495e533b50bb4286",
     "scout/OWNED-RUNTIME.md": "ef04b9cf27291eff83ad5c8450fb3a030f6676f54522cb3174865dd943cfd656",
     "scout/PRIVATE-PILOT-DEPLOYMENT.md": "d68fed6c766420c811e8e4698107840b8daec0d9a47a0eb1f3134415bd154c81",
     "scout/owned.env.example": "213a0bdf5d8544e758c82cb52dc5ab6c2200e39af80390e023cd1ec8e51fd1d4"
+  },
+  "previousCi": {
+    "head": "5f49c8cda6d3acd2e1c02d62dd5761a97cbe0636",
+    "run": 41272856081,
+    "conclusion": "success",
+    "passed": 10333,
+    "skipped": 75,
+    "failed": 0,
+    "assertions": 38593,
+    "files": 839,
+    "note": "Initial PR6 head only. This later UI correction requires its own exact-head CI."
   }
 }

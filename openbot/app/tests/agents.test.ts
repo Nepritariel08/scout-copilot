@@ -1,7 +1,42 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { QueryClient } from "@tanstack/react-query";
 import { agentFormSchema } from "@/lib/agents/form";
-import { agentKeys } from "@/lib/agents/queries";
+import { agentCapabilitiesQueryOptions, agentKeys } from "@/lib/agents/queries";
 import { channelKeys } from "@/lib/channels/queries";
+
+const originalFetch = globalThis.fetch;
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
+
+describe("coworker creation capabilities", () => {
+  test.each([undefined, true, false])(
+    "normalizes remote creation capability %p without changing built-in availability",
+    async (remoteAvailable) => {
+      globalThis.fetch = Object.assign(
+        async () =>
+          Response.json({
+            capabilities: {
+              builtInAvailable: true,
+              ...(remoteAvailable === undefined ? {} : { remoteAvailable }),
+            },
+          }),
+        { preconnect: originalFetch.preconnect },
+      );
+      const cache = new QueryClient();
+      try {
+        expect(await cache.fetchQuery(agentCapabilitiesQueryOptions())).toEqual(
+          {
+            builtInAvailable: true,
+            remoteAvailable: remoteAvailable !== false,
+          },
+        );
+      } finally {
+        cache.clear();
+      }
+    },
+  );
+});
 
 describe("coworker query keys", () => {
   test("separates the visible roster from the hidden one", () => {

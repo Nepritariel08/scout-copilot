@@ -21,6 +21,8 @@ export type AgentProfile = {
   deletedAt: Date | null;
   /** Where this coworker runs. Null for the Bot in the box. */
   endpoint: string | null;
+  /** Server-only proof of a native built-in type with a usable stored system prompt. */
+  nativeBuiltIn?: boolean;
   /** Whether a key is set for it. Never the key. */
   hasAuth: boolean;
   /**

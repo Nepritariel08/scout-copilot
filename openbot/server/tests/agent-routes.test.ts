@@ -45,6 +45,9 @@ function profile(overrides: Partial<AgentProfile> = {}): AgentProfile {
     hidden: false,
     pinned: false,
     deletedAt: null,
+    endpoint: null,
+    hasAuth: false,
+    hasCallbackToken: false,
     ...overrides,
   };
 }
@@ -218,6 +221,99 @@ describe("agent input parser", () => {
 });
 
 describe("agent lifecycle routes", () => {
+  test("preserves the legacy creation projection and reports explicit composition choices", async () => {
+    const legacy = await appFor(fakeStore()).request("/capabilities");
+    expect(await legacy.json()).toEqual({
+      capabilities: { builtInAvailable: false },
+    });
+    for (const remoteAvailable of [false, true]) {
+      const store = fakeStore();
+      const routes = createAgentRoutes(
+        store,
+        requireUser,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        undefined,
+        undefined,
+        undefined,
+        { remoteAvailable },
+      );
+      const response = await routes.request("/capabilities");
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        capabilities: { builtInAvailable: true, remoteAvailable },
+      });
+      expect(store.calls).toEqual([]);
+    }
+  });
+
+  test("only the owned presentation uses native built-in proof and preserves the public DTO shape", async () => {
+    const managedEndpoint = "https://managed.example.test/ag-ui";
+    const profiles = [
+      profile({ id: "native", endpoint: null, nativeBuiltIn: true }),
+      profile({ id: "remote-missing", endpoint: null, nativeBuiltIn: false }),
+      profile({ id: "unknown", endpoint: null }),
+      profile({
+        id: "managed",
+        endpoint: managedEndpoint,
+        nativeBuiltIn: false,
+      }),
+      profile({
+        id: "remote",
+        endpoint: "https://remote.example.test/ag-ui",
+        nativeBuiltIn: false,
+      }),
+    ];
+    const payloads = [];
+    for (const options of [
+      {},
+      { ownedNativeBuiltIn: false },
+      { ownedNativeBuiltIn: true },
+    ]) {
+      const routes = createAgentRoutes(
+        fakeStore({
+          async list() {
+            return profiles;
+          },
+        }),
+        requireUser,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        managedEndpoint,
+        undefined,
+        undefined,
+        options,
+      );
+      const response = await routes.request("/");
+      expect(response.status).toBe(200);
+      const { agents } = (await response.json()) as {
+        agents: Record<string, unknown>[];
+      };
+      expect(agents.map((agent) => agent.builtIn)).toEqual([
+        options.ownedNativeBuiltIn === true,
+        false,
+        false,
+        true,
+        false,
+      ]);
+      for (const agent of agents) {
+        expect(agent).not.toHaveProperty("nativeBuiltIn");
+        expect(agent).not.toHaveProperty("type");
+        expect(agent).not.toHaveProperty("configuration");
+        expect(agent).not.toHaveProperty("systemPrompt");
+      }
+      payloads.push(agents.map((agent) => ({ ...agent, builtIn: false })));
+    }
+    expect(payloads[1]).toEqual(payloads[0]);
+    expect(payloads[2]).toEqual(payloads[0]);
+  });
+
   test("attaches authentication middleware to every route before calling the store", async () => {
     const store = fakeStore();
     const denied: MiddlewareHandler<{ Variables: AppVariables }> = (context) =>
@@ -375,6 +471,9 @@ describe("agent lifecycle routes", () => {
           canManage: true,
           mine: true,
           builtIn: false,
+          endpoint: null,
+          hasAuth: false,
+          hasCallbackToken: false,
         },
         {
           id: "agent-2",
@@ -390,6 +489,9 @@ describe("agent lifecycle routes", () => {
           canManage: false,
           mine: false,
           builtIn: false,
+          endpoint: null,
+          hasAuth: false,
+          hasCallbackToken: false,
         },
         {
           id: "system-agent",
@@ -405,6 +507,9 @@ describe("agent lifecycle routes", () => {
           canManage: false,
           mine: false,
           builtIn: false,
+          endpoint: null,
+          hasAuth: false,
+          hasCallbackToken: false,
         },
       ],
     });
