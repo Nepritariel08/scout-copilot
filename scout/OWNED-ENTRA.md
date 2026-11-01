@@ -44,6 +44,14 @@ The incomplete [owned environment overlay](owned.env.example) uses:
 | `TRUSTED_ORIGINS` | Exact approved browser origin; no wildcard. |
 | `INITIAL_ADMIN_EMAILS` | Exact locally provisioned admin contact address. This is a role-seeding setting, not an identity key. |
 
+The standalone Scout mobile client uses `scoutmobile://` for its native Entra
+callback. Set `SCOUT_NATIVE_AUTH_ENABLED=true` on the server to enable that
+Better Auth Expo callback without creating an EAS project or enabling push.
+This setting only trusts the narrow Scout callback scheme. It does not resolve
+or authorize the currently unverified public HTTPS route; verify that route and
+the exact Entra web callback before enabling live sign-in. Existing OpenBot Expo
+deployments continue to use `EXPO_PROJECT_ID` for `openbotmobile://` and push.
+
 ## Identity and enrollment
 
 Owned Scout uses Better Auth 1.7.1's tenant-specific `microsoftEntraId` generic

@@ -29,19 +29,57 @@ async function sendsSessionTo(auth: ReturnType<typeof createAuth>) {
   const expoLoaded = (auth.options.plugins ?? []).some(
     (plugin) => plugin.id === "expo",
   );
-  return expoLoaded && context.isTrustedOrigin("openbotmobile://");
+  return {
+    expoLoaded,
+    openbot: expoLoaded && context.isTrustedOrigin("openbotmobile://"),
+    scout: expoLoaded && context.isTrustedOrigin("scoutmobile://"),
+  };
 }
 afterEach(() => {
   delete process.env.EXPO_PROJECT_ID;
+  delete process.env.SCOUT_NATIVE_AUTH_ENABLED;
 });
 afterAll(async () => {
   await database.$client.end({ timeout: 5 });
 });
 
-test("without the native app, no sign-in redirect carries a session to the app's scheme", async () => {
-  expect(await sendsSessionTo(createAuth(config, database))).toBe(false);
+test("without the native app, no sign-in redirect carries a session to an app scheme", async () => {
+  expect(await sendsSessionTo(createAuth(config, database))).toEqual({
+    expoLoaded: false,
+    openbot: false,
+    scout: false,
+  });
 });
-test("a deployment that runs the native app still lets it sign in", async () => {
+test("an existing Expo deployment keeps its project-ID gated OpenBot callback", async () => {
   process.env.EXPO_PROJECT_ID = "0b6c3a0e-2a5e-4a4c-9d5a-2f3b8f0c1d2e";
-  expect(await sendsSessionTo(createAuth(config, database))).toBe(true);
+  expect(await sendsSessionTo(createAuth(config, database))).toEqual({
+    expoLoaded: true,
+    openbot: true,
+    scout: false,
+  });
+});
+test("Scout explicitly enables only its own native callback without an EAS project", async () => {
+  process.env.SCOUT_NATIVE_AUTH_ENABLED = "true";
+  expect(await sendsSessionTo(createAuth(config, database))).toEqual({
+    expoLoaded: true,
+    openbot: false,
+    scout: true,
+  });
+});
+test("Scout auth opt-in preserves an existing Expo deployment callback", async () => {
+  process.env.SCOUT_NATIVE_AUTH_ENABLED = "true";
+  process.env.EXPO_PROJECT_ID = "0b6c3a0e-2a5e-4a4c-9d5a-2f3b8f0c1d2e";
+  expect(await sendsSessionTo(createAuth(config, database))).toEqual({
+    expoLoaded: true,
+    openbot: true,
+    scout: true,
+  });
+});
+test("Scout native callback opt-in requires the exact true value", async () => {
+  process.env.SCOUT_NATIVE_AUTH_ENABLED = "1";
+  expect(await sendsSessionTo(createAuth(config, database))).toEqual({
+    expoLoaded: false,
+    openbot: false,
+    scout: false,
+  });
 });
