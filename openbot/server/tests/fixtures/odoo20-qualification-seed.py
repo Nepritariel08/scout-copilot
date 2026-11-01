@@ -39,7 +39,7 @@ def make_user(login, groups, allowed_companies):
             "password": secrets.token_urlsafe(32),
             "company_id": main_company.id,
             "company_ids": [Command.set([company.id for company in allowed_companies])],
-            "groups_id": [Command.set(groups)],
+            "group_ids": [Command.set(groups)],
         }
     )
 

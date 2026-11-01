@@ -8,6 +8,7 @@ private_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/scout-odoo20-qualification.XXXXXX
 suffix="$(openssl rand -hex 8)"
 network="scout-odoo20-$suffix"
 pg_name="scout-odoo20-pg-$suffix"
+init_name="scout-odoo20-init-$suffix"
 seed_name="scout-odoo20-seed-$suffix"
 app_name="scout-odoo20-app-$suffix"
 database="scout_qualification"
@@ -17,7 +18,7 @@ odoo_image="odoo:20.0-20261015@sha256:d5e3a26baa044867c826dddc09058f10e2582706bf
 postgres_image="postgres:16.10-bookworm@sha256:38471f330eb885e04de130b768d6db4e10469e2311879c7e5c699f6d2d8a1c74"
 
 cleanup() {
-  docker rm -f "$app_name" "$seed_name" "$pg_name" >/dev/null 2>&1 || true
+  docker rm -fv "$app_name" "$seed_name" "$init_name" "$pg_name" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
   rm -rf -- "$private_dir"
 }
@@ -48,16 +49,22 @@ if [[ "$pg_ready" != true ]]; then
   fail_step postgres-readiness 1
 fi
 
-if ! docker run --platform linux/amd64 --rm --network "$network" \
+if ! docker create --platform linux/amd64 --name "$init_name" --network "$network" \
+  --env HOST=pg --env PORT=5432 --env USER=odoo --env "PASSWORD=$pg_password" \
   "$odoo_image" -d "$database" --init=base,project,portal --without-demo=all \
   --stop-after-init --workers=0 --max-cron-threads=0 \
   --db_host=pg --db_port=5432 --db_user=odoo --db_password="$pg_password" \
-  >"$private_dir/odoo-init.log" 2>&1; then
+  >/dev/null; then
   fail_step database-initialization 1
 fi
+if ! docker start --attach "$init_name" >"$private_dir/odoo-init.log" 2>&1; then
+  fail_step database-initialization 1
+fi
+docker rm -fv "$init_name" >/dev/null
 
 if ! docker create --platform linux/amd64 --name "$seed_name" --network "$network" \
-  "$odoo_image" shell -d "$database" --no-http --db_host=pg --db_port=5432 \
+  --env HOST=pg --env PORT=5432 --env USER=odoo --env "PASSWORD=$pg_password" \
+  "$odoo_image" odoo shell -d "$database" --no-http --db_host=pg --db_port=5432 \
   --db_user=odoo --db_password="$pg_password" >/dev/null; then
   fail_step seed-container-create 1
 fi
@@ -73,10 +80,10 @@ if ! docker cp "$seed_name:/tmp/scout-odoo20-qualification/credentials.json" \
   fail_step fixture-readback 1
 fi
 chmod 600 "$private_dir/fixture/credentials.json" "$private_dir/fixture/metadata.json"
-docker rm "$seed_name" >/dev/null
+docker rm -fv "$seed_name" >/dev/null
 
 docker run --platform linux/amd64 --detach --name "$app_name" --network "$network" \
-  --publish 127.0.0.1::8069 --env HOST=pg --env USER=odoo \
+  --publish 127.0.0.1::8069 --env HOST=pg --env PORT=5432 --env USER=odoo \
   --env PASSWORD="$pg_password" "$odoo_image" -d "$database" \
   --db_host=pg --db_port=5432 --db_user=odoo --db_password="$pg_password" \
   --db-filter="^${database}$" --no-database-list --workers=0 \

@@ -40,7 +40,8 @@ artifacts. Docker resources use generated unique names on the hosted runner;
 PostgreSQL is reachable only on the runner's private container network. The
 Odoo HTTP port binds to loopback on a random port. Setup/readiness polling and
 the job have finite time limits. A cleanup trap removes only the generated
-containers, network, and private temporary directory.
+named containers and their anonymous volumes, the private network, and the
+private temporary directory; it does not prune unrelated Docker resources.
 
 The seed generates all Odoo API keys at runtime inside the disposable database.
 Key material is copied only into a mode-0600 temporary directory, read by the
