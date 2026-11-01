@@ -1582,9 +1582,9 @@ export function createApp(
               canHandOn: (agentId) => pluginStore.agentCanHandOn(agentId),
             }
           : undefined,
-        // Whether "built-in" is a kind of coworker this deployment can actually make: the create
-        // path falls back to the managed Bot's endpoint, so without one it can only refuse.
-        config.managedAgent?.endpoint !== undefined,
+        // Owned mode creates native built-in Bots; the licensed composition uses its managed Bot.
+        coworker?.scoutOwned !== undefined ||
+          config.managedAgent?.endpoint !== undefined,
         // The managed Bot's address, so a coworker created without an endpoint — which creation
         // stores as running at this address — can be told apart from one a person hosts.
         config.managedAgent?.endpoint?.toString(),
@@ -1599,6 +1599,9 @@ export function createApp(
                 config.managedAgent.alsoRun,
               ].filter((url): url is URL => url !== undefined),
             }
+          : undefined,
+        coworker?.scoutOwned
+          ? { remoteAvailable: false, ownedNativeBuiltIn: true }
           : undefined,
       ),
     );

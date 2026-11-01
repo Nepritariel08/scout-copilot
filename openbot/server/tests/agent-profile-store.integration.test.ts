@@ -100,6 +100,7 @@ async function createProfileFixture(options: {
   title?: string;
   roleDescription?: string;
   avatarSeed?: string;
+  type?: "built_in" | "remote_ag_ui" | "remote_mastra";
   configuration?: Record<string, unknown>;
 }) {
   const agentId = id("seed-agent");
@@ -110,7 +111,7 @@ async function createProfileFixture(options: {
   await database.insert(agents).values({
     id: agentId,
     name,
-    type: "remote_ag_ui",
+    type: options.type ?? "remote_ag_ui",
     configuration: options.configuration ?? {
       endpoint: "https://seed.example.test/ag-ui",
     },
@@ -290,6 +291,40 @@ describe("agent profile store integration", () => {
     );
     // No address was given and none was invented; that is what makes it built_in rather than remote.
     expect(row.configuration.endpoint).toBeUndefined();
+    expect(created.endpoint).toBeNull();
+    expect(created.nativeBuiltIn).toBe(true);
+    expect((await withoutManaged.get(owner, created.id))?.nativeBuiltIn).toBe(
+      true,
+    );
+    expect(
+      (await withoutManaged.list(owner)).find(
+        (agent) => agent.id === created.id,
+      )?.nativeBuiltIn,
+    ).toBe(true);
+  });
+
+  test("a missing endpoint does not prove a usable native built-in coworker", async () => {
+    const owner = await createUser();
+    for (const [type, configuration] of [
+      ["remote_ag_ui", {}],
+      [
+        "remote_ag_ui",
+        {
+          systemPrompt: "A remote row cannot become local through its prompt.",
+        },
+      ],
+      ["built_in", { systemPrompt: "  \n\t " }],
+      ["built_in", { systemPrompt: 42 }],
+    ] as const) {
+      const fixture = await createProfileFixture({
+        owner,
+        type,
+        configuration,
+      });
+      const received = await profileById(owner, fixture.agentId);
+      expect(received.endpoint).toBeNull();
+      expect(received.nativeBuiltIn).toBe(false);
+    }
   });
 
   test("an edit moves the instruction such a coworker actually runs on", async () => {

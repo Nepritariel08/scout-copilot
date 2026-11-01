@@ -51,6 +51,7 @@ afterAll(async () => {
 
 const originalFetch = global.fetch;
 let builtInAvailable = true;
+let remoteAvailable: boolean | undefined;
 /** What the server says when asked to reach an address. */
 let verdict: { ok: true; events: string[] } | { ok: false; reason: string };
 /** Every create sent, with its body. */
@@ -60,6 +61,7 @@ let dialled: string[] = [];
 
 beforeEach(() => {
   builtInAvailable = true;
+  remoteAvailable = undefined;
   verdict = { ok: true, events: ["RUN_STARTED"] };
   creates = [];
   dialled = [];
@@ -67,7 +69,12 @@ beforeEach(() => {
     async (path: Parameters<typeof fetch>[0], init?: RequestInit) => {
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
       if (path === "/api/agents/capabilities") {
-        return Response.json({ capabilities: { builtInAvailable } });
+        return Response.json({
+          capabilities: {
+            builtInAvailable,
+            ...(remoteAvailable === undefined ? {} : { remoteAvailable }),
+          },
+        });
       }
       if (path === "/api/agents/test-connection") {
         dialled.push(body.endpoint);
@@ -177,6 +184,32 @@ test("Run it here goes straight to the name, and Create waits for one", async ()
   expect(create.hasAttribute("disabled")).toBe(true);
   await user.type(name, "Expense Review");
   expect(create.hasAttribute("disabled")).toBe(false);
+  expect(dialled).toEqual([]);
+});
+
+test("owned creation keeps Run it here and creates without offering or probing remote agents", async () => {
+  remoteAvailable = false;
+  const { view, user } = await opened();
+  await settle();
+  const runHere = view.getByRole("button", { name: /Run it here/ });
+  expect(runHere.hasAttribute("disabled")).toBe(false);
+  expect(runHere.getAttribute("aria-pressed")).toBe("true");
+  expect(view.queryByText("or connect one you run")).toBeNull();
+  for (const framework of ["Claude Agent SDK", "Google ADK", "LangGraph"])
+    expect(
+      view.queryByRole("button", { name: new RegExp(framework) }),
+    ).toBeNull();
+
+  await user.click(view.getByRole("button", { name: "Continue" }));
+  await user.type(await view.findByLabelText("Name"), "Owned assistant");
+  await user.click(view.getByRole("button", { name: "Create" }));
+  expect(await view.findByText("Owned assistant is ready")).toBeTruthy();
+  expect(creates).toHaveLength(1);
+  expect(creates[0]).toMatchObject({
+    name: "Owned assistant",
+    visibility: "private",
+    endpoint: "",
+  });
   expect(dialled).toEqual([]);
 });
 
