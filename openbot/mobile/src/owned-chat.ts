@@ -32,6 +32,46 @@ export function clearForIdentityChange<T>(
   return userId && data?.userId === userId ? data : undefined;
 }
 
+/**
+ * Return whether a failed turn's user message is in a successfully refreshed transcript.
+ * `undefined` means the transcript could not be read, so restoring a draft could duplicate it.
+ */
+export function userMessagePersisted(
+  previousHistory: readonly ChatMessage[],
+  persistedHistory: readonly ChatMessage[] | undefined,
+  sentMessage: ChatMessage,
+): boolean | undefined {
+  if (!persistedHistory) return undefined;
+  if (persistedHistory.some((message) => message.id === sentMessage.id))
+    return true;
+
+  const previousIds = new Set(previousHistory.map((message) => message.id));
+  return persistedHistory.some(
+    (message) =>
+      !previousIds.has(message.id) &&
+      message.role === "user" &&
+      typeof message.content === "string" &&
+      message.content === sentMessage.content,
+  );
+}
+
+export function failedSendRecovery(input: {
+  error: string;
+  previousHistory: readonly ChatMessage[];
+  persistedHistory: readonly ChatMessage[] | undefined;
+  sentMessage: ChatMessage;
+}): { error: string; restoreDraft: boolean } {
+  return {
+    error: input.error,
+    restoreDraft:
+      userMessagePersisted(
+        input.previousHistory,
+        input.persistedHistory,
+        input.sentMessage,
+      ) === false,
+  };
+}
+
 export function buildOwnedRunInput(input: {
   threadId: string;
   history: readonly ChatMessage[];

@@ -24,6 +24,7 @@ import {
   buildOwnedRunInput,
   clearForIdentityChange,
   dataForSignedInUser,
+  failedSendRecovery,
   readOwnedHistory,
   runOwnedAgent,
 } from "../src/owned-chat";
@@ -60,53 +61,61 @@ export default function ConversationScreen() {
     setError("");
   }, [session?.user.id]);
 
-  const refresh = useCallback(async () => {
-    const userId = session?.user.id;
-    if (!channelId || !userId) return;
-    setLoading(true);
-    setError("");
-    try {
-      const [channelResult, agentResult] = await Promise.all([
-        api<{ channel: Conversation }>(
-          `/api/channels/${encodeURIComponent(channelId)}`,
-        ),
-        api<{ agents: ScoutAgent[] }>("/api/agents"),
-      ]);
-      const channel = channelResult.channel;
-      const selectedAgent = agentResult.agents.find(
-        (candidate) =>
-          candidate.builtIn && channel.agentIds.includes(candidate.id),
-      );
-      if (!selectedAgent)
-        throw new Error("This conversation has no available Scout assistant.");
+  const refresh = useCallback(
+    async (options?: { preserveError?: boolean }) => {
+      const userId = session?.user.id;
+      if (!channelId || !userId) return undefined;
+      setLoading(true);
+      if (!options?.preserveError) setError("");
+      try {
+        const [channelResult, agentResult] = await Promise.all([
+          api<{ channel: Conversation }>(
+            `/api/channels/${encodeURIComponent(channelId)}`,
+          ),
+          api<{ agents: ScoutAgent[] }>("/api/agents"),
+        ]);
+        const channel = channelResult.channel;
+        const selectedAgent = agentResult.agents.find(
+          (candidate) =>
+            candidate.builtIn && channel.agentIds.includes(candidate.id),
+        );
+        if (!selectedAgent)
+          throw new Error(
+            "This conversation has no available Scout assistant.",
+          );
 
-      const cookie = (await authClient.getCookie()) || null;
-      const history = await readOwnedHistory({
-        serverUrl,
-        cookie,
-        threadId: channel.threadId,
-        agentId: selectedAgent.id,
-        fetcher: expoFetch,
-      });
-      setView({
-        userId,
-        value: {
-          channelId,
-          conversation: channel,
-          agent: selectedAgent,
-          messages: history,
-        },
-      });
-    } catch (failure) {
-      setError(
-        failure instanceof Error
-          ? failure.message
-          : "Could not load this Scout conversation.",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [channelId, session?.user.id]);
+        const cookie = (await authClient.getCookie()) || null;
+        const history = await readOwnedHistory({
+          serverUrl,
+          cookie,
+          threadId: channel.threadId,
+          agentId: selectedAgent.id,
+          fetcher: expoFetch,
+        });
+        setView({
+          userId,
+          value: {
+            channelId,
+            conversation: channel,
+            agent: selectedAgent,
+            messages: history,
+          },
+        });
+        return history;
+      } catch (failure) {
+        if (!options?.preserveError)
+          setError(
+            failure instanceof Error
+              ? failure.message
+              : "Could not load this Scout conversation.",
+          );
+        return undefined;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [channelId, session?.user.id],
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -151,6 +160,7 @@ export default function ConversationScreen() {
       };
     });
 
+    let sendError: string | undefined;
     try {
       const cookie = (await authClient.getCookie()) || null;
       await runOwnedAgent({
@@ -210,15 +220,26 @@ export default function ConversationScreen() {
         },
       });
     } catch (failure) {
-      setError(
+      sendError =
         failure instanceof Error
           ? failure.message
-          : "Could not send your message to Scout.",
-      );
+          : "Could not send your message to Scout.";
     } finally {
+      const persistedHistory = await refresh({
+        preserveError: Boolean(sendError),
+      });
+      if (sendError) {
+        const recovery = failedSendRecovery({
+          error: sendError,
+          previousHistory: messages,
+          persistedHistory,
+          sentMessage: run.userMessage,
+        });
+        if (recovery.restoreDraft)
+          setText((current) => current || submittedText);
+        setError(recovery.error);
+      }
       setSending(false);
-      // The server owns the canonical transcript; refresh it after both success and failure.
-      await refresh();
     }
   }
 

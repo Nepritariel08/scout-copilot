@@ -6,6 +6,7 @@ import {
   clearForIdentityChange,
   dataForSignedInUser,
   type Fetcher,
+  failedSendRecovery,
   readOwnedHistory,
   runOwnedAgent,
 } from "../src/owned-chat.ts";
@@ -36,6 +37,61 @@ test("cached private data is cleared and hidden when the signed-in identity chan
   assert.equal(dataForSignedInUser(cached, undefined), undefined);
   assert.deepEqual(dataForSignedInUser(cached, "owner-a"), {
     channelName: "A's thread",
+  });
+});
+
+test("failed-send recovery keeps the error and restores a draft only when absent", () => {
+  const previous: ChatMessage[] = [
+    { id: "old-user", role: "user", content: "Please retry." },
+  ];
+  const sent: ChatMessage = {
+    id: "new-user",
+    role: "user",
+    content: "Please retry.",
+  };
+
+  const unknown = failedSendRecovery({
+    error: "Model unavailable",
+    previousHistory: previous,
+    persistedHistory: undefined,
+    sentMessage: sent,
+  });
+  assert.deepEqual(unknown, {
+    error: "Model unavailable",
+    restoreDraft: false,
+  });
+
+  const absent = failedSendRecovery({
+    error: "Access denied",
+    previousHistory: previous,
+    persistedHistory: previous,
+    sentMessage: sent,
+  });
+  assert.deepEqual(absent, { error: "Access denied", restoreDraft: true });
+
+  const persisted = failedSendRecovery({
+    error: "Model unavailable",
+    previousHistory: previous,
+    persistedHistory: [...previous, sent],
+    sentMessage: sent,
+  });
+  assert.deepEqual(persisted, {
+    error: "Model unavailable",
+    restoreDraft: false,
+  });
+
+  const serverAssignedId = failedSendRecovery({
+    error: "Model unavailable",
+    previousHistory: previous,
+    persistedHistory: [
+      ...previous,
+      { id: "server-user", role: "user", content: sent.content },
+    ],
+    sentMessage: sent,
+  });
+  assert.deepEqual(serverAssignedId, {
+    error: "Model unavailable",
+    restoreDraft: false,
   });
 });
 
