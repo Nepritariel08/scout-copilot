@@ -1288,14 +1288,41 @@ describe("owned composition through the actual Scout app", () => {
       } finally {
         await writeFile(path, original, { mode: 0o600 });
       }
-      await database
-        .delete(scoutHistoryContext)
-        .where(eq(scoutHistoryContext.threadId, threadId));
       expect(
         (
           await requestConfiguredGrant(
             "GET",
             `/api/scout/threads/${threadId}/messages`,
+          )
+        ).status,
+      ).toBe(200);
+      const [contextualThread] = await database
+        .select()
+        .from(scoutHistoryThreads)
+        .where(eq(scoutHistoryThreads.id, threadId));
+      if (!contextualThread)
+        throw new Error("Expected synthetic contextual thread fixture");
+      expect(JSON.stringify(contextualThread.snapshot)).toContain(
+        "ODOO_MODEL_SYNTHETIC_OK",
+      );
+      // A pre-migration legacy row has saved content but never had a context marker.
+      // Construct it directly; deleting a current marker would violate the reset guard.
+      const legacyThreadId = randomUUID();
+      await database.insert(scoutHistoryThreads).values({
+        ...contextualThread,
+        id: legacyThreadId,
+      });
+      expect(
+        await database
+          .select()
+          .from(scoutHistoryContext)
+          .where(eq(scoutHistoryContext.threadId, legacyThreadId)),
+      ).toEqual([]);
+      expect(
+        (
+          await requestConfiguredGrant(
+            "GET",
+            `/api/scout/threads/${legacyThreadId}/messages`,
           )
         ).status,
       ).toBe(403);
@@ -1304,7 +1331,7 @@ describe("owned composition through the actual Scout app", () => {
           await requestConfiguredGrant(
             "POST",
             `/api/copilotkit/agent/${agentId}/run`,
-            input(threadId),
+            input(legacyThreadId),
           )
         ).status,
       ).toBe(403);
