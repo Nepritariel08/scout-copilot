@@ -7,7 +7,9 @@ under [architecture #8](https://github.com/Nepritariel08/ssc-ai-enablement/issue
 Use [ENTERPRISE-ARCHITECTURE.md](ENTERPRISE-ARCHITECTURE.md),
 [OWNED-RUNTIME.md](OWNED-RUNTIME.md), [OWNED-MODEL.md](OWNED-MODEL.md) and
 [QUEUE.md](QUEUE.md) for their respective source contracts. Their tests do not
-establish installation or live acceptance.
+establish installation or live acceptance. The
+[pilot artifact contract](PILOT-ARTIFACT.md) covers the retained Scout build,
+independent verification and staging boundary.
 
 ## Target, budget and first release boundary
 
@@ -76,7 +78,18 @@ Release: Scout validation or safe rollback completed; no owned migration/test
          WI75 explicitly cleared and read back, with unfinished work assigned.
 ```
 
-Before activation the deployment record must supply:
+Missing owner email or Auth0 subject does not block source qualification or an
+off-host artifact build. A fresh verified **preparation-only** WI75 claim may
+cover isolated source/Bun staging, dedicated Scout-only database roles/schema,
+and an empty database backup/isolated restore. Before those mutations, establish
+the current host target and released ownership, reviewed source/terminal CI and
+artifact hashes, path/database/role collisions, resource headroom, protected DB
+and backup custody, and targeted rollback. Narrow the claim above to that scope.
+Keep the Scout service **disabled and not started**, and leave ingress unchanged.
+Do not provision a placeholder person, Auth0 account or requester merely to pass
+startup. Empty-schema recovery is not authenticated conversation-restore acceptance.
+
+Before Scout startup or activation, the deployment record must additionally supply:
 
 - The reviewed release SHA and Linux artifact, final migration journal and CI.
   This document's preparation branch is not itself an approved release.
@@ -111,9 +124,13 @@ stays unavailable while identity/history are qualified.
 
 ## Release and filesystem preparation
 
-Build on a trusted Linux x86_64 runner, away from shared Odoo when practical.
-Use Bun1.4.3 and the frozen `openbot/bun.lock`; do not transfer Windows
-`node_modules`. From `openbot/`, qualify:
+Use the [retained pilot artifact](PILOT-ARTIFACT.md), independently checked against
+the reviewed source and terminal exact-head CI. Build the Scout UI on a trusted
+Linux x86_64 runner, away from shared Odoo; keep the existing8GB Linode for the
+bounded runtime. If reproducing the build, use Bun1.4.3 and the frozen
+`openbot/bun.lock`. Set `TENANT_PACKAGE_DIR` to the absolute Scout package path
+and `SCOUT_MODEL` to the approved non-secret model name before these commands.
+From `openbot/`, qualify:
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts
@@ -126,9 +143,12 @@ bun run --cwd app typecheck
 Use the approved dependency lifecycle policy; if a required native dependency
 cannot build with scripts disabled, stop and review that exact script rather than
 globally enabling arbitrary lifecycle work. Run relevant existing SQL/native/UI
-checks and terminal exact-head CI. Archive the complete required server/shared/
-toolkit/examples/runtime dependencies, migration files and built `app/dist`;
-record a manifest of release SHA, lockfile, journal, artifact and asset hashes.
+checks and terminal exact-head CI. Retain the reviewed source/package manifests,
+lockfile, runtime workspace sources and migrations in `source.tar.gz`, the
+prebuilt UI in `web.tar.gz`, and their verification data in `manifest.json`.
+The artifact contains no `node_modules` or runtime image. Install dependencies
+on the verified Linux host with the frozen lockfile and reviewed lifecycle
+policy before use; do not transfer Windows or CI `node_modules`.
 Generate Scout branding with the release's intended `TENANT_PACKAGE_DIR` and
 `SCOUT_MODEL`; these names grant no provider or requester access. Exclude secrets,
 local `.env`, developer/test databases and private payloads from the artifact.

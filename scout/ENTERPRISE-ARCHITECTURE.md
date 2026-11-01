@@ -248,12 +248,15 @@ execute once and retain authoritative readback. A changed payload or expired
 approval requires fresh review. Accepting a draft does not authorize executing
 its proposed business actions.
 
-MatePad RDC discovery verified Huawei PCE-W29, Android release12/HarmonyOS4.
-The existing native Scout sources provide proposal transport, exact approvals,
-private local storage and native readback; the separate chat reports a0.6.0
-remote-approval candidate still pending physical setup/live acceptance. Its
-README still describes older0.3 behavior, so source/runtime capability parity
-must be checked before importing it.
+The current read-only inventory identifies the MateX6 registration; the second
+Android registration's physical MatePad mapping and prior metadata-command
+completion remain unverified. The earlier architecture reported Huawei PCE-W29,
+Android12/HarmonyOS4 without a linked device receipt; that historical report does
+not establish the current registration or its capabilities. See the
+[device evidence boundary](PRIVATE-PILOT-DEPLOYMENT.md#device-boundary-retained).
+Retain the native Scout approval/transport/readback source, but qualify the exact
+source, installed signer/version and runtime parity before importing it. A
+separately reported0.6.0 candidate is not an accepted installation or live capability.
 
 Preserve this native adapter as a module of Scout. The shared web workspace is
 the primary conversation/review surface. Do not expose a JavaScript bridge to
