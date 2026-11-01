@@ -158,8 +158,11 @@ describe("owned Odoo JSON-2 project-task transport", () => {
         fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
           const path = new URL(String(input)).pathname;
           paths.push(path);
-          if (path === "/json/2/res.users/context_get") return json({ uid: 401 });
-          const body = JSON.parse(String(init?.body)) as { group_ext_id: string };
+          if (path === "/json/2/res.users/context_get")
+            return json({ uid: 401 });
+          const body = JSON.parse(String(init?.body)) as {
+            group_ext_id: string;
+          };
           return json(body.group_ext_id === adminGroup);
         }) as unknown as typeof fetch,
       });
