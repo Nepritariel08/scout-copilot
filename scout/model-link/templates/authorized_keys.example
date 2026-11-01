@@ -1,0 +1,3 @@
+# Replace the key placeholder only on the Linode during a fresh WI75 claim.
+# The public key is deliberately omitted. Never reuse root/DSH/queue keys.
+restrict,port-forwarding,permitlisten="127.0.0.1:18088" ssh-ed25519 [PUBLIC_KEY_OMITTED] scout-matepad-forward
