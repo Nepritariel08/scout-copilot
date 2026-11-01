@@ -279,6 +279,11 @@ export default function ConversationScreen() {
         payload: run.payload,
         fetcher: expoFetch,
         onAssistantStart: (messageId) => {
+          if (
+            !mounted.current ||
+            !sameWorkScope(activeWorkScope.current, workScope)
+          )
+            return;
           setView((current) => {
             if (
               !current ||
@@ -301,6 +306,11 @@ export default function ConversationScreen() {
           displayedAssistantId.value = messageId;
         },
         onTextDelta: (delta) => {
+          if (
+            !mounted.current ||
+            !sameWorkScope(activeWorkScope.current, workScope)
+          )
+            return;
           setView((current) => {
             if (
               !current ||
