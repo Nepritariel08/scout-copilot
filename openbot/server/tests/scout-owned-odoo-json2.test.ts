@@ -58,8 +58,10 @@ function capture() {
     init?: RequestInit,
   ) => {
     requests.push({ url: new URL(String(input)), init: init ?? {} });
-    if (requests.length === 1)
+    const path = requests.at(-1)?.url.pathname;
+    if (path === "/json/2/res.users/context_get")
       return json({ uid: 401, lang: "en_US", tz: "UTC" });
+    if (path === "/json/2/res.users/has_group") return json(false);
     return json([
       {
         id: 700,
@@ -86,14 +88,33 @@ describe("owned Odoo JSON-2 project-task transport", () => {
       },
     ]);
     expect(fake.resolved).toEqual([401]);
-    expect(fake.requests).toHaveLength(2);
+    expect(fake.requests).toHaveLength(6);
     expect(fake.requests.map(({ url }) => url.pathname)).toEqual([
       "/json/2/res.users/context_get",
+      "/json/2/res.users/has_group",
+      "/json/2/res.users/has_group",
       "/json/2/project.task/search_read",
+      "/json/2/res.users/has_group",
+      "/json/2/res.users/has_group",
     ]);
-    const [identityCall, taskCall] = fake.requests;
+    const [
+      identityCall,
+      privilegeCall,
+      erpManagerCall,
+      taskCall,
+      finalPrivilegeCall,
+      finalErpManagerCall,
+    ] = fake.requests;
     expect(identityCall?.init.method).toBe("POST");
     expect(JSON.parse(String(identityCall?.init.body))).toEqual({});
+    expect(JSON.parse(String(privilegeCall?.init.body))).toEqual({
+      ids: [401],
+      group_ext_id: "base.group_system",
+    });
+    expect(JSON.parse(String(erpManagerCall?.init.body))).toEqual({
+      ids: [401],
+      group_ext_id: "base.group_erp_manager",
+    });
     expect(JSON.parse(String(taskCall?.init.body))).toEqual({
       domain: [
         ["id", "=", 700],
@@ -102,6 +123,14 @@ describe("owned Odoo JSON-2 project-task transport", () => {
       context: { allowed_company_ids: [7] },
       fields: ["id", "name", "stage_id", "date_deadline", "company_id"],
       limit: 1,
+    });
+    expect(JSON.parse(String(finalPrivilegeCall?.init.body))).toEqual({
+      ids: [401],
+      group_ext_id: "base.group_system",
+    });
+    expect(JSON.parse(String(finalErpManagerCall?.init.body))).toEqual({
+      ids: [401],
+      group_ext_id: "base.group_erp_manager",
     });
     for (const call of fake.requests) {
       const headers = new Headers(call.init.headers);
@@ -113,6 +142,182 @@ describe("owned Odoo JSON-2 project-task transport", () => {
       expect(call.init.redirect).toBe("error");
       expect(call.init.signal).toBeInstanceOf(AbortSignal);
     }
+  });
+
+  test.each(["base.group_system", "base.group_erp_manager"])(
+    "denies a current Odoo administrator in %s before reading a task",
+    async (adminGroup) => {
+      const paths: string[] = [];
+      const subject = createOdooJson2ProjectTaskReader({
+        instanceId: "odoo-test",
+        baseUrl: "http://127.0.0.1:8069",
+        database: "synthetic_odoo",
+        credentials: {
+          resolveForUid: async (uid) => ({ uid, apiKey: key }),
+        },
+        fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+          const path = new URL(String(input)).pathname;
+          paths.push(path);
+          if (path === "/json/2/res.users/context_get") return json({ uid: 401 });
+          const body = JSON.parse(String(init?.body)) as { group_ext_id: string };
+          return json(body.group_ext_id === adminGroup);
+        }) as unknown as typeof fetch,
+      });
+
+      await expect(subject.readProjectTask(request)).rejects.toThrow(
+        "MODEL_ACCESS_DENIED",
+      );
+      expect(paths).toEqual([
+        "/json/2/res.users/context_get",
+        "/json/2/res.users/has_group",
+        ...(adminGroup === "base.group_erp_manager"
+          ? ["/json/2/res.users/has_group"]
+          : []),
+      ]);
+    },
+  );
+
+  test("fails closed when the live group check is malformed", async () => {
+    for (const privilegeResult of [null, {}, 0]) {
+      const paths: string[] = [];
+      const subject = createOdooJson2ProjectTaskReader({
+        instanceId: "odoo-test",
+        baseUrl: "http://127.0.0.1:8069",
+        database: "synthetic_odoo",
+        credentials: {
+          resolveForUid: async (uid) => ({ uid, apiKey: key }),
+        },
+        fetch: (async (input: RequestInfo | URL) => {
+          const path = new URL(String(input)).pathname;
+          paths.push(path);
+          if (path === "/json/2/res.users/context_get")
+            return json({ uid: 401 });
+          return json(privilegeResult);
+        }) as unknown as typeof fetch,
+      });
+
+      await expect(subject.readProjectTask(request)).rejects.toThrow(
+        "MODEL_ACCESS_DENIED",
+      );
+      expect(paths).toEqual([
+        "/json/2/res.users/context_get",
+        "/json/2/res.users/has_group",
+      ]);
+    }
+  });
+
+  test("does not read tasks when Odoo cannot verify the current group", async () => {
+    const paths: string[] = [];
+    const subject = createOdooJson2ProjectTaskReader({
+      instanceId: "odoo-test",
+      baseUrl: "http://127.0.0.1:8069",
+      database: "synthetic_odoo",
+      credentials: {
+        resolveForUid: async (uid) => ({ uid, apiKey: key }),
+      },
+      fetch: (async (input: RequestInfo | URL) => {
+        const path = new URL(String(input)).pathname;
+        paths.push(path);
+        if (path === "/json/2/res.users/context_get") return json({ uid: 401 });
+        return new Response("synthetic upstream detail", {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof fetch,
+    });
+
+    await expect(subject.readProjectTask(request)).rejects.toThrow(
+      "MODEL_UNAVAILABLE",
+    );
+    expect(paths).toEqual([
+      "/json/2/res.users/context_get",
+      "/json/2/res.users/has_group",
+    ]);
+  });
+
+  test("denies a user promoted to ERP Manager during the task read", async () => {
+    const paths: string[] = [];
+    let privilegeChecks = 0;
+    const subject = createOdooJson2ProjectTaskReader({
+      instanceId: "odoo-test",
+      baseUrl: "http://127.0.0.1:8069",
+      database: "synthetic_odoo",
+      credentials: {
+        resolveForUid: async (uid) => ({ uid, apiKey: key }),
+      },
+      fetch: (async (input: RequestInfo | URL) => {
+        const path = new URL(String(input)).pathname;
+        paths.push(path);
+        if (path === "/json/2/res.users/context_get") return json({ uid: 401 });
+        if (path === "/json/2/res.users/has_group") {
+          privilegeChecks += 1;
+          return json(privilegeChecks > 3);
+        }
+        return json([
+          {
+            id: 700,
+            name: "Synthetic task",
+            stage_id: [2, "Open"],
+            date_deadline: false,
+            company_id: [7, "Synthetic company"],
+          },
+        ]);
+      }) as unknown as typeof fetch,
+    });
+
+    await expect(subject.readProjectTask(request)).rejects.toThrow(
+      "MODEL_ACCESS_DENIED",
+    );
+    expect(paths).toEqual([
+      "/json/2/res.users/context_get",
+      "/json/2/res.users/has_group",
+      "/json/2/res.users/has_group",
+      "/json/2/project.task/search_read",
+      "/json/2/res.users/has_group",
+      "/json/2/res.users/has_group",
+    ]);
+  });
+
+  test("denies a user promoted to Settings administrator during the task read", async () => {
+    const paths: string[] = [];
+    let privilegeChecks = 0;
+    const subject = createOdooJson2ProjectTaskReader({
+      instanceId: "odoo-test",
+      baseUrl: "http://127.0.0.1:8069",
+      database: "synthetic_odoo",
+      credentials: {
+        resolveForUid: async (uid) => ({ uid, apiKey: key }),
+      },
+      fetch: (async (input: RequestInfo | URL) => {
+        const path = new URL(String(input)).pathname;
+        paths.push(path);
+        if (path === "/json/2/res.users/context_get") return json({ uid: 401 });
+        if (path === "/json/2/res.users/has_group") {
+          privilegeChecks += 1;
+          return json(privilegeChecks === 3);
+        }
+        return json([
+          {
+            id: 700,
+            name: "Synthetic task",
+            stage_id: [2, "Open"],
+            date_deadline: false,
+            company_id: [7, "Synthetic company"],
+          },
+        ]);
+      }) as unknown as typeof fetch,
+    });
+
+    await expect(subject.readProjectTask(request)).rejects.toThrow(
+      "MODEL_ACCESS_DENIED",
+    );
+    expect(paths).toEqual([
+      "/json/2/res.users/context_get",
+      "/json/2/res.users/has_group",
+      "/json/2/res.users/has_group",
+      "/json/2/project.task/search_read",
+      "/json/2/res.users/has_group",
+    ]);
   });
 
   test("denies a credential whose Odoo-reported UID differs from the qualified grant", async () => {
@@ -257,12 +462,12 @@ describe("owned Odoo JSON-2 project-task transport", () => {
       },
       fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
         requests.push({ url: new URL(String(input)), init: init ?? {} });
-        return requests.length === 1
-          ? json({ uid: 401 })
-          : new Response(`provider leaked ${key}`, {
-              status: 403,
-              headers: { "content-type": "application/json" },
-            });
+        if (requests.length === 1) return json({ uid: 401 });
+        if (requests.length === 2) return json(false);
+        return new Response(`provider leaked ${key}`, {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        });
       }) as unknown as typeof fetch,
     });
     let failure: unknown;
@@ -273,7 +478,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
     }
     expect(String(failure)).toContain("MODEL_UNAVAILABLE");
     expect(String(failure)).not.toContain(key);
-    expect(requests).toHaveLength(2);
+    expect(requests).toHaveLength(3);
   });
 
   test("bounds and validates Odoo response bodies", async () => {
@@ -309,13 +514,15 @@ describe("owned Odoo JSON-2 project-task transport", () => {
         },
         fetch: (async () => {
           calls += 1;
-          return calls === 1 ? json({ uid: 401 }) : failureResponse;
+          if (calls === 1) return json({ uid: 401 });
+          if (calls === 2) return json(false);
+          return failureResponse;
         }) as unknown as typeof fetch,
       });
       await expect(subject.readProjectTask(request)).rejects.toThrow(
         "MODEL_UNAVAILABLE",
       );
-      expect(calls).toBe(2);
+      expect(calls).toBe(3);
     }
   });
 
@@ -349,13 +556,16 @@ describe("owned Odoo JSON-2 project-task transport", () => {
         },
         fetch: (async () => {
           calls += 1;
-          return calls === 1 ? json({ uid: 401 }) : rejectedResponse;
+          if (calls === 1) return json({ uid: 401 });
+          if (calls === 2) return json(false);
+          return rejectedResponse;
         }) as unknown as typeof fetch,
       });
       await expect(subject.readProjectTask(request)).rejects.toThrow(
         "MODEL_UNAVAILABLE",
       );
       expect(cancelled).toBe(true);
+      expect(calls).toBe(3);
     }
   });
 
@@ -370,21 +580,21 @@ describe("owned Odoo JSON-2 project-task transport", () => {
       },
       fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
         requests.push({ url: new URL(String(input)), init: init ?? {} });
-        return requests.length === 1
-          ? json({ uid: 401 })
-          : new Response(null, {
-              status: 302,
-              headers: {
-                location: "https://other.example.com/collect",
-                "content-type": "application/json",
-              },
-            });
+        if (requests.length === 1) return json({ uid: 401 });
+        if (requests.length === 2) return json(false);
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: "https://other.example.com/collect",
+            "content-type": "application/json",
+          },
+        });
       }) as unknown as typeof fetch,
     });
     await expect(subject.readProjectTask(request)).rejects.toThrow(
       "MODEL_UNAVAILABLE",
     );
-    expect(requests[1]?.init.redirect).toBe("error");
+    expect(requests[2]?.init.redirect).toBe("error");
   });
 
   test("uses a bounded timeout for each Odoo request", async () => {
@@ -400,6 +610,7 @@ describe("owned Odoo JSON-2 project-task transport", () => {
       fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
         calls += 1;
         if (calls === 1) return json({ uid: 401 });
+        if (calls === 2) return json(false);
         return new Promise<Response>((_resolve, reject) => {
           const signal = init?.signal as AbortSignal;
           signal.addEventListener("abort", () => reject(signal.reason), {
@@ -411,6 +622,6 @@ describe("owned Odoo JSON-2 project-task transport", () => {
     await expect(subject.readProjectTask(request)).rejects.toThrow(
       "MODEL_UNAVAILABLE",
     );
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
   });
 });

@@ -237,29 +237,36 @@ final enforcement point for reads
 
 The source now includes append-only per-user record and context-release grant
 tables, a latest-revision store, and an opaque credential-reference resolver
-over OpenBot's encrypted credential vault. These components are implemented
-but are not yet covered by a PostgreSQL-backed test run or production
-composition. The resolver binds each key row to the exact source instance,
-UID, provider and credential ID; grants store only that opaque credential ID.
+over OpenBot's encrypted credential vault. At the prior exact head, the
+PostgreSQL-backed integration tests applied the migrations and passed in CI
+run 41292114270 at commit `35f85726e88abfcc17d0d7d20804e7fa470ed4f6`; this
+checkout has no verified disposable PostgreSQL test database. The resolver
+binds each key row to the exact source instance, UID, provider and credential
+ID; grants store only that opaque credential ID.
 
 Qualification remains a hard live gate. The stored `verified_nonadmin`
-attestation can become stale if an Odoo user's groups change, and the current
-reader verifies the API-key UID but does not independently re-check admin
-group membership. Before production composition, prove live group-change
-revocation or implement a server-verified privilege check on every read.
+attestation is provisioning evidence, not a live authorization decision. On
+every task read, the JSON-2 adapter verifies the API-key UID, calls Odoo's
+read-only `res.users/has_group` for that same UID and both
+`base.group_system` and `base.group_erp_manager` before and after the task
+read, and proceeds only when each result is the literal boolean `false`. A
+failed or malformed privilege check denies the read. Odoo documents that
+`has_group` applies to the current user and restricts
+non-internal users from querying another user's groups
+([Odoo 20 `res.users` implementation](https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/res_users.py#L1085-L1101)).
+Before production composition, test promotion/revocation against the exact
+self-hosted Community build and prove task-read and provider-dispatch denial.
 Provisioning must also verify that every granted project belongs to the
 approved company/customer scope; independent ID arrays alone do not establish
 that relationship. The selected task's company is now checked against the
 grant's company IDs, but project/customer ownership still needs trusted
 provisioning evidence. Add same-company customer isolation and cross-company
-project tests. The PostgreSQL-backed grant/resolver integration suite now
-exists but has not run because this checkout has no verified disposable test
-database. An Odoo 20 Community test database, live UID/ACL readback,
-qualification-change tests, and production composition remain absent. No live
-Odoo schema, credential or business record was used by the mocked transport
-tests. A selected task continues to fail closed in production. Before enabling
-JSON-2 on the self-hosted Community build, verify the endpoint against that
-exact installed build and its available API route.
+project tests. An Odoo 20 Community test database, live UID/ACL readback,
+customer isolation evidence, and production composition remain absent. No live
+Odoo credential or business record was used by the mocked transport tests. A
+selected task continues to fail closed in production. Before enabling JSON-2
+on the self-hosted Community build, verify the endpoint against that exact
+installed build and its available API route.
 On 2026-11-01, a loopback read of the target Linode returned HTTP 200 for
 `/web/version`; an unauthenticated JSON-2 `res.users/context_get` request
 returned HTTP 401. This proves only that the route is present and demands

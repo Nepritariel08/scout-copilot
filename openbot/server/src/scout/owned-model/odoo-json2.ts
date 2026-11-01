@@ -251,7 +251,7 @@ export function createOdooJson2ProjectTaskReader(
 
   const post = async (
     model: "res.users" | "project.task",
-    method: "context_get" | "search_read",
+    method: "context_get" | "has_group" | "search_read",
     apiKey: string,
     body: Record<string, unknown>,
     maxResponseBytes: number,
@@ -286,6 +286,24 @@ export function createOdooJson2ProjectTaskReader(
     return boundedJson(response, maxResponseBytes);
   };
 
+  const assertCurrentUserIsNotAdministrator = async (
+    apiKey: string,
+    uid: number,
+  ) => {
+    // Unknown values, missing methods, and failed checks must never be treated
+    // as evidence that an Odoo user is safe to release context for.
+    for (const groupExtId of ["base.group_system", "base.group_erp_manager"]) {
+      const isAdministrator = await post(
+        "res.users",
+        "has_group",
+        apiKey,
+        { ids: [uid], group_ext_id: groupExtId },
+        maximumContextBytes,
+      );
+      if (isAdministrator !== false) return denied();
+    }
+  };
+
   return {
     async readProjectTask(request: ProjectTaskReadRequest): Promise<unknown> {
       const allowedProjectIds = projectIds(request, instanceId);
@@ -318,6 +336,11 @@ export function createOdooJson2ProjectTaskReader(
       )
         return denied();
 
+      await assertCurrentUserIsNotAdministrator(
+        apiKey,
+        request.sourceIdentity.uid,
+      );
+
       const [selected] = request.domain;
       const rows = await post(
         "project.task",
@@ -335,6 +358,13 @@ export function createOdooJson2ProjectTaskReader(
           limit: 1,
         },
         maximumRequestBytes + 1024,
+      );
+      // Check again after Odoo returns the task. This catches a privilege
+      // promotion that overlaps the read instead of trusting the grant's
+      // earlier nonadmin qualification until it expires.
+      await assertCurrentUserIsNotAdministrator(
+        apiKey,
+        request.sourceIdentity.uid,
       );
       if (!Array.isArray(rows)) return rows;
       return rows.map((row) => {
