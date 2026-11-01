@@ -30,6 +30,7 @@ import {
   type ProjectTaskContextGrant,
   type ProjectTaskContextPort,
   type ProjectTaskContextPrincipal,
+  type ProjectTaskContextReleaseGrant,
   type ProjectTaskReadRequest,
 } from "../src/scout/owned-model/record-context";
 import {
@@ -55,8 +56,12 @@ let aliceRequesterUid = 101;
 let behavior = "normal";
 let providerCalls = 0;
 let contextGrantEnabled = false;
+let contextReleaseGrantEnabled = false;
 let contextGrantReads = 0;
+let contextReleaseGrantReads = 0;
+let contextReadCount = 0;
 let revokeOnGrantRead: number | undefined;
+let hideTaskOnRead: number | undefined;
 let contextRecordRows: unknown = [];
 let capturedContextRead: ProjectTaskReadRequest | undefined;
 let captured:
@@ -168,7 +173,26 @@ function syntheticContextGrant(
     allowedProjectIds: [501],
   };
 }
+function syntheticContextReleaseGrant(
+  principal: ProjectTaskContextPrincipal,
+  provider: ProjectTaskContextReleaseGrant["provider"] = "local",
+): ProjectTaskContextReleaseGrant {
+  return {
+    principal,
+    active: true,
+    revision: 1,
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    dataClass: "odoo.project_task_summary.v1",
+    provider,
+  };
+}
 const recordContext: ProjectTaskContextPort = {
+  getReleaseGrant: async (principal, provider) => {
+    contextReleaseGrantReads++;
+    return contextReleaseGrantEnabled
+      ? syntheticContextReleaseGrant(principal, provider)
+      : null;
+  },
   getGrant: async (principal) => {
     contextGrantReads++;
     if (!contextGrantEnabled) return null;
@@ -176,8 +200,9 @@ const recordContext: ProjectTaskContextPort = {
     return syntheticContextGrant(principal, !revoked, revoked ? 2 : 1);
   },
   readProjectTask: async (request) => {
+    contextReadCount++;
     capturedContextRead = request;
-    return contextRecordRows;
+    return hideTaskOnRead === contextReadCount ? [] : contextRecordRows;
   },
 };
 async function run(userId = alice): Promise<ModelRun> {
@@ -351,8 +376,12 @@ beforeEach(async () => {
   providerCalls = 0;
   captured = undefined;
   contextGrantEnabled = false;
+  contextReleaseGrantEnabled = false;
   contextGrantReads = 0;
+  contextReleaseGrantReads = 0;
+  contextReadCount = 0;
   revokeOnGrantRead = undefined;
+  hideTaskOnRead = undefined;
   contextRecordRows = [];
   capturedContextRead = undefined;
   await database.delete(calls).where(eq(calls.deploymentId, prefix));
@@ -659,6 +688,7 @@ describe("owned model: real SQL and SDK chat-completions", () => {
   });
   test("selected project task context is server-built, fixed-field, and read-only", async () => {
     contextGrantEnabled = true;
+    contextReleaseGrantEnabled = true;
     contextRecordRows = [
       {
         id: 700,
@@ -675,6 +705,8 @@ describe("owned model: real SQL and SDK chat-completions", () => {
     expect(response.status).toBe(200);
     expect(events).toContain("OWNED_MODEL_SYNTHETIC_OK");
     expect(contextGrantReads).toBeGreaterThanOrEqual(2);
+    expect(contextReleaseGrantReads).toBeGreaterThanOrEqual(2);
+    expect(contextReadCount).toBeGreaterThanOrEqual(2);
     expect(capturedContextRead).toMatchObject({
       model: "project.task",
       domain: [
@@ -714,6 +746,7 @@ describe("owned model: real SQL and SDK chat-completions", () => {
     expect(JSON.stringify(envelope)).not.toContain("partner_id");
   });
   test("missing record grant prevents provider egress", async () => {
+    contextReleaseGrantEnabled = true;
     const response = await selectedRun([
       { description: PROJECT_TASK_SELECTION_MARKER, value: "700" },
     ]);
@@ -738,6 +771,7 @@ describe("owned model: real SQL and SDK chat-completions", () => {
   });
   test("guessed IDs and oversized source rows are denied before provider egress", async () => {
     contextGrantEnabled = true;
+    contextReleaseGrantEnabled = true;
     contextRecordRows = [
       {
         id: 701,
@@ -771,6 +805,7 @@ describe("owned model: real SQL and SDK chat-completions", () => {
   });
   test("revocation after context retrieval but before model egress prevents provider call", async () => {
     contextGrantEnabled = true;
+    contextReleaseGrantEnabled = true;
     revokeOnGrantRead = 2;
     contextRecordRows = [
       {
@@ -786,6 +821,28 @@ describe("owned model: real SQL and SDK chat-completions", () => {
     await response.text();
     expect(contextGrantReads).toBe(2);
     expect(capturedContextRead).toBeDefined();
+    expect(providerCalls).toBe(0);
+    expect(await rows()).toHaveLength(0);
+  });
+  test("changed ACL visibility under an unchanged grant prevents model egress", async () => {
+    contextGrantEnabled = true;
+    contextReleaseGrantEnabled = true;
+    hideTaskOnRead = 2;
+    contextRecordRows = [
+      {
+        id: 700,
+        name: "Synthetic selected task",
+        stage_id: [9, "Synthetic stage"],
+        date_deadline: "2026-12-15",
+      },
+    ];
+    const response = await selectedRun([
+      { description: PROJECT_TASK_SELECTION_MARKER, value: "700" },
+    ]);
+    await response.text();
+    expect(contextGrantReads).toBe(2);
+    expect(contextReleaseGrantReads).toBe(2);
+    expect(contextReadCount).toBe(2);
     expect(providerCalls).toBe(0);
     expect(await rows()).toHaveLength(0);
   });

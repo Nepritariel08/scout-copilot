@@ -65,6 +65,18 @@ export type ProjectTaskContextGrant = {
   allowedProjectIds: number[];
 };
 
+export type ProjectTaskContextProvider = "openrouter" | "local";
+
+/** Separate consent to release this exact data class to this protected provider route. */
+export type ProjectTaskContextReleaseGrant = {
+  principal: ProjectTaskContextPrincipal;
+  active: boolean;
+  revision: number;
+  expiresAt: string;
+  dataClass: "odoo.project_task_summary.v1";
+  provider: ProjectTaskContextProvider;
+};
+
 export type ProjectTaskReadRequest = {
   sourceIdentity: ProjectTaskContextGrant["sourceIdentity"];
   model: "project.task";
@@ -82,13 +94,20 @@ export type ProjectTaskReadRequest = {
  * construct one until a qualified nonadmin source identity and credential path are approved.
  */
 export type ProjectTaskContextPort = {
+  getReleaseGrant(
+    principal: ProjectTaskContextPrincipal,
+    provider: ProjectTaskContextProvider,
+  ): Promise<unknown>;
   getGrant(principal: ProjectTaskContextPrincipal): Promise<unknown>;
   readProjectTask(request: ProjectTaskReadRequest): Promise<unknown>;
 };
 
 export type ResolvedProjectTaskContext = {
   prompt: string;
-  assertCurrent(principal: ProjectTaskContextPrincipal): Promise<void>;
+  assertCurrent(
+    principal: ProjectTaskContextPrincipal,
+    provider: ProjectTaskContextProvider,
+  ): Promise<void>;
 };
 
 const positiveIds = z
@@ -114,6 +133,14 @@ const grantSchema = z.strictObject({
     companyIds: positiveIds,
   }),
   allowedProjectIds: positiveIds,
+});
+const releaseGrantSchema = z.strictObject({
+  principal: principalSchema,
+  active: z.boolean(),
+  revision: z.number().int().positive(),
+  expiresAt: z.iso.datetime(),
+  dataClass: z.literal("odoo.project_task_summary.v1"),
+  provider: z.enum(["openrouter", "local"]),
 });
 
 function deny(): never {
@@ -145,6 +172,25 @@ function currentGrant(
     !samePrincipal(parsed.data.principal, principal) ||
     parsed.data.sourceIdentity.role !== "user" ||
     parsed.data.sourceIdentity.qualification !== "qualified"
+  )
+    return deny();
+  return parsed.data;
+}
+
+function currentReleaseGrant(
+  value: unknown,
+  principal: ProjectTaskContextPrincipal,
+  provider: ProjectTaskContextProvider,
+  now: number,
+): ProjectTaskContextReleaseGrant {
+  const parsed = releaseGrantSchema.safeParse(value);
+  if (
+    !parsed.success ||
+    !parsed.data.active ||
+    Date.parse(parsed.data.expiresAt) <= now ||
+    !samePrincipal(parsed.data.principal, principal) ||
+    parsed.data.dataClass !== "odoo.project_task_summary.v1" ||
+    parsed.data.provider !== provider
   )
     return deny();
   return parsed.data;
@@ -203,39 +249,58 @@ export async function resolveProjectTaskContext(
   port: ProjectTaskContextPort,
   principal: ProjectTaskContextPrincipal,
   recordId: number,
+  provider: ProjectTaskContextProvider,
   now: () => number = Date.now,
 ): Promise<ResolvedProjectTaskContext> {
   if (!Number.isSafeInteger(recordId) || recordId < 1) return deny();
+  let releaseGrant: ProjectTaskContextReleaseGrant;
   let grant: ProjectTaskContextGrant;
   try {
+    // Context release permission is checked before looking up the record-read grant or data.
+    releaseGrant = currentReleaseGrant(
+      await port.getReleaseGrant(principal, provider),
+      principal,
+      provider,
+      now(),
+    );
     grant = currentGrant(await port.getGrant(principal), principal, now());
   } catch {
     return deny();
   }
+  const releaseGrantSnapshot = safeJson(releaseGrant);
   const grantSnapshot = safeJson(grant);
-  const request: ProjectTaskReadRequest = {
+  const requestForGrant = (
+    current: ProjectTaskContextGrant,
+  ): ProjectTaskReadRequest => ({
     sourceIdentity: {
-      uid: grant.sourceIdentity.uid,
+      uid: current.sourceIdentity.uid,
       role: "user",
       qualification: "qualified",
-      companyIds: [...grant.sourceIdentity.companyIds],
+      companyIds: [...current.sourceIdentity.companyIds],
     },
     model: "project.task",
     domain: [
       ["id", "=", recordId],
-      ["project_id", "in", [...grant.allowedProjectIds]],
+      ["project_id", "in", [...current.allowedProjectIds]],
     ],
     fields,
     limit: 1,
     maxBytes: MAX_RECORD_BYTES,
-  };
+  });
+  const readSelectedTask = async (current: ProjectTaskContextGrant) =>
+    projectTaskRow(
+      await port.readProjectTask(requestForGrant(current)),
+      recordId,
+    );
   let selected: ReturnType<typeof projectTaskRow>;
   try {
-    selected = projectTaskRow(await port.readProjectTask(request), recordId);
+    selected = await readSelectedTask(grant);
   } catch {
     return deny();
   }
+  const selectedSnapshot = safeJson(selected);
   const retrievedAt = new Date(now()).toISOString();
+  const retrievedAtMs = Date.parse(retrievedAt);
   const envelope = {
     source: { system: "Odoo", model: "project.task", recordId },
     provenance: { grantRevision: grant.revision, retrievedAt },
@@ -248,15 +313,27 @@ export async function resolveProjectTaskContext(
   if (Buffer.byteLength(prompt, "utf8") > MAX_RECORD_BYTES) return deny();
   return {
     prompt,
-    assertCurrent: async (currentPrincipal) => {
+    assertCurrent: async (currentPrincipal, currentProvider) => {
       if (!samePrincipal(currentPrincipal, principal)) return deny();
+      if (currentProvider !== provider || now() - retrievedAtMs > 60_000)
+        return deny();
       try {
+        const latestReleaseGrant = currentReleaseGrant(
+          await port.getReleaseGrant(currentPrincipal, currentProvider),
+          currentPrincipal,
+          currentProvider,
+          now(),
+        );
+        if (safeJson(latestReleaseGrant) !== releaseGrantSnapshot)
+          return deny();
         const latest = currentGrant(
           await port.getGrant(currentPrincipal),
           currentPrincipal,
           now(),
         );
         if (safeJson(latest) !== grantSnapshot) return deny();
+        const latestSelected = await readSelectedTask(latest);
+        if (safeJson(latestSelected) !== selectedSnapshot) return deny();
       } catch {
         return deny();
       }

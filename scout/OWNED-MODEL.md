@@ -205,10 +205,13 @@ Scout/DSH requester port.
 
 The source now accepts one exact browser marker, `scout.project_task_id`, as an
 untrusted numeric selection hint. It strips the marker from the AG-UI input and
-constructs any released context on the server. A separate per-user grant must
-match the current native user, tenant, deployment and binding fingerprint, be
-active and unexpired, and identify a qualified nonadmin Odoo user. The existing
-Scout/DSH queue binding is not an Odoo record grant.
+constructs any released context on the server. Separate per-user grants are
+required for Odoo record access and context release. The release grant binds the
+exact data class `odoo.project_task_summary.v1` to the selected protected model
+provider (`openrouter` or `local`). Both grants must match the current native
+user, tenant, deployment and binding fingerprint and remain active and
+unexpired; the record grant must identify a qualified nonadmin Odoo user. The
+existing Scout/DSH queue binding is not an Odoo record or context-release grant.
 
 The typed adapter request fixes the model to `project.task`, the domain to the
 selected ID plus the grant's allowed project IDs, the fields to `id`, `name`,
@@ -216,7 +219,9 @@ selected ID plus the grant's allowed project IDs, the fields to `id`, `name`,
 4,096. Server context contains only `name`, `stage_id` and `date_deadline`,
 along with source, provenance and freshness metadata. It rejects mismatched
 rows, extra fields, oversized data, malformed selections, missing grants and
-grant changes before model egress. No Odoo RPC adapter is wired in production;
+grant changes before model egress. Immediately before egress it rechecks both
+grants and re-reads the same bounded task under the same source identity; loss
+of ACL visibility or any released-field change denies the run. No Odoo RPC adapter is wired in production;
 there is no approved qualified source credential or live Odoo schema/identity
 readback in this slice. Consequently a selected task fails closed in production
 until that separate source identity, grant store and read-only adapter are

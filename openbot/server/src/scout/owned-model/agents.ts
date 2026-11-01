@@ -136,8 +136,13 @@ export function createOwnedModelAgents(deps: {
                       deps.recordContext,
                       principal,
                       selection.recordId,
+                      grant.route.provider,
                     );
-                  else await selectedContext.assertCurrent(principal);
+                  else
+                    await selectedContext.assertCurrent(
+                      principal,
+                      grant.route.provider,
+                    );
                 }
                 return grant;
               };

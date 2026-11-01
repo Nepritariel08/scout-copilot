@@ -4,6 +4,7 @@ import {
   type ProjectTaskContextGrant,
   type ProjectTaskContextPort,
   type ProjectTaskContextPrincipal,
+  type ProjectTaskContextReleaseGrant,
   type ProjectTaskReadRequest,
   resolveProjectTaskContext,
   selectProjectTask,
@@ -36,6 +37,20 @@ function grant(
   };
 }
 
+function releaseGrant(
+  changes: Partial<ProjectTaskContextReleaseGrant> = {},
+): ProjectTaskContextReleaseGrant {
+  return {
+    principal: { ...principal },
+    active: true,
+    revision: 1,
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    dataClass: "odoo.project_task_summary.v1",
+    provider: "local",
+    ...changes,
+  };
+}
+
 function row(id = 700) {
   return [
     {
@@ -50,15 +65,21 @@ function row(id = 700) {
 function fakePort(
   options: {
     currentGrant?: unknown;
+    currentReleaseGrant?: unknown;
     rows?: unknown;
     onRead?: (request: ProjectTaskReadRequest) => void;
   } = {},
 ) {
   let currentGrant: unknown =
     options.currentGrant === undefined ? grant() : options.currentGrant;
+  let currentReleaseGrant: unknown =
+    options.currentReleaseGrant === undefined
+      ? releaseGrant()
+      : options.currentReleaseGrant;
   let rows: unknown = options.rows === undefined ? row() : options.rows;
   const requests: ProjectTaskReadRequest[] = [];
   const port: ProjectTaskContextPort = {
+    getReleaseGrant: async () => currentReleaseGrant,
     getGrant: async () => currentGrant,
     readProjectTask: async (request) => {
       requests.push(request);
@@ -71,6 +92,9 @@ function fakePort(
     requests,
     setGrant: (value: unknown) => {
       currentGrant = value;
+    },
+    setReleaseGrant: (value: unknown) => {
+      currentReleaseGrant = value;
     },
     setRows: (value: unknown) => {
       rows = value;
@@ -118,6 +142,7 @@ describe("owned read-only project.task context seam", () => {
       fake.port,
       principal,
       700,
+      "local",
       () => timestamp,
     );
     expect(fake.requests).toHaveLength(1);
@@ -159,12 +184,21 @@ describe("owned read-only project.task context seam", () => {
     expect(resolved.prompt).not.toContain("description");
     expect(resolved.prompt).not.toContain("chatter");
     expect(resolved.prompt).not.toContain("partner_id");
+    await resolved.assertCurrent(principal, "local");
+    expect(fake.requests).toHaveLength(2);
+    expect(fake.requests[1]).toEqual(fake.requests[0]);
   });
 
   test("fails closed for a missing grant without making a source read", async () => {
     const fake = fakePort({ currentGrant: null });
     await expect(
-      resolveProjectTaskContext(fake.port, principal, 700, () => timestamp),
+      resolveProjectTaskContext(
+        fake.port,
+        principal,
+        700,
+        "local",
+        () => timestamp,
+      ),
     ).rejects.toThrow("MODEL_ACCESS_DENIED");
     expect(fake.requests).toHaveLength(0);
   });
@@ -186,7 +220,13 @@ describe("owned read-only project.task context seam", () => {
         }),
       });
       await expect(
-        resolveProjectTaskContext(fake.port, principal, 700, () => timestamp),
+        resolveProjectTaskContext(
+          fake.port,
+          principal,
+          700,
+          "local",
+          () => timestamp,
+        ),
       ).rejects.toThrow("MODEL_ACCESS_DENIED");
       expect(fake.requests).toHaveLength(0);
     }
@@ -216,7 +256,34 @@ describe("owned read-only project.task context seam", () => {
     for (const currentGrant of invalidGrants) {
       const fake = fakePort({ currentGrant });
       await expect(
-        resolveProjectTaskContext(fake.port, principal, 700, () => timestamp),
+        resolveProjectTaskContext(
+          fake.port,
+          principal,
+          700,
+          "local",
+          () => timestamp,
+        ),
+      ).rejects.toThrow("MODEL_ACCESS_DENIED");
+      expect(fake.requests).toHaveLength(0);
+    }
+  });
+
+  test("requires an exact context data-class release grant for the selected provider before record reads", async () => {
+    const invalidReleaseGrants = [
+      null,
+      releaseGrant({ provider: "openrouter" }),
+      { ...releaseGrant(), dataClass: "odoo.project_task_detail.v1" },
+    ];
+    for (const currentReleaseGrant of invalidReleaseGrants) {
+      const fake = fakePort({ currentReleaseGrant });
+      await expect(
+        resolveProjectTaskContext(
+          fake.port,
+          principal,
+          700,
+          "local",
+          () => timestamp,
+        ),
       ).rejects.toThrow("MODEL_ACCESS_DENIED");
       expect(fake.requests).toHaveLength(0);
     }
@@ -225,7 +292,13 @@ describe("owned read-only project.task context seam", () => {
   test("denies guessed or out-of-grant record IDs and never accepts browser domain or fields", async () => {
     const fake = fakePort({ rows: row(701) });
     await expect(
-      resolveProjectTaskContext(fake.port, principal, 700, () => timestamp),
+      resolveProjectTaskContext(
+        fake.port,
+        principal,
+        700,
+        "local",
+        () => timestamp,
+      ),
     ).rejects.toThrow("MODEL_ACCESS_DENIED");
     expect(fake.requests[0]?.domain).toEqual([
       ["id", "=", 700],
@@ -248,7 +321,13 @@ describe("owned read-only project.task context seam", () => {
     ]) {
       const fake = fakePort({ rows });
       await expect(
-        resolveProjectTaskContext(fake.port, principal, 700, () => timestamp),
+        resolveProjectTaskContext(
+          fake.port,
+          principal,
+          700,
+          "local",
+          () => timestamp,
+        ),
       ).rejects.toThrow("MODEL_ACCESS_DENIED");
     }
   });
@@ -259,11 +338,71 @@ describe("owned read-only project.task context seam", () => {
       fake.port,
       principal,
       700,
+      "local",
       () => timestamp,
     );
     fake.setGrant(grant({ active: false, revision: 2 }));
-    await expect(resolved.assertCurrent(principal)).rejects.toThrow(
+    await expect(resolved.assertCurrent(principal, "local")).rejects.toThrow(
       "MODEL_ACCESS_DENIED",
     );
+  });
+
+  test("pins the data-class/provider release grant and rechecks it before egress", async () => {
+    const fake = fakePort();
+    const resolved = await resolveProjectTaskContext(
+      fake.port,
+      principal,
+      700,
+      "local",
+      () => timestamp,
+    );
+    fake.setReleaseGrant(releaseGrant({ revision: 2 }));
+    await expect(resolved.assertCurrent(principal, "local")).rejects.toThrow(
+      "MODEL_ACCESS_DENIED",
+    );
+    expect(fake.requests).toHaveLength(1);
+
+    const otherProvider = fakePort({
+      currentReleaseGrant: releaseGrant({ provider: "openrouter" }),
+    });
+    const openRouterContext = await resolveProjectTaskContext(
+      otherProvider.port,
+      principal,
+      700,
+      "openrouter",
+      () => timestamp,
+    );
+    await expect(
+      openRouterContext.assertCurrent(principal, "local"),
+    ).rejects.toThrow("MODEL_ACCESS_DENIED");
+    expect(otherProvider.requests).toHaveLength(1);
+  });
+
+  test("denies before egress when task ACL visibility or released fields change under an unchanged grant", async () => {
+    for (const changedRows of [
+      [],
+      [
+        {
+          id: 700,
+          name: "Changed synthetic task name",
+          stage_id: [9, "Synthetic stage"],
+          date_deadline: "2026-12-15",
+        },
+      ],
+    ]) {
+      const fake = fakePort();
+      const resolved = await resolveProjectTaskContext(
+        fake.port,
+        principal,
+        700,
+        "local",
+        () => timestamp,
+      );
+      fake.setRows(changedRows);
+      await expect(resolved.assertCurrent(principal, "local")).rejects.toThrow(
+        "MODEL_ACCESS_DENIED",
+      );
+      expect(fake.requests).toHaveLength(2);
+    }
   });
 });
