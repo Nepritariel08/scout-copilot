@@ -44,6 +44,10 @@ import { createBoundHistory } from "../history/service";
 import { createHistoryStore } from "../history/store";
 import { createScoutConnector } from "../mcp";
 import { createOwnedModelAgents } from "../owned-model/agents";
+import {
+  createOwnedOdooProjectTaskContext,
+  readOwnedOdooContextSource,
+} from "../owned-model/context-source";
 import type { ProjectTaskContextPort } from "../owned-model/record-context";
 import { createModelCallStore } from "../owned-model/store";
 import { createScoutService } from "../service";
@@ -68,7 +72,9 @@ export async function createOwnedApplication(
     ) => Promise<Record<string, AbstractAgent>>;
     /** Trusted synthetic provider seam; absent in the production entry. */
     modelFetch?: typeof fetch;
-    /** Test-only record reader seam; production remains fail-closed until a source identity is approved. */
+    /** Test-only transport seam for the fixed JSON-2 reader. */
+    odooFetch?: typeof fetch;
+    /** Test-only record reader override. */
     recordContext?: ProjectTaskContextPort;
   } = {},
 ) {
@@ -189,6 +195,15 @@ export async function createOwnedApplication(
     scope,
   );
   const modelCalls = createModelCallStore(database);
+  const configuredRecordContext = config.scoutOdooContextSourceFile
+    ? createOwnedOdooProjectTaskContext(
+        database,
+        config.keyEncryptionKey,
+        await readOwnedOdooContextSource(config.scoutOdooContextSourceFile),
+        options.odooFetch,
+      )
+    : undefined;
+  const recordContext = options.recordContext ?? configuredRecordContext;
   const agents =
     options.agents ??
     (config.scoutModelPolicyFile
@@ -200,7 +215,7 @@ export async function createOwnedApplication(
           calls: modelCalls,
           transport: options.modelFetch,
           scope,
-          recordContext: options.recordContext,
+          recordContext,
         })
       : async (actor: AuthenticatedActor) =>
           Object.fromEntries(
