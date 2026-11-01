@@ -37,12 +37,18 @@ business actions, autonomous greetings/briefs, remote agents or native device
 execution are enabled by this pilot packet. Owned first-day composition may
 create its direct conversation without launching an automatic turn.
 
-The proposed service envelope is1CPU (`CPUQuota=100%`),640MiB memory high-water,
-1024MiB hard memory limit,128MiB swap ceiling and96 tasks. A dedicated PostgreSQL
-role is capped at24 connections, including the application pool and separate
-LISTEN connection; verify cluster headroom and actual connection use first.
-PostgreSQL's work is outside the Bun service's memory cgroup. These are initial
-pilot limits to measure, not proven throughput or customer-production targets.
+The proposed service envelope is 1 CPU (`CPUQuota=100%`), 640 MiB memory
+high-water, 1,024 MiB hard memory limit, 128 MiB swap ceiling and 96 tasks. In
+the one-process owned runtime, the application query pool is explicitly capped
+at 8 connections; the separate channel `LISTEN` client is capped at 1, for 9
+configured connections per process. The dedicated PostgreSQL role limit is 24
+and is shared by every client using that role, leaving up to 15 additional
+connections only when no other same-role clients are active. Two owned replicas
+would use up to 18 before maintenance clients; three would exceed the role
+limit, so horizontal scaling is not covered. Verify cluster headroom, role
+ownership, peak connections, pool waits and timeouts first. PostgreSQL's work
+is outside the Bun service's memory cgroup. These are initial pilot limits to
+measure, not proven throughput or customer-production targets.
 
 ## Ownership and inputs before host mutation
 

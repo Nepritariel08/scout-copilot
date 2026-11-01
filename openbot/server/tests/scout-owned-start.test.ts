@@ -19,6 +19,10 @@ function fixture(
   } = {},
 ) {
   const events: string[] = [];
+  const databaseCreationCalls: Array<{
+    databaseUrl: string;
+    options?: { max?: number };
+  }> = [];
   const database = {
     $client: {
       async close() {
@@ -46,7 +50,10 @@ function fixture(
         databaseUrl: "postgres://synthetic.invalid/lifecycle_test",
         port: 0,
       }) as ReturnType<Dependencies["loadOwnedConfig"]>,
-    createDatabase: () => database,
+    createDatabase(databaseUrl, options) {
+      databaseCreationCalls.push({ databaseUrl, options });
+      return database;
+    },
     async createOwnedApplication() {
       events.push("application.start");
       if (options.applicationFailure) throw options.applicationFailure;
@@ -81,10 +88,22 @@ function fixture(
       };
     },
   };
-  return { deps, events };
+  return { deps, events, databaseCreationCalls };
 }
 
 describe("owned startup resource lifecycle", () => {
+  test("bounds the owned application query pool within the pilot connection budget", async () => {
+    const { deps, databaseCreationCalls } = fixture();
+    const started = await startOwnedScout(deps);
+    expect(databaseCreationCalls).toEqual([
+      {
+        databaseUrl: "postgres://synthetic.invalid/lifecycle_test",
+        options: { max: 8 },
+      },
+    ]);
+    await started.close();
+  });
+
   test("preserves the application startup error when database cleanup also fails", async () => {
     const original = new Error("synthetic application startup failure");
     const { deps, events } = fixture({
