@@ -30,6 +30,10 @@ import { DOMAIN_REFUSAL_MESSAGE, emailDomainAllowed } from "./email-domain";
 import { encryptSsoConfig } from "./encrypt-sso-config";
 import { applyConfiguredAdmin, isConfiguredAdmin, seedRole } from "./roles";
 import { recordProvisioned, scimOptions } from "./scim";
+import {
+  createScoutAuth0AccountReader,
+  createScoutAuth0Adapter,
+} from "./scout-auth0";
 
 /** What a person sees when SSO is required and they tried another way in. */
 /** The native app's custom scheme (mobile/app.config.ts). */
@@ -188,6 +192,16 @@ export function createAuth(
   if (!authConfig) {
     throw new Error("No identity provider is configured.");
   }
+  if (authConfig.auth0 && config.runtime?.mode !== "owned")
+    throw new Error(
+      "Auth0 sign-in currently requires Scout's owned composition.",
+    );
+  const scoutAuth0 = authConfig.auth0
+    ? createScoutAuth0Adapter(
+        authConfig.auth0,
+        createScoutAuth0AccountReader(database),
+      )
+    : undefined;
 
   /*
    * Okta goes through the generic OAuth plugin, the other two do not.
@@ -222,15 +236,20 @@ export function createAuth(
      */
     ...(scimPluginOptions ? [scim(scimPluginOptions)] : []),
     electron({ clientID: "openbot-desktop", codeExpiresIn: 120 }),
-    ...(authConfig.okta
+    ...(authConfig.okta || scoutAuth0
       ? [
           genericOAuth({
             config: [
-              okta({
-                clientId: authConfig.okta.clientId,
-                clientSecret: authConfig.okta.clientSecret,
-                issuer: authConfig.okta.issuer,
-              }),
+              ...(authConfig.okta
+                ? [
+                    okta({
+                      clientId: authConfig.okta.clientId,
+                      clientSecret: authConfig.okta.clientSecret,
+                      issuer: authConfig.okta.issuer,
+                    }),
+                  ]
+                : []),
+              ...(scoutAuth0 ? [scoutAuth0.provider] : []),
             ],
           }),
         ]
@@ -279,6 +298,13 @@ export function createAuth(
         },
       },
       validateUserInfo: async ({ user, source }) => {
+        if (source.oauth?.providerId === "auth0") {
+          if (!scoutAuth0)
+            throw new APIError("FORBIDDEN", {
+              message: "Auth0 is not configured.",
+            });
+          await scoutAuth0.validateUserInfo(user, source.oauth.profile);
+        }
         const verdict = await decideSignInMethod({
           method: source.method,
           email: typeof user.email === "string" ? user.email : undefined,
@@ -319,6 +345,7 @@ export function createAuth(
     },
     baseURL: authConfig.baseUrl,
     secret: authConfig.secret,
+    ...(scoutAuth0 ? { hooks: { before: scoutAuth0.before } } : {}),
     trustedOrigins: [
       ...authConfig.trustedOrigins,
       ...(nativeApp ? [NATIVE_APP_ORIGIN] : []),
@@ -365,6 +392,9 @@ export function createAuth(
        * accounts of everybody who has already signed in.
        */
       encryptOAuthTokens: true,
+      ...(scoutAuth0
+        ? { accountLinking: { enabled: false, disableImplicitLinking: true } }
+        : {}),
     },
     plugins,
     socialProviders: {
@@ -452,6 +482,7 @@ export function createAuth(
            * new one, so without this a removed person signs straight back in.
            */
           before: async (session) => {
+            await scoutAuth0?.assertSessionUser(session.userId);
             const [user] = await database
               .select({ email: users.email })
               .from(users)

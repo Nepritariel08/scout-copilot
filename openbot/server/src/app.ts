@@ -45,6 +45,7 @@ import {
 import type { IdentityProviderStore } from "./auth/identity-provider-store";
 import { desktopAuthPage } from "./auth/native-browser";
 import { createSameOriginGuard } from "./auth/same-origin";
+import { scoutAuth0CallbackAlias } from "./auth/scout-auth0-callback";
 import {
   createAttachmentRoutes,
   createChannelAttachmentRoutes,
@@ -529,6 +530,8 @@ export function createApp(
       await next();
     });
   }
+  if (config.runtime.mode === "owned" && config.auth?.auth0)
+    app.use("*", scoutAuth0CallbackAlias(auth));
   mountDesktopConnectionFailure(app, desktopHostToken);
   mountProviderOAuthProxy(app, modelProviderProxy);
 
