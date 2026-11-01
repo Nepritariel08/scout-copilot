@@ -154,6 +154,14 @@ bindings, history access and policy fingerprint before dispatch. Browser
 provider options, forwarded properties, arbitrary screen context and tools do
 not select credentials, endpoints or budgets.
 
+Each run pins its requester-binding fingerprint separately from its model policy.
+After every awaited SDK read, the output gate rechecks current authorization,
+expiry and cancellation before releasing a decoded part. The output stream reads
+on demand, so a paused consumer cannot receive a prefetched part after revocation.
+Content already released before revocation cannot be recalled. Completion and
+generated answers are checked again after persistence and stream-close waits;
+an already committed receipt can remain `completed` while output is withheld.
+
 `scout_model_calls` stores metadata rather than prompts or secrets. Admission
 uses a short PostgreSQL advisory lock per deployment and requires the live
 owned-history run lease. The sequence is durable reservation, durable dispatch

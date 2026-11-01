@@ -753,6 +753,343 @@ describe("owned model adversarial SQL/public-SDK boundaries", () => {
     expect((await terminalReceipt()).status).toBe("uncertain");
   });
 
+  test("revocation while awaiting provider content releases no text", async () => {
+    const grant = grantFor();
+    let revoked = false;
+    let providerStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const providerReady = Promise.withResolvers<void>();
+    const emitted: unknown[] = [];
+    const opening = model(
+      await run(),
+      grant,
+      transport(
+        (init) =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                providerStream = controller;
+                init.signal?.addEventListener(
+                  "abort",
+                  () =>
+                    controller.error(new Error("Synthetic provider aborted")),
+                  { once: true },
+                );
+                providerReady.resolve();
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      ),
+      async () => (revoked ? { ...grant, fingerprint: "e".repeat(64) } : grant),
+    ).doStream(options());
+    // The SDK waits for a nonempty output packet before returning doStream.
+    // Revoke only after transport dispatch, while that provider read is pending.
+    await providerReady.promise;
+    revoked = true;
+    providerStream?.enqueue(new TextEncoder().encode(success()));
+    providerStream?.close();
+    let failure: unknown;
+    try {
+      const result = await opening;
+      for await (const part of result.stream) emitted.push(part);
+    } catch (error) {
+      failure = error;
+    }
+    expect(String(failure)).toContain("MODEL_ACCESS_DENIED");
+    expect(
+      emitted.filter((part) =>
+        ["text-delta", "reasoning-delta", "finish"].includes(
+          (part as { type: string }).type,
+        ),
+      ),
+    ).toEqual([]);
+    expect(providerCalls).toBe(1);
+    const receipt = await terminalReceipt();
+    expect(receipt.status).toBe("uncertain");
+    expect(receipt.outputBytes).toBe(0);
+  });
+
+  test("allowed streaming stays incremental and revocation withholds later provider content", async () => {
+    const grant = grantFor();
+    let revoked = false;
+    let providerStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const result = await model(
+      await run(),
+      grant,
+      transport(
+        (init) =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                providerStream = controller;
+                controller.enqueue(
+                  new TextEncoder().encode(
+                    packet({
+                      id: "edge",
+                      choices: [
+                        {
+                          index: 0,
+                          delta: {
+                            role: "assistant",
+                            content: "ALLOWED_PREFIX",
+                          },
+                          finish_reason: null,
+                        },
+                      ],
+                    }),
+                  ),
+                );
+                init.signal?.addEventListener(
+                  "abort",
+                  () =>
+                    controller.error(new Error("Synthetic provider aborted")),
+                  { once: true },
+                );
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      ),
+      async () => (revoked ? { ...grant, fingerprint: "e".repeat(64) } : grant),
+    ).doStream(options());
+    const reader = result.stream.getReader();
+    const emitted: { type: string; delta?: string }[] = [];
+    while (!emitted.some((part) => part.type === "text-delta")) {
+      const next = await reader.read();
+      if (next.done)
+        throw new Error("Synthetic stream ended before its prefix");
+      emitted.push(next.value);
+    }
+    // No finish packet has arrived: the authorized prefix must stream without
+    // buffering the entire answer, while the next provider read remains gated.
+    expect(emitted.find((part) => part.type === "text-delta")?.delta).toBe(
+      "ALLOWED_PREFIX",
+    );
+    revoked = true;
+    providerStream?.enqueue(
+      new TextEncoder().encode(success().replace("EDGE_OK", "DENIED_SUFFIX")),
+    );
+    providerStream?.close();
+    let failure: unknown;
+    try {
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) break;
+        emitted.push(next.value);
+      }
+    } catch (error) {
+      failure = error;
+    }
+    expect(String(failure)).toContain("MODEL_ACCESS_DENIED");
+    expect(JSON.stringify(emitted)).not.toContain("DENIED_SUFFIX");
+    expect(emitted.some((part) => part.type === "finish")).toBe(false);
+    expect(providerCalls).toBe(1);
+    const receipt = await terminalReceipt();
+    expect(receipt.status).toBe("uncertain");
+    expect(receipt.outputBytes).toBe(Buffer.byteLength("ALLOWED_PREFIX"));
+  });
+
+  test("abort during asynchronous output authorization releases no provider content", async () => {
+    const grant = grantFor();
+    const controller = new AbortController();
+    let providerReturned = false;
+    const emitted: { type: string }[] = [];
+    let failure: unknown;
+    try {
+      const result = await model(
+        await run(),
+        grant,
+        transport(() => {
+          providerReturned = true;
+          return new Response(success(), {
+            headers: { "content-type": "text/event-stream" },
+          });
+        }),
+        async () => {
+          if (providerReturned) controller.abort();
+          return grant;
+        },
+        controller.signal,
+      ).doStream(options());
+      for await (const part of result.stream) emitted.push(part);
+    } catch (error) {
+      failure = error;
+    }
+    expect(
+      emitted.filter((part) =>
+        ["text-delta", "reasoning-delta", "finish"].includes(part.type),
+      ),
+    ).toEqual([]);
+    expect(String(failure)).toContain("MODEL_UNAVAILABLE");
+    expect(providerCalls).toBe(1);
+    expect((await terminalReceipt()).status).toBe("uncertain");
+  });
+
+  test("revocation during completed receipt persistence withholds finish without rewriting the committed receipt", async () => {
+    const grant = grantFor();
+    let revoked = false;
+    const wrapped = {
+      ...store,
+      finish: async (...args: Parameters<ModelCallStore["finish"]>) => {
+        await store.finish(...args);
+        if (args[1] === "completed") revoked = true;
+      },
+    };
+    const emitted: { type: string }[] = [];
+    let failure: unknown;
+    try {
+      const result = await model(
+        await run(),
+        grant,
+        transport(success()),
+        async () =>
+          revoked ? { ...grant, fingerprint: "e".repeat(64) } : grant,
+        undefined,
+        wrapped,
+      ).doStream(options());
+      for await (const part of result.stream) emitted.push(part);
+    } catch (error) {
+      failure = error;
+    }
+    expect(revoked).toBe(true);
+    expect(emitted.some((part) => part.type === "finish")).toBe(false);
+    expect(String(failure)).toContain("MODEL_ACCESS_DENIED");
+    expect(providerCalls).toBe(1);
+    const receipt = await terminalReceipt();
+    expect(receipt.status).toBe("completed");
+    expect(receipt.errorCode).toBeNull();
+  });
+
+  test("revocation during stream closure withholds the accumulated generated answer", async () => {
+    const grant = grantFor();
+    let revoked = false;
+    const subject = model(await run(), grant, transport(success()), async () =>
+      revoked ? { ...grant, fingerprint: "e".repeat(64) } : grant,
+    );
+    const originalStream = subject.doStream.bind(subject);
+    subject.doStream = async (value) => {
+      const result = await originalStream(value);
+      const reader = result.stream.getReader();
+      return {
+        ...result,
+        stream: new ReadableStream({
+          async pull(out) {
+            const next = await reader.read();
+            if (next.done) {
+              // Change authority after the actual SDK stream closes, while
+              // doGenerate still holds the answer privately in its accumulator.
+              revoked = true;
+              out.close();
+            } else out.enqueue(next.value);
+          },
+          cancel: () => reader.cancel(),
+        }),
+      };
+    };
+    await expect(subject.doGenerate(options())).rejects.toThrow(
+      "MODEL_ACCESS_DENIED",
+    );
+    expect(revoked).toBe(true);
+    expect(providerCalls).toBe(1);
+    expect((await terminalReceipt()).status).toBe("completed");
+  });
+
+  test("a paused consumer cannot receive a prefetched delta after revocation", async () => {
+    const grant = grantFor();
+    let revoked = false;
+    const body = success().replace(
+      packet({
+        id: "edge",
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      }),
+      packet({
+        id: "edge",
+        choices: [
+          {
+            index: 0,
+            delta: { content: "DENIED_SUFFIX" },
+            finish_reason: null,
+          },
+        ],
+      }) +
+        packet({
+          id: "edge",
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        }),
+    );
+    const result = await model(await run(), grant, transport(body), async () =>
+      revoked ? { ...grant, fingerprint: "e".repeat(64) } : grant,
+    ).doStream(options());
+    const reader = result.stream.getReader();
+    const emitted: { type: string; delta?: string }[] = [];
+    while (!emitted.some((part) => part.type === "text-delta")) {
+      const next = await reader.read();
+      if (next.done) throw new Error("Synthetic prefix missing");
+      emitted.push(next.value);
+    }
+    expect(emitted.find((part) => part.type === "text-delta")?.delta).toBe(
+      "EDGE_OK",
+    );
+    // Drain scheduled microtasks while the consumer is paused, as when the native
+    // runner awaits history persistence. The next wire delta is already in the SDK.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    revoked = true;
+    let failure: unknown;
+    try {
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) break;
+        emitted.push(next.value);
+      }
+    } catch (error) {
+      failure = error;
+    }
+    expect(JSON.stringify(emitted)).not.toContain("DENIED_SUFFIX");
+    expect(String(failure)).toContain("MODEL_ACCESS_DENIED");
+    expect((await terminalReceipt()).status).toBe("uncertain");
+  });
+
+  test("a grant expiring during output authorization releases no content even with the same fingerprint", async () => {
+    const grant = grantFor();
+    let providerReturned = false;
+    const emitted: { type: string }[] = [];
+    let failure: unknown;
+    try {
+      const result = await model(
+        await run(),
+        grant,
+        transport(() => {
+          providerReturned = true;
+          return new Response(success(), {
+            headers: { "content-type": "text/event-stream" },
+          });
+        }),
+        async () => {
+          if (!providerReturned) return grant;
+          const snapshot = {
+            ...grant,
+            expiresAt: new Date(Date.now() + 1).toISOString(),
+          };
+          await Bun.sleep(10);
+          expect(Date.parse(snapshot.expiresAt)).toBeLessThanOrEqual(
+            Date.now(),
+          );
+          return snapshot;
+        },
+      ).doStream(options());
+      for await (const part of result.stream) emitted.push(part);
+    } catch (error) {
+      failure = error;
+    }
+    expect(
+      emitted.filter((part) =>
+        ["text-delta", "reasoning-delta", "finish"].includes(part.type),
+      ),
+    ).toEqual([]);
+    expect(String(failure)).toContain("MODEL_ACCESS_DENIED");
+    expect((await terminalReceipt()).status).toBe("uncertain");
+  });
+
   test("deleting conversation history preserves durable daily usage and protected receipt scope", async () => {
     const scope = await run(),
       grant = { ...grantFor(), globalMaxCallsPerDay: 1 };
