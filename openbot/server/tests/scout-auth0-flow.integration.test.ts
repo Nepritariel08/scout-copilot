@@ -396,12 +396,12 @@ beforeAll(async () => {
       "The native before-session hook is required for qualification",
     );
   // Inject only revocation timing; the production hook still performs every admission check.
-  sessionHooks.before = async (session, context) => {
+  sessionHooks.before = async (session) => {
     if (revokeMappingBeforeSession) {
       await database.delete(accounts).where(eq(accounts.id, accountId));
       mappingRevocations++;
     }
-    return nativeSessionHook(session, context);
+    return nativeSessionHook(session);
   };
   observed = {
     api: auth.api,

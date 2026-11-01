@@ -31,7 +31,7 @@ const claims = {
   sub: "auth0|synthetic-owner-subject",
   exp: now / 1000 + 300,
   email: "owner@fixture.example",
-  email_verified: true,
+  email_verified: true as const,
   nonce: state.idTokenNonce,
 };
 // Signed solely with this process's synthetic key. Native signature/JWKS verification is qualified
@@ -158,7 +158,7 @@ describe("owned Auth0 admission after native cryptographic validation", () => {
         {
           ...untrusted,
           scoutAuth0: state.serverContext.scoutAuth0,
-        } as typeof state,
+        } as unknown as typeof state,
         now,
       ),
     ).toBeNull();
