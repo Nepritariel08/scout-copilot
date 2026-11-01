@@ -25,6 +25,16 @@ force. It uses no administrator fallback, sudo, portal access-token URL or
 source-side permission changes. API-key issuance, supported JSON-2 access and
 the actual installed Odoo build still need independent qualification.
 
+Portal users cannot create their own keys through Odoo's native key UI:
+[`check_access_make_key`](https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/res_users.py)
+requires an internal user. Bearer-key validation separately checks the active
+key/user and does not impose that internal-user UI restriction. This adapter
+therefore requires separately reviewed operator issuance of an `rpc` key as the
+**exact portal UID**, with protected custody and handoff before enrollment.
+It does not enable global programmatic key management or grant the portal user
+internal permissions. The isolated fixture's privileged key generation is not
+a production issuance tool or evidence that a live key has been provisioned.
+
 Scout deliberately requires **current project collaboration**, even where Odoo
 task-follower rules alone would permit a task. The new adapter positively checks
 `base.group_portal` and refuses internal, system and settings-administrator
@@ -47,8 +57,9 @@ its positive internal-user requirement and portal/admin refusal.
    `"identityClass": "customer"`. Unknown classification values fail closed.
    Missing classification retains the employee-only path. There is no client,
    prompt, request header, partner ID or model argument that selects this path.
-3. Through the existing authenticated Odoo setup UI, submit only that mapped
-   user's API key. The server selects customer qualification from protected
+3. After approved protected operator key issuance/handoff, use the existing
+   authenticated Odoo setup UI to submit only that mapped user's API key. The
+   server selects customer qualification from protected
    admission, discovers the user's current project scope, and issues the same
    short-lived record grant and encrypted credential. A mapping or membership
    change during qualification refuses the grant.
