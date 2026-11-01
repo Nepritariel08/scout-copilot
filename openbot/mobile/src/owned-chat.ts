@@ -72,6 +72,39 @@ export function failedSendRecovery(input: {
   };
 }
 
+export async function recoverFailedSend(input: {
+  error: string;
+  submittedText: string;
+  previousHistory: readonly ChatMessage[];
+  sentMessage: ChatMessage;
+  isCurrentScope: () => boolean;
+  refreshHistory: () => Promise<readonly ChatMessage[] | undefined>;
+  setError: (error: string) => void;
+  restoreDraft: (text: string) => void;
+}): Promise<void> {
+  if (!input.isCurrentScope()) return;
+
+  // Show the failure immediately; the history refresh may take much longer.
+  input.setError(input.error);
+
+  let persistedHistory: readonly ChatMessage[] | undefined;
+  try {
+    persistedHistory = await input.refreshHistory();
+  } catch {
+    persistedHistory = undefined;
+  }
+
+  // An in-flight send belongs to the identity and channel that started it.
+  if (!input.isCurrentScope()) return;
+  const recovery = failedSendRecovery({
+    error: input.error,
+    previousHistory: input.previousHistory,
+    persistedHistory,
+    sentMessage: input.sentMessage,
+  });
+  if (recovery.restoreDraft) input.restoreDraft(input.submittedText);
+}
+
 export function buildOwnedRunInput(input: {
   threadId: string;
   history: readonly ChatMessage[];

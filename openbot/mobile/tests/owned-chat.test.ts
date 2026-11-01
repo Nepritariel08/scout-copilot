@@ -8,6 +8,7 @@ import {
   type Fetcher,
   failedSendRecovery,
   readOwnedHistory,
+  recoverFailedSend,
   runOwnedAgent,
 } from "../src/owned-chat.ts";
 
@@ -93,6 +94,76 @@ test("failed-send recovery keeps the error and restores a draft only when absent
     error: "Model unavailable",
     restoreDraft: false,
   });
+});
+
+test("failed-send recovery shows errors before deferred refresh and fences identity changes", async () => {
+  let resolveHistory!: (messages: ChatMessage[] | undefined) => void;
+  const refresh = new Promise<ChatMessage[] | undefined>((resolve) => {
+    resolveHistory = resolve;
+  });
+  let activeUserId = "owner-a";
+  const activeChannelId = "channel-a";
+  let shownError = "";
+  let restoredDraft = "";
+  const previousHistory: ChatMessage[] = [];
+  const sentMessage: ChatMessage = {
+    id: "sent-1",
+    role: "user",
+    content: "Keep this draft",
+  };
+
+  const recovery = recoverFailedSend({
+    error: "Model unavailable",
+    submittedText: "Keep this draft",
+    previousHistory,
+    sentMessage,
+    isCurrentScope: () =>
+      activeUserId === "owner-a" && activeChannelId === "channel-a",
+    refreshHistory: () => refresh,
+    setError: (error) => {
+      shownError = error;
+    },
+    restoreDraft: (text) => {
+      restoredDraft = text;
+    },
+  });
+
+  assert.equal(shownError, "Model unavailable");
+  assert.equal(restoredDraft, "");
+  activeUserId = "owner-b";
+  resolveHistory(previousHistory);
+  await recovery;
+  assert.equal(restoredDraft, "");
+});
+
+test("failed-send recovery does not restore a prior channel draft after navigation", async () => {
+  let resolveHistory!: (messages: ChatMessage[] | undefined) => void;
+  const refresh = new Promise<ChatMessage[] | undefined>((resolve) => {
+    resolveHistory = resolve;
+  });
+  let activeChannelId = "channel-a";
+  let restoredDraft = "";
+  const recovery = recoverFailedSend({
+    error: "Request failed",
+    submittedText: "Old channel draft",
+    previousHistory: [],
+    sentMessage: {
+      id: "sent-1",
+      role: "user",
+      content: "Old channel draft",
+    },
+    isCurrentScope: () => activeChannelId === "channel-a",
+    refreshHistory: () => refresh,
+    setError: () => {},
+    restoreDraft: (text) => {
+      restoredDraft = text;
+    },
+  });
+
+  activeChannelId = "channel-b";
+  resolveHistory([]);
+  await recovery;
+  assert.equal(restoredDraft, "");
 });
 
 test("owned run payload appends one user message to the unchanged server history", () => {

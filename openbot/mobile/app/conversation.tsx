@@ -1,7 +1,7 @@
 import { fetch as expoFetch } from "expo/fetch";
 import * as Crypto from "expo-crypto";
 import { Redirect, useFocusEffect, useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Button,
@@ -24,8 +24,8 @@ import {
   buildOwnedRunInput,
   clearForIdentityChange,
   dataForSignedInUser,
-  failedSendRecovery,
   readOwnedHistory,
+  recoverFailedSend,
   runOwnedAgent,
 } from "../src/owned-chat";
 
@@ -47,6 +47,9 @@ export default function ConversationScreen() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const activeScope = useRef({ userId: session?.user.id, channelId });
+  activeScope.current = { userId: session?.user.id, channelId };
+  const previousScope = useRef({ userId: session?.user.id, channelId });
 
   const userView = dataForSignedInUser(view, session?.user.id);
   const conversationData =
@@ -56,10 +59,16 @@ export default function ConversationScreen() {
   const messages = conversationData?.messages ?? [];
 
   useEffect(() => {
-    setView((current) => clearForIdentityChange(current, session?.user.id));
-    setText("");
-    setError("");
-  }, [session?.user.id]);
+    const identityChanged = previousScope.current.userId !== session?.user.id;
+    const channelChanged = previousScope.current.channelId !== channelId;
+    previousScope.current = { userId: session?.user.id, channelId };
+    if (identityChanged)
+      setView((current) => clearForIdentityChange(current, session?.user.id));
+    if (identityChanged || channelChanged) {
+      setText("");
+      setError("");
+    }
+  }, [channelId, session?.user.id]);
 
   const refresh = useCallback(
     async (options?: { preserveError?: boolean }) => {
@@ -225,19 +234,25 @@ export default function ConversationScreen() {
           ? failure.message
           : "Could not send your message to Scout.";
     } finally {
-      const persistedHistory = await refresh({
-        preserveError: Boolean(sendError),
-      });
       if (sendError) {
-        const recovery = failedSendRecovery({
+        await recoverFailedSend({
           error: sendError,
+          submittedText,
           previousHistory: messages,
-          persistedHistory,
           sentMessage: run.userMessage,
+          isCurrentScope: () =>
+            activeScope.current.userId === userId &&
+            activeScope.current.channelId === channelId,
+          refreshHistory: () => refresh({ preserveError: true }),
+          setError,
+          restoreDraft: (draft) => setText((current) => current || draft),
         });
-        if (recovery.restoreDraft)
-          setText((current) => current || submittedText);
-        setError(recovery.error);
+      } else if (
+        activeScope.current.userId === userId &&
+        activeScope.current.channelId === channelId
+      ) {
+        // The server owns the canonical transcript; refresh it after success.
+        await refresh();
       }
       setSending(false);
     }
