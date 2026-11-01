@@ -538,8 +538,9 @@ export function createApp(
        * a local trial, and an operator cannot forget to set it.
        */
       localEvaluation: config.singleUser,
-      transcription: Boolean(config.transcription),
-      voice: Boolean(config.voice),
+      transcription:
+        config.runtime.mode !== "owned" && Boolean(config.transcription),
+      voice: config.runtime.mode !== "owned" && Boolean(config.voice),
       /*
        * Which identity providers this deployment can sign somebody in with.
        *
@@ -675,6 +676,13 @@ export function createApp(
     if (!coworker?.scoutOwned)
       throw new Error("Owned runtime requires its native tenant guard.");
     app.use("/api/*", coworker.scoutOwned.requireTenant);
+    // Auxiliary model routes need their own owned context/usage port before activation.
+    app.all("/api/audio/*", (context) =>
+      context.json({ code: "MODEL_ROUTE_UNAVAILABLE" }, 503),
+    );
+    app.all("/api/voice/*", (context) =>
+      context.json({ code: "MODEL_ROUTE_UNAVAILABLE" }, 503),
+    );
   }
   // Enterprise controls: capability switches and the model allowlist in front of the routes they
   // govern, the admin screen's API, and the SCIM verbs the GET/POST auth handler above does not take.
@@ -690,7 +698,7 @@ export function createApp(
     "/api/audio",
     createDictationRoutes(
       requireUser,
-      config.transcription
+      config.runtime.mode !== "owned" && config.transcription
         ? createTranscriptionProvider(config.transcription)
         : undefined,
     ),
@@ -699,7 +707,9 @@ export function createApp(
     "/api/voice",
     createVoiceRoutes(
       requireUser,
-      config.voice ? createVoiceProvider(config.voice) : undefined,
+      config.runtime.mode !== "owned" && config.voice
+        ? createVoiceProvider(config.voice)
+        : undefined,
       channelStore,
       agentProfileStore,
       voiceSessions,

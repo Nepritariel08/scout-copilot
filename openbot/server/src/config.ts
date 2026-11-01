@@ -1376,7 +1376,10 @@ export function loadConfig(
 }
 
 export type AnyDeploymentConfig = DeploymentConfig<RuntimeCapabilities>;
-export type OwnedDeploymentConfig = DeploymentConfig<OwnedRuntimeCapabilities>;
+export type OwnedDeploymentConfig =
+  DeploymentConfig<OwnedRuntimeCapabilities> & {
+    scoutModelPolicyFile?: string;
+  };
 
 /** An explicit public-SDK composition; never supplies fabricated Intelligence credentials. */
 export function loadOwnedConfig(
@@ -1386,7 +1389,18 @@ export function loadOwnedConfig(
   if (environment.SCOUT_RUNTIME_MODE?.trim() !== "owned")
     throw new Error("Owned runtime requires SCOUT_RUNTIME_MODE=owned.");
   const config = readDeploymentConfig(
-    environment,
+    {
+      ...environment,
+      // These auxiliary providers do not yet pass the owned context/budget port.
+      TRANSCRIPTION_PROVIDER: undefined,
+      TRANSCRIPTION_BASE_URL: undefined,
+      TRANSCRIPTION_MODEL: undefined,
+      TRANSCRIPTION_API_KEY: undefined,
+      VOICE_PROVIDER: undefined,
+      VOICE_MODEL: undefined,
+      VOICE_API_KEY: undefined,
+      VOICE_NAME: undefined,
+    },
     interfaces,
     () => ({ mode: "owned", durableHistory: true }) as const,
   );
@@ -1398,7 +1412,17 @@ export function loadOwnedConfig(
     throw new Error(
       "Owned Scout requires SCOUT_QUEUE_BINDINGS_FILE for current tenant/requester policy.",
     );
-  return { ...config, learningAutoAssign: false, selfHostBanner: false };
+  const scoutModelPolicyFile = optional(environment, "SCOUT_MODEL_POLICY_FILE");
+  if (scoutModelPolicyFile && !isAbsolute(scoutModelPolicyFile))
+    throw new Error(
+      "SCOUT_MODEL_POLICY_FILE must be an absolute protected file path.",
+    );
+  return {
+    ...config,
+    learningAutoAssign: false,
+    selfHostBanner: false,
+    ...(scoutModelPolicyFile ? { scoutModelPolicyFile } : {}),
+  };
 }
 
 function readDeploymentConfig<Runtime extends RuntimeCapabilities>(

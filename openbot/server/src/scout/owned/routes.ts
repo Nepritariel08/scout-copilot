@@ -23,6 +23,7 @@ export function createOwnedRuntimeRoutes(deps: {
     request: Request,
   ): Promise<Record<string, AbstractAgent>>;
   generativeUi: boolean;
+  modelReceipts?: (request: Request, threadId: string) => Promise<unknown>;
 }) {
   const app = new Hono<{ Variables: AppVariables }>();
   app.use("*", async (context, next) => {
@@ -34,6 +35,17 @@ export function createOwnedRuntimeRoutes(deps: {
   app.use("/api/threads/*", deps.authority.requireTenant);
   app.use("/api/threads/*", bodyLimit({ maxSize: 4000 }));
   app.use("/api/copilotkit/*", deps.authority.requireTenant);
+  app.use("/api/scout/model/*", deps.authority.requireTenant);
+  app.get("/api/scout/model/:threadId/receipts", async (context) => {
+    if (!deps.modelReceipts)
+      return context.json({ code: "MODEL_NOT_CONFIGURED" }, 503);
+    return context.json({
+      calls: await deps.modelReceipts(
+        context.req.raw,
+        context.req.param("threadId"),
+      ),
+    });
+  });
   app.onError((error, context) =>
     error instanceof HistoryError
       ? context.json({ code: error.code }, historyErrorStatuses[error.code])

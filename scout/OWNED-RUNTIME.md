@@ -36,19 +36,18 @@ Use that host for a capped private pilot: the existing Caddy/HTTPS front door,
 one separately owned Scout API service, a dedicated PostgreSQL/pgvector database
 and role, protected model/policy credentials, existing native/company sign-in,
 and encrypted off-host database/key/document backups. Keep the existing DSH/Odoo
-queue as delegated execution. MatePad/phone remain clients and consent-bound
-device executors; durable storage and unattended server execution stay on Linode.
+queue as delegated execution. MatePad is also the proposed consent-bound local
+model/execution node; verify its actual model and unattended behavior. Shared
+durable storage remains on Linode and survives a tablet or controller disconnect.
 
-Engineering sizing target for an initial small staff/customer rollout is 16 GB
-RAM with 4–6 vCPUs and 100–200 GB usable SSD, then load-test document ingestion,
-concurrent chats, Odoo contention and restore before increasing access. These
-are planning estimates for our implementation, not CopilotKit vendor minima.
-Current [Akamai shared-CPU pricing](https://www.akamai.com/cloud/pricing/cpu)
-lists 16 GB/6 vCPU/320 GB at USD96/month; region, backups and inference are extra
-considerations. No infrastructure change was made.
+The owner's lean split supersedes the earlier untested 16 GB growth allowance.
+Retain the current 8 GB / 4 vCPU host for the bounded private pilot. Measure
+Scout resource use, Odoo/database latency, storage growth and actual concurrency
+before resizing or widening access. No infrastructure change was made.
 
-OpenRouter inference needs no local GPU. A fully local model can use a separate
-CPU/GPU inference node later, sized after choosing the model, context and load.
+OpenRouter inference needs no local GPU. Benchmark a suitable MatePad model
+before considering additional inference hardware; deterministic repetitive
+tasks should use ordinary code first. See [model routing](OWNED-MODEL.md).
 The first owned implementation can use systemd and PostgreSQL; no additional
 scheduler or managed memory service is required for this persistence slice.
 
@@ -97,11 +96,12 @@ This does not qualify the full upstream computer image for the Community host.
 Owned startup closes its database/engine and prior listeners on failure; shutdown
 closes listeners, producers and the database. No worker is imported by this entry.
 
-**Production inference is unavailable in this slice.** Agents report that an
-approved model route has not been configured. Tests inject a trusted synthetic
-agent; HTTP cannot select that seam. No model key is read/created and no implicit
-provider fallback is enabled. Reuse the owner's existing OpenRouter credential
-through the forthcoming protected model port; do not copy it into source/chat.
+**The original PR3 slice left inference unavailable.** The subsequent protected
+[model port](OWNED-MODEL.md) adds explicit OpenRouter/local chat completions,
+native identity/context policy and durable quotas/receipts. An absent policy
+still keeps agents unavailable. Its synthetic SQL/SDK qualification is separate
+from real credentials, live inference and deployment. Reuse the owner's existing
+credential only through the protected deployment path; never source or chat.
 
 ## Evidence and next steps
 

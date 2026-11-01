@@ -35,8 +35,11 @@ import { createUserInstructionsStore } from "../../user-instructions";
 import { createUserPreferencesStore } from "../../user-preferences";
 import { createScoutBindingReader } from "../binding";
 import { createHistoryEngine } from "../history/runner";
+import { createBoundHistory } from "../history/service";
 import { createHistoryStore } from "../history/store";
 import { createScoutConnector } from "../mcp";
+import { createOwnedModelAgents } from "../owned-model/agents";
+import { createModelCallStore } from "../owned-model/store";
 import { createScoutService } from "../service";
 import { createScoutStore } from "../store";
 import { type BindingReader, createOwnedAuthority } from "./authority";
@@ -54,6 +57,8 @@ export async function createOwnedApplication(
       actor: AuthenticatedActor,
       request: Request,
     ) => Promise<Record<string, AbstractAgent>>;
+    /** Trusted synthetic provider seam; absent in the production entry. */
+    modelFetch?: typeof fetch;
   } = {},
 ) {
   if (
@@ -133,25 +138,56 @@ export async function createOwnedApplication(
     channels,
   });
   const loadAgents = createRuntimeAgentLoader(database);
+  const modelCalls = createModelCallStore(database);
   const agents =
     options.agents ??
-    (async (actor: AuthenticatedActor) =>
-      Object.fromEntries(
-        (await loadAgents(actor)).map((agent) => [
-          agent.id,
-          new UnavailableAgent({
-            id: agent.id,
-            name: agent.name,
-            reason:
-              "The model route for this deployment has not been configured yet.",
-          }),
-        ]),
-      ));
+    (config.scoutModelPolicyFile
+      ? createOwnedModelAgents({
+          database,
+          policyFile: config.scoutModelPolicyFile,
+          authority,
+          history: historyStore,
+          calls: modelCalls,
+          transport: options.modelFetch,
+        })
+      : async (actor: AuthenticatedActor) =>
+          Object.fromEntries(
+            (await loadAgents(actor)).map((agent) => [
+              agent.id,
+              new UnavailableAgent({
+                id: agent.id,
+                name: agent.name,
+                reason:
+                  "The model route for this deployment has not been configured yet.",
+              }),
+            ]),
+          ));
   const handler = createOwnedRuntimeRoutes({
     authority,
     engine: historyEngine,
     agents,
     generativeUi: config.generativeUi,
+    modelReceipts: async (request, threadId) => {
+      const thread = await createBoundHistory(
+        historyStore,
+        authority.forRequest(request),
+      ).get(threadId);
+      const { person, policy } = await authority.binding(request);
+      const receipts = await modelCalls.receipts(
+        {
+          userId: person.id,
+          tenantId: policy.tenantId,
+          deploymentId: policy.deploymentId,
+          agentId: thread.agentId,
+        },
+        threadId,
+      );
+      await createBoundHistory(
+        historyStore,
+        authority.forRequest(request),
+      ).check(threadId, "read", thread.agentId);
+      return receipts;
+    },
   });
   const scout = createScoutService({
     store: createScoutStore(database),
@@ -210,6 +246,7 @@ export async function createOwnedApplication(
     channels,
     historyStore,
     historyEngine,
+    modelCalls,
     productName: tenantPackage.productName,
     close: () => historyEngine.close(),
   };

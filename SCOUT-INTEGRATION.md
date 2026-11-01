@@ -40,7 +40,7 @@ by the existing DSH queue.
 | Existing Odoo Community queue / DSH | Durable delegated work, leases, cancellation, draft results and human acceptance. Keep executable queue contract `dba1dab16dcaa32c03984229c628cd866e02e712`; no duplicate submission or background executor. |
 | OpenRouter / optional local inference | Approved model route, data-release policy, output/context caps, budgets and usage receipts. Owning the UI does not confer model ownership. |
 | Existing Scout MatePad/phone shell | Device consent, narrow native actions and receipts. Remote content must not inherit a trusted JavaScript bridge. Validate WebView/browser login/reconnect before installing/replacing a client. |
-| Owned conversation storage | Public MIT runner, our PostgreSQL events/snapshots and native owner/tenant grants. Explicit owned mode integrates the same app; production model policy remains pending. |
+| Owned conversation storage | Public MIT runner, our PostgreSQL events/snapshots and native owner/tenant grants. Explicit owned mode integrates the same app and protected model port; live inference and deployment remain separately qualified. |
 | Intelligence | Optional licensed composition for entitled memory/learning/managed Channels; retain its contract and assess cost/deployment separately. |
 
 The queue port at `openbot/server/src/scout` and the conversation's Delegated
@@ -62,8 +62,10 @@ uses the public MIT AgentRunner extension. It now has synthetic real-SDK/SQL
 qualification for native user/tenant isolation, durable replay, fenced producer
 recovery, interrupted resume and exact-run cancellation. The subsequent explicit
 [owned runtime integration](scout/OWNED-RUNTIME.md) wires the same app, native
-sign-in, channel creation and UI readers to that store. Production inference
-remains unavailable pending its approved model/policy port. The requirements
+sign-in, channel creation and UI readers to that store. The subsequent
+[protected model port](scout/OWNED-MODEL.md) connects explicit OpenRouter/local
+chat completions with native policy and durable quotas/usage receipts. Real
+inference and deployment remain separately qualified. The requirements
 below describe the unchanged default licensed composition.
 
 Upstream `server/src/config.ts` requires Intelligence API, WebSocket and key
