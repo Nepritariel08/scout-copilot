@@ -107,7 +107,10 @@ The source tests do not establish the live tenant, app registration or credentia
 Before activation, the owner must verify the actual tenant GUID, application
 account type, protected secret custody, exact HTTPS callback registration,
 guest invitation/redeeming policy, conditional access/MFA, and an owner-approved
-mapping. Audit existing Microsoft account rows before enabling this route:
+mapping. Revoke all active Scout sessions created under the prior identity
+configuration immediately before cutover, and verify that a retained old cookie
+is refused afterward; session reads do not retroactively re-run this adapter's
+mapping check. Audit existing Microsoft account rows before enabling this route:
 Better Auth 1.7 uses `oid` as the account key, while older rows may hold a
 pairwise `sub`. Reconcile any such row only from a verified Entra token or
 trusted directory export; never relink by email. Then run the real callback
