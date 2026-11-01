@@ -15,6 +15,15 @@ the API unmounted. Apply migration `0068_scout_queue_requester.sql` through the
 existing migration runner. It adds submission/receipt and review-intent tables,
 not a worker, scheduler, lease claimant or execution queue.
 
+In explicit owned mode, native tenant admission uses the separate protected
+`SCOUT_MEMBERSHIPS_FILE`; queue bindings never establish membership. Delegated
+drafts are disabled by default and construct no queue service/connector. Only
+`SCOUT_DELEGATED_DRAFTS_ENABLED=true` requires the separate queue file. Its
+user/tenant/deployment must intersect current native membership; the combined
+fingerprint pins both policies through intent, review, RPC and receipt checks.
+See [the required membership migration](MEMBERSHIP.md). Queue authority is also
+independent of `SCOUT_ODOO_BINDINGS_FILE` for direct Odoo record context.
+
 Copy `queue-bindings.example.json` outside source. It is disabled/expired by
 default. A trusted operator provisions an exact immutable native user ID,
 tenant, active versioned policy, expiry and that user's separately verified Odoo

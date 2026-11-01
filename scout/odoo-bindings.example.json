@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "deploymentId": "scout-owned-pilot",
+  "sourceInstanceId": "odoo-community",
+  "bindings": [
+    {
+      "userId": "REPLACE_WITH_VERIFIED_NATIVE_SUBJECT",
+      "tenantId": "ssc-private-pilot",
+      "revision": 1,
+      "active": false,
+      "expiresAt": "2000-01-01T00:00:00Z",
+      "sourceUid": 2,
+      "companyIds": [1]
+    }
+  ]
+}

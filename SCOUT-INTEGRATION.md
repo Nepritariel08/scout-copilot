@@ -58,6 +58,12 @@ No existing owner/worker secret is included in this fork. The reference adapter
 and accepted task5/client-crash task7 receipts remain in
 [scout-workspace PR1](https://github.com/Nepritariel08/scout-workspace/pull/1).
 
+Owned native admission now requires the independent protected
+`SCOUT_MEMBERSHIPS_FILE`; it needs no queue command, Odoo requester key or
+`draftAnalysis` permission. Model policy, optional DSH requester binding and
+optional direct Odoo identity mapping remain separate grants. See the
+[mandatory configuration/grant migration](scout/MEMBERSHIP.md).
+
 ## Persistence and deployment qualification
 
 The separately reviewed [owned PostgreSQL persistence foundation](scout/PERSISTENCE.md)

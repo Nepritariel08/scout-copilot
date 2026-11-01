@@ -43,6 +43,12 @@ export function createScoutService(deps: {
       throw new ScoutError("SCOUT_ACCESS_DENIED", 403);
     if (channelId && !(await deps.canReadChannel(actor, channelId)))
       throw new ScoutError("SCOUT_TASK_NOT_FOUND", 404);
+    const current = await deps.binding(actor);
+    if (
+      current.userId !== actor.id ||
+      current.fingerprint !== binding.fingerprint
+    )
+      throw new ScoutError("SCOUT_CONFLICT", 409);
     return binding;
   }
   return {
@@ -87,7 +93,11 @@ export function createScoutService(deps: {
       const action = input.data;
       const binding = await access(actor);
       const existing = await deps.store.get(binding, id);
-      await access(actor, existing.channelId);
+      if (
+        (await access(actor, existing.channelId)).fingerprint !==
+        binding.fingerprint
+      )
+        throw new ScoutError("SCOUT_CONFLICT", 409);
       const alreadyTarget =
         (action.action === "accept" &&
           existing.receipt?.state === "completed") ||

@@ -18,6 +18,8 @@ import {
 import { createDatabase } from "../src/db/client";
 import { scoutQueueRequests, scoutQueueReviews } from "../src/db/schema/scout";
 import { parseScoutBinding } from "../src/scout/binding";
+import { parseScoutMembership } from "../src/scout/membership";
+import { createOwnedQueueBindingReader } from "../src/scout/owned/queue-binding";
 import { createScoutRoutes } from "../src/scout/routes";
 import { createScoutService, type ScoutTaskView } from "../src/scout/service";
 import { createScoutStore, scoutDigest } from "../src/scout/store";
@@ -40,6 +42,42 @@ const bob: AuthenticatedActor = {
 let config = scoutFixtureConfig();
 let remote = scoutMcpFixture();
 let channels = new Set([alice.id, bob.id]);
+let nativeActive = true;
+let nativeRevision = 1;
+let aliceTenant = "tenant-a";
+const nativePolicy = () => ({
+  version: 1,
+  deploymentId: "scout-test",
+  policies: ["tenant-a", "tenant-b"].map((tenantId) => ({
+    tenantId,
+    revision: 1,
+    active: true,
+    expiresAt: "2099-01-01T00:00:00Z",
+  })),
+  memberships: [alice, bob].map((actor, index) => ({
+    userId: actor.id,
+    tenantId: index ? "tenant-b" : aliceTenant,
+    revision: nativeRevision,
+    policyRevision: 1,
+    active: nativeActive,
+    expiresAt: "2099-01-01T00:00:00Z",
+  })),
+});
+const queueBinding = createOwnedQueueBindingReader({
+  membership: async (actor) =>
+    parseScoutMembership(nativePolicy(), actor, "scout-test"),
+  queue: async (actor) => parseScoutBinding(config, actor),
+  deploymentId: "scout-test",
+});
+const assertBinding = async (
+  before: Awaited<ReturnType<typeof queueBinding>>,
+) => {
+  if (
+    (await queueBinding({ id: before.userId })).fingerprint !==
+    before.fingerprint
+  )
+    throw new Error("SCOUT_CONFLICT");
+};
 const actors = new Map([
   [alice.id, alice],
   [bob.id, bob],
@@ -47,8 +85,8 @@ const actors = new Map([
 
 function application(connection = database) {
   const service = createScoutService({
-    store: createScoutStore(connection),
-    binding: async (actor) => parseScoutBinding(config, actor),
+    store: createScoutStore(connection, assertBinding),
+    binding: queueBinding,
     canReadChannel: async (actor, channelId) =>
       channels.has(actor.id) && channelId === `channel-${actor.id}`,
     connect: remote.connect,
@@ -137,6 +175,9 @@ beforeEach(async () => {
     .delete(scoutQueueRequests)
     .where(eq(scoutQueueRequests.ownerUserId, bob.id));
   config = scoutFixtureConfig();
+  nativeActive = true;
+  nativeRevision = 1;
+  aliceTenant = "tenant-a";
   config.policies.push({ ...config.policies[0], tenantId: "tenant-b" });
   const binding = structuredClone(config.bindings[0]);
   binding.userId = bob.id;
@@ -156,6 +197,76 @@ afterAll(async () => {
 });
 
 describe("native auth → durable PostgreSQL intent → real MCP SDK → receipt/review", () => {
+  test("valid draft authority cannot replace revoked or cross-tenant native membership", async () => {
+    nativeActive = false;
+    expect((await request("", payload())).status).toBe(403);
+    nativeActive = true;
+    aliceTenant = "tenant-b";
+    expect((await request("", payload())).status).toBe(403);
+    expect(remote.submitCalls).toBe(0);
+  });
+  test("a membership revision invalidates stored queue authority independently of queue revision", async () => {
+    const first = await task(await request("", payload()));
+    nativeRevision++;
+    expect((await request(`/${first.id}`, { action: "recover" })).status).toBe(
+      409,
+    );
+    expect(remote.submitCalls).toBe(1);
+  });
+  test("membership revocation during an acceptance read prevents the external mutation", async () => {
+    const draft = await ready();
+    remote.afterGet = () => {
+      nativeActive = false;
+    };
+    const response = await request(`/${draft.id}`, {
+      action: "accept",
+      revision: draft.revision,
+      draftDigest: draft.draftDigest,
+    });
+    expect(response.status).toBe(403);
+    expect(remote.mutations).toEqual([]);
+    expect(await response.text()).not.toContain("SCOUT_SYNTHETIC_DRAFT_OK");
+  });
+  test("a membership revoked before intent commit rolls the local write back", async () => {
+    const binding = await queueBinding(alice);
+    let checks = 0;
+    const store = createScoutStore(database, async (value) => {
+      if (++checks === 2) nativeActive = false;
+      await assertBinding(value);
+    });
+    await expect(store.prepare(binding, payload())).rejects.toThrow(
+      "SCOUT_ACCESS_DENIED",
+    );
+    const rows = await database
+      .select()
+      .from(scoutQueueRequests)
+      .where(eq(scoutQueueRequests.ownerUserId, alice.id));
+    expect(rows).toHaveLength(0);
+    expect(remote.submitCalls).toBe(0);
+  });
+  test("a membership revoked during review insertion rolls the local review back", async () => {
+    const draft = await ready();
+    const binding = await queueBinding(alice);
+    let checks = 0;
+    const store = createScoutStore(database, async (value) => {
+      if (++checks === 2) nativeActive = false;
+      await assertBinding(value);
+    });
+    await expect(
+      store.review(binding, draft.id, {
+        action: "accept",
+        revision: draft.revision,
+        draftDigest: draft.draftDigest ?? "",
+      }),
+    ).rejects.toThrow("SCOUT_ACCESS_DENIED");
+    expect(
+      await database
+        .select()
+        .from(scoutQueueReviews)
+        .where(eq(scoutQueueReviews.requestId, draft.id)),
+    ).toHaveLength(0);
+    expect(remote.mutations).toEqual([]);
+  });
   test("unauthenticated and unprovisioned users cannot reach the connector", async () => {
     expect((await request("", undefined, "unknown")).status).toBe(401);
     config.bindings = config.bindings.filter(

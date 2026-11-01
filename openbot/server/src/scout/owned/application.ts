@@ -43,12 +43,21 @@ import { createHistoryEngine } from "../history/runner";
 import { createBoundHistory } from "../history/service";
 import { createHistoryStore } from "../history/store";
 import { createScoutConnector } from "../mcp";
+import {
+  createScoutMembershipReader,
+  type MembershipReader,
+} from "../membership";
 import { createOwnedModelAgents } from "../owned-model/agents";
 import {
   createOwnedOdooContextAdapters,
   readOwnedOdooContextSource,
 } from "../owned-model/context-source";
 import { createOwnedOdooGrantService } from "../owned-model/grant-service";
+import {
+  bindOwnedOdooContext,
+  createOwnedOdooAdmission,
+  createOwnedOdooBindingReader,
+} from "../owned-model/odoo-binding";
 import { createModelPolicyReader } from "../owned-model/policy";
 import type { ProjectTaskContextPort } from "../owned-model/record-context";
 import { createModelCallStore } from "../owned-model/store";
@@ -56,7 +65,8 @@ import { createScoutService } from "../service";
 import { createScoutStore } from "../store";
 import { ScoutError } from "../types";
 import { createOwnedIdentity } from "./auth";
-import { type BindingReader, createOwnedAuthority } from "./authority";
+import { createOwnedAuthority } from "./authority";
+import { createOwnedQueueBindingReader } from "./queue-binding";
 import { createOwnedRuntimeRoutes } from "./routes";
 import { createTenantScope } from "./scope";
 
@@ -67,7 +77,7 @@ export async function createOwnedApplication(
   options: {
     /** Trusted test issuer seam; production constructs the configured native authentication service. */
     auth?: AuthService;
-    binding?: BindingReader;
+    membership?: MembershipReader;
     agents?: (
       actor: AuthenticatedActor,
       request: Request,
@@ -83,7 +93,10 @@ export async function createOwnedApplication(
   if (
     config.runtime.mode !== "owned" ||
     config.singleUser ||
-    !config.scoutQueueBindingsFile
+    typeof config.deploymentId !== "string" ||
+    !/^[A-Za-z0-9_-]{1,100}$/.test(config.deploymentId) ||
+    !config.scoutMembershipsFile ||
+    (config.scoutDelegatedDraftsEnabled && !config.scoutQueueBindingsFile)
   )
     throw new Error(
       "Owned Scout requires its explicit configuration and verified sign-in.",
@@ -92,16 +105,18 @@ export async function createOwnedApplication(
   const credentials = createCredentialStore(database);
   const tenantPackage = await loadTenantPackage(config.tenantPackageDirectory);
   await synchronizeTenantPackage(database, tenantPackage);
+  const deploymentId = config.deploymentId;
   const nativeBinding =
-    options.binding ?? createScoutBindingReader(config.scoutQueueBindingsFile);
-  const deploymentId = config.deploymentId ?? tenantPackage.tenantId;
-  const binding: BindingReader = async (actor) => {
+    options.membership ??
+    createScoutMembershipReader(config.scoutMembershipsFile, deploymentId);
+  const binding: MembershipReader = async (actor) => {
     const policy = await nativeBinding(actor);
     if (
       policy.userId !== actor.id ||
       policy.deploymentId !== deploymentId ||
       !policy.tenantId ||
-      !policy.fingerprint
+      !policy.fingerprint ||
+      !(Date.parse(policy.expiresAt) > Date.now())
     )
       throw new ScoutError("SCOUT_ACCESS_DENIED", 403);
     return policy;
@@ -157,9 +172,7 @@ export async function createOwnedApplication(
   });
   const historyStore = createHistoryStore(database);
   const historyEngine = createHistoryEngine(historyStore);
-  const threadIdentity = createThreadIdentity(
-    config.deploymentId ?? tenantPackage.tenantId,
-  );
+  const threadIdentity = createThreadIdentity(deploymentId);
   const channels = createChannelStore(
     database,
     profiles,
@@ -208,8 +221,25 @@ export async function createOwnedApplication(
         options.odooFetch,
       )
     : undefined;
-  const configuredRecordContext = odooContextAdapters?.recordContext;
-  const recordContext = options.recordContext ?? configuredRecordContext;
+  const odooAdmission =
+    odooContextSource && config.scoutOdooBindingsFile
+      ? createOwnedOdooAdmission({
+          membership: binding,
+          binding: createOwnedOdooBindingReader(
+            config.scoutOdooBindingsFile,
+            odooContextSource.sourceInstanceId,
+          ),
+          sourceInstanceId: odooContextSource.sourceInstanceId,
+        })
+      : undefined;
+  const underlyingRecordContext =
+    options.recordContext ?? odooContextAdapters?.recordContext;
+  const recordContext =
+    underlyingRecordContext && odooAdmission
+      ? bindOwnedOdooContext(underlyingRecordContext, odooAdmission)
+      : !odooContextSource
+        ? options.recordContext // Explicit synthetic test seam only; production supplies no options.
+        : undefined; // A configured source cannot bypass missing Odoo admission via an override.
   const odooGrantService = odooContextSource
     ? createOwnedOdooGrantService(
         database,
@@ -223,6 +253,7 @@ export async function createOwnedApplication(
   const odooGrants =
     odooContextSource && odooContextAdapters && odooGrantService
       ? {
+          admit: odooAdmission,
           source: {
             sourceInstanceId: odooContextSource.sourceInstanceId,
             baseUrl: odooContextSource.baseUrl,
@@ -295,13 +326,33 @@ export async function createOwnedApplication(
     },
     odooGrants,
   });
-  const scout = createScoutService({
-    store: createScoutStore(database),
-    binding,
-    canReadChannel: async (actor, channelId) =>
-      Boolean(await channels.get({ id: actor.id, role: "user" }, channelId)),
-    connect: createScoutConnector(),
-  });
+  // Disabled means no queue service or connector is constructed. Native membership has
+  // no command, requester UID, credential path, or delegated-draft capability.
+  const queueBinding =
+    config.scoutDelegatedDraftsEnabled && config.scoutQueueBindingsFile
+      ? createOwnedQueueBindingReader({
+          membership: binding,
+          queue: createScoutBindingReader(config.scoutQueueBindingsFile),
+          deploymentId,
+        })
+      : undefined;
+  const scout = queueBinding
+    ? createScoutService({
+        store: createScoutStore(database, async (admitted) => {
+          if (
+            (await queueBinding({ id: admitted.userId })).fingerprint !==
+            admitted.fingerprint
+          )
+            throw new ScoutError("SCOUT_CONFLICT", 409);
+        }),
+        binding: queueBinding,
+        canReadChannel: async (actor, channelId) =>
+          Boolean(
+            await channels.get({ id: actor.id, role: "user" }, channelId),
+          ),
+        connect: createScoutConnector(),
+      })
+    : undefined;
   const pages = createPageStore(database, {
     scope,
     actorForRequest: authority.actor,

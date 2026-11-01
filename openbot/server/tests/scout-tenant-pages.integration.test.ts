@@ -33,7 +33,7 @@ import {
 } from "../src/openduet/pages";
 import { createOwnedIdentity } from "../src/scout/owned/auth";
 import { createTenantScope, type TenantScope } from "../src/scout/owned/scope";
-import { type ScoutBinding, ScoutError } from "../src/scout/types";
+import { ScoutError, type ScoutMembership } from "../src/scout/types";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
@@ -62,7 +62,7 @@ const memberships = new Map(
 );
 const scope = createTenantScope({
   deploymentId,
-  async binding(actor): Promise<ScoutBinding> {
+  async binding(actor): Promise<ScoutMembership> {
     const value = memberships.get(actor.id);
     if (!value) throw new ScoutError("SCOUT_ACCESS_DENIED", 403);
     return {
@@ -71,16 +71,6 @@ const scope = createTenantScope({
       deploymentId,
       fingerprint: `${value.tenantId}:${value.revision}`,
       expiresAt: "2099-01-01T00:00:00.000Z",
-      command: ["fixture", "-m", "scout_queue.mcp_server"],
-      cwd: "fixture",
-      environment: {
-        SCOUT_ODOO_URL: "https://fixture.invalid",
-        SCOUT_ODOO_DB: "synthetic",
-        SCOUT_ODOO_UID: "1",
-        SCOUT_ODOO_COMPANY_IDS: "1",
-        SCOUT_ODOO_KEY_FILE: "fixture",
-      },
-      identity: { database: "synthetic", uid: 1, companyIds: [1] },
     };
   },
 });

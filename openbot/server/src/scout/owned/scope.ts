@@ -9,8 +9,8 @@ import {
 import type { Database } from "../../db/client";
 import { agents, deploymentPackages } from "../../db/schema/core";
 import { scoutResourceScopes as resources } from "../../db/schema/scout-scope";
+import type { MembershipReader } from "../membership";
 import { ScoutError } from "../types";
-import type { BindingReader } from "./authority";
 
 export type ScopeTransaction = Parameters<
   Parameters<Database["transaction"]>[0]
@@ -43,7 +43,7 @@ export type TenantScope = {
 const denied = () => new ScoutError("SCOUT_ACCESS_DENIED", 403);
 
 export function createTenantScope(deps: {
-  binding: BindingReader;
+  binding: MembershipReader;
   deploymentId: string;
 }): TenantScope & {
   seedTemplates(
@@ -60,6 +60,7 @@ export function createTenantScope(deps: {
         value.userId !== userId ||
         !value.tenantId ||
         !value.fingerprint ||
+        !(Date.parse(value.expiresAt) > Date.now()) ||
         value.deploymentId !== deps.deploymentId
       )
         throw denied();

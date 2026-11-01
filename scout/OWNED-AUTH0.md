@@ -198,9 +198,10 @@ A platform owner additionally requires that exact native ID in protected
 `SCOUT_PLATFORM_OWNER_IDS`, a native admin role, and current protected tenant
 membership. An Auth0 `sub` is an external account key; it is not automatically
 the native ID named in that environment variable. Configure the current native
-ID in `SCOUT_QUEUE_BINDINGS_FILE` separately, with the correct deployment,
-tenant, revision, expiry and least-authority Odoo requester. Never share one
-owner/service Odoo identity with employees or customers. See
+ID in `SCOUT_MEMBERSHIPS_FILE` separately, with the correct deployment,
+tenant, revision and expiry. Optional delegated drafts require their independent
+queue requester grant; native admission needs no Odoo UID or key. Never share one
+owner/service Odoo identity with employees or customers. See [membership](MEMBERSHIP.md),
 [platform ownership](OWNED-RUNTIME.md#platform-ownership-and-identity-administration)
 and [requester policy](QUEUE.md). Default platform-owner IDs remain empty and
 delegated drafts remain disabled.

@@ -62,7 +62,10 @@ function check(
   return task;
 }
 
-export function createScoutStore(database: Database): ScoutStore {
+export function createScoutStore(
+  database: Database,
+  assertCurrent: (binding: ScoutBinding) => Promise<void> = async () => {},
+): ScoutStore {
   async function get(binding: ScoutBinding, id: string) {
     const [row] = await database
       .select()
@@ -73,47 +76,51 @@ export function createScoutStore(database: Database): ScoutStore {
   return {
     get,
     async prepare(binding, input) {
-      const requestKey = `scout:${scoutDigest(
-        JSON.stringify([
-          binding.deploymentId,
-          binding.userId,
-          binding.tenantId,
-          input.sourceId,
-        ]),
-      )}`;
-      await database
-        .insert(scoutQueueRequests)
-        .values({
-          id: randomUUID(),
-          ownerUserId: binding.userId,
-          tenantId: binding.tenantId,
-          bindingFingerprint: binding.fingerprint,
-          channelId: input.channelId,
-          sourceId: input.sourceId,
-          requestKey,
-          title: input.title,
-          instructions: input.instructions,
-        })
-        .onConflictDoNothing();
-      const [row] = await database
-        .select()
-        .from(scoutQueueRequests)
-        .where(
-          and(
-            eq(scoutQueueRequests.ownerUserId, binding.userId),
-            eq(scoutQueueRequests.tenantId, binding.tenantId),
-            eq(scoutQueueRequests.sourceId, input.sourceId),
-          ),
-        );
-      const task = check(row, binding);
-      if (
-        task.requestKey !== requestKey ||
-        task.channelId !== input.channelId ||
-        task.title !== input.title ||
-        task.instructions !== input.instructions
-      )
-        throw new ScoutError("SCOUT_CONFLICT", 409);
-      return task;
+      return database.transaction(async (tx) => {
+        await assertCurrent(binding);
+        const requestKey = `scout:${scoutDigest(
+          JSON.stringify([
+            binding.deploymentId,
+            binding.userId,
+            binding.tenantId,
+            input.sourceId,
+          ]),
+        )}`;
+        await tx
+          .insert(scoutQueueRequests)
+          .values({
+            id: randomUUID(),
+            ownerUserId: binding.userId,
+            tenantId: binding.tenantId,
+            bindingFingerprint: binding.fingerprint,
+            channelId: input.channelId,
+            sourceId: input.sourceId,
+            requestKey,
+            title: input.title,
+            instructions: input.instructions,
+          })
+          .onConflictDoNothing();
+        const [row] = await tx
+          .select()
+          .from(scoutQueueRequests)
+          .where(
+            and(
+              eq(scoutQueueRequests.ownerUserId, binding.userId),
+              eq(scoutQueueRequests.tenantId, binding.tenantId),
+              eq(scoutQueueRequests.sourceId, input.sourceId),
+            ),
+          );
+        const task = check(row, binding);
+        if (
+          task.requestKey !== requestKey ||
+          task.channelId !== input.channelId ||
+          task.title !== input.title ||
+          task.instructions !== input.instructions
+        )
+          throw new ScoutError("SCOUT_CONFLICT", 409);
+        await assertCurrent(binding);
+        return task;
+      });
     },
     async list(binding, channelId) {
       return database
@@ -145,27 +152,32 @@ export function createScoutStore(database: Database): ScoutStore {
       )
         throw new ScoutError("SCOUT_CONFLICT", 409);
       const digest = action.action === "accept" ? action.draftDigest : null;
-      await database
-        .insert(scoutQueueReviews)
-        .values({
-          id: scoutDigest(
-            JSON.stringify([
-              task.id,
-              binding.fingerprint,
-              action.action,
-              action.revision,
-              digest,
-            ]),
-          ),
-          requestId: task.id,
-          action: action.action,
-          revision: action.revision,
-          draftDigest: digest,
-        })
-        .onConflictDoNothing();
+      await database.transaction(async (tx) => {
+        await assertCurrent(binding);
+        await tx
+          .insert(scoutQueueReviews)
+          .values({
+            id: scoutDigest(
+              JSON.stringify([
+                task.id,
+                binding.fingerprint,
+                action.action,
+                action.revision,
+                digest,
+              ]),
+            ),
+            requestId: task.id,
+            action: action.action,
+            revision: action.revision,
+            draftDigest: digest,
+          })
+          .onConflictDoNothing();
+        await assertCurrent(binding);
+      });
     },
     async locked(binding, id, use) {
       return database.transaction(async (tx) => {
+        await assertCurrent(binding);
         const [lock] = await tx.execute<{ locked: boolean }>(sql`
           select pg_try_advisory_xact_lock(hashtext('scout.requester'), hashtext(${id})) as locked
         `);
@@ -175,7 +187,7 @@ export function createScoutStore(database: Database): ScoutStore {
           .from(scoutQueueRequests)
           .where(matches(binding, id));
         const task = check(row, binding);
-        return use(task, async (receipt) => {
+        const result = await use(task, async (receipt) => {
           if (
             task.receipt &&
             (receipt.revision < task.receipt.revision ||
@@ -193,6 +205,8 @@ export function createScoutStore(database: Database): ScoutStore {
             .returning();
           return check(saved, binding);
         });
+        await assertCurrent(binding);
+        return result;
       });
     },
   };

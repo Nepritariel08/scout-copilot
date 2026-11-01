@@ -1450,9 +1450,14 @@ export function loadConfig(
 export type AnyDeploymentConfig = DeploymentConfig<RuntimeCapabilities>;
 export type OwnedDeploymentConfig =
   DeploymentConfig<OwnedRuntimeCapabilities> & {
+    deploymentId: string;
+    /** Protected native tenant admission, independent of every source/model/queue grant. */
+    scoutMembershipsFile: string;
     scoutModelPolicyFile?: string;
     /** Optional protected fixed-source settings for the read-only Odoo context adapter. */
     scoutOdooContextSourceFile?: string;
+    /** Optional independent native-user to fixed Odoo source identity policy. */
+    scoutOdooBindingsFile?: string;
     scoutPlatformOwnerIds: readonly string[];
     scoutDelegatedDraftsEnabled: boolean;
   };
@@ -1488,9 +1493,15 @@ export function loadOwnedConfig(
     throw new Error(
       "Owned Scout Entra sign-in must be the only identity route; unset OPENBOT_ORGANIZATION_AUTH_URL.",
     );
-  if (!config.scoutQueueBindingsFile)
+  const deploymentId = optional(environment, "DEPLOYMENT_ID");
+  if (!deploymentId || !/^[A-Za-z0-9_-]{1,100}$/.test(deploymentId))
     throw new Error(
-      "Owned Scout requires SCOUT_QUEUE_BINDINGS_FILE for current tenant/requester policy.",
+      "Owned Scout requires explicit DEPLOYMENT_ID using 1-100 ASCII letters, digits, '_' or '-'.",
+    );
+  const scoutMembershipsFile = optional(environment, "SCOUT_MEMBERSHIPS_FILE");
+  if (!scoutMembershipsFile || !isAbsolute(scoutMembershipsFile))
+    throw new Error(
+      "Owned Scout requires SCOUT_MEMBERSHIPS_FILE as an absolute protected file path for current tenant membership.",
     );
   const scoutModelPolicyFile = optional(environment, "SCOUT_MODEL_POLICY_FILE");
   if (scoutModelPolicyFile && !isAbsolute(scoutModelPolicyFile))
@@ -1504,6 +1515,14 @@ export function loadOwnedConfig(
   if (scoutOdooContextSourceFile && !isAbsolute(scoutOdooContextSourceFile))
     throw new Error(
       "SCOUT_ODOO_CONTEXT_SOURCE_FILE must be an absolute protected file path.",
+    );
+  const scoutOdooBindingsFile = optional(
+    environment,
+    "SCOUT_ODOO_BINDINGS_FILE",
+  );
+  if (scoutOdooBindingsFile && !isAbsolute(scoutOdooBindingsFile))
+    throw new Error(
+      "SCOUT_ODOO_BINDINGS_FILE must be an absolute protected file path.",
     );
   const scoutPlatformOwnerIds = (
     optional(environment, "SCOUT_PLATFORM_OWNER_IDS") ?? ""
@@ -1533,12 +1552,22 @@ export function loadOwnedConfig(
     throw new Error(
       "SCOUT_DELEGATED_DRAFTS_ENABLED must be true, false, 1 or 0.",
     );
+  if (
+    (delegatedDrafts === "true" || delegatedDrafts === "1") &&
+    !config.scoutQueueBindingsFile
+  )
+    throw new Error(
+      "SCOUT_DELEGATED_DRAFTS_ENABLED requires separate SCOUT_QUEUE_BINDINGS_FILE requester authority.",
+    );
   return {
     ...config,
+    deploymentId,
     learningAutoAssign: false,
     selfHostBanner: false,
+    scoutMembershipsFile,
     ...(scoutModelPolicyFile ? { scoutModelPolicyFile } : {}),
     ...(scoutOdooContextSourceFile ? { scoutOdooContextSourceFile } : {}),
+    ...(scoutOdooBindingsFile ? { scoutOdooBindingsFile } : {}),
     scoutPlatformOwnerIds,
     scoutDelegatedDraftsEnabled:
       delegatedDrafts === "true" || delegatedDrafts === "1",

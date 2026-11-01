@@ -43,8 +43,11 @@ testing remains deferred and unarmed.
 
 Use `SCOUT_RUNTIME_MODE=owned` with the explicit `production-entry.ts` entry.
 The upstream `start.sh` refuses owned mode. Verified native authentication,
-`SCOUT_QUEUE_BINDINGS_FILE` and the owned PostgreSQL store remain required;
+`SCOUT_MEMBERSHIPS_FILE` and the owned PostgreSQL store remain required;
 model policy grants no login, tenant membership or Odoo rights.
+Queue configuration and requester credentials are unnecessary for native chat.
+See [membership migration](MEMBERSHIP.md) before upgrading a queue-derived pilot;
+old fingerprint-bound Odoo grants require verified reissue.
 
 Set `SCOUT_MODEL_POLICY_FILE` to an absolute path outside the repository, for
 example `/etc/scout/private/model-policy.json`. If it is absent, the owned app
@@ -259,8 +262,15 @@ The owned runtime now exposes authenticated, self-service grant controls:
 server-bound nonadmin UID and stores it encrypted; `GET` returns only scoped
 grant/provider status; `POST /release` records explicit consent for the current
 server-selected provider and model-policy fingerprint; `DELETE /release`
-withdraws that consent; and `DELETE /context-grants` revokes the exact
-deployment/tenant/user/binding grant and local credential. The browser sends the
+withdraws that user's fixed-source consents across prior binding revisions;
+and `DELETE /context-grants` revokes that exact deployment/tenant/user's
+fixed-source grants and local credentials across prior binding revisions.
+Withdrawal requires current native membership and remains available if the
+Odoo mapping or model route has been withdrawn. Provisioning, status and use
+require the independent protected `SCOUT_ODOO_BINDINGS_FILE`; its exact source
+UID/company policy intersects native membership and the existing verified-key,
+record and release grants. See [source admission and migration](MEMBERSHIP.md).
+The browser sends the
 key in one request and does not put it in query, React Query data, local storage,
 or session storage. Revoking in Scout does not revoke the upstream key in Odoo.
 Status verifies the scoped vault row is still live, but remains a server

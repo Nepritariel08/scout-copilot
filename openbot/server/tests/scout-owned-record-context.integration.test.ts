@@ -414,6 +414,107 @@ describe("owned Odoo grant persistence and credential resolution", () => {
     ).resolves.toEqual({ uid: 301, apiKey: "tenant-b-odoo-key" });
   });
 
+  test("native member withdrawal cleans prior source-policy revisions and preserves other identity scopes and sources", async () => {
+    const userId = `${prefix}-withdraw-history`;
+    const fixedSource = `odoo-withdraw-${randomUUID()}`;
+    const service = createOwnedOdooGrantService(
+      database,
+      encryptionKey,
+      fixedSource,
+    );
+    const otherSource = createOwnedOdooGrantService(
+      database,
+      encryptionKey,
+      `odoo-other-${randomUUID()}`,
+    );
+    const current = {
+      ...principal,
+      userId,
+      bindingFingerprint: "0".repeat(64),
+    };
+    const prior = ["1", "2"].map((digit) => ({
+      ...current,
+      bindingFingerprint: digit.repeat(64),
+    }));
+    const foreign = [
+      { ...prior[0]!, userId: `${userId}-other` },
+      { ...prior[0]!, tenantId: `${prefix}-foreign-tenant` },
+      { ...prior[0]!, deploymentId: `${prefix}-foreign-deployment` },
+    ];
+    async function issue(target: typeof service, owner: typeof current) {
+      await target.issueRecord({
+        principal: owner,
+        binding: {
+          sourceUid: 501,
+          companyIds: [1],
+          bindingExpiresAt: "2099-01-01T00:00:00Z",
+        },
+        apiKey: "synthetic-withdraw-history-key",
+        allowedProjectIds: [701],
+      });
+      await target.consentRelease({
+        principal: owner,
+        bindingExpiresAt: "2099-01-01T00:00:00Z",
+        modelPolicyExpiresAt: "2099-01-01T00:00:00Z",
+        provider: "local",
+        modelPolicyFingerprint,
+      });
+    }
+    for (const owner of [...prior, ...foreign]) await issue(service, owner);
+    await issue(otherSource, prior[0]!);
+    await expect(
+      service.revokeAll(current, {
+        allBindingRevisions: true,
+        releasesOnly: true,
+      }),
+    ).resolves.toMatchObject({
+      recordGrantsRevoked: 0,
+      releaseGrantsRevoked: 2,
+      localCredentialRevoked: false,
+    });
+    for (const owner of prior)
+      await expect(
+        service.status(owner, "local", modelPolicyFingerprint),
+      ).resolves.toMatchObject({
+        record: { active: true, credentialStored: true },
+        release: { active: false },
+      });
+    await expect(
+      service.revokeAll(current, { allBindingRevisions: true }),
+    ).resolves.toMatchObject({
+      recordGrantsRevoked: 2,
+      releaseGrantsRevoked: 0,
+      localCredentialRevoked: true,
+    });
+    for (const owner of prior)
+      await expect(
+        service.status(owner, "local", modelPolicyFingerprint),
+      ).resolves.toMatchObject({
+        record: { active: false, credentialStored: false },
+        release: { active: false },
+      });
+    for (const owner of foreign)
+      await expect(
+        service.status(owner, "local", modelPolicyFingerprint),
+      ).resolves.toMatchObject({
+        record: { active: true, credentialStored: true },
+        release: { active: true },
+      });
+    await expect(
+      otherSource.status(prior[0]!, "local", modelPolicyFingerprint),
+    ).resolves.toMatchObject({
+      record: { active: true, credentialStored: true },
+      release: { active: true },
+    });
+    await expect(
+      service.revokeAll(current, { allBindingRevisions: true }),
+    ).resolves.toMatchObject({
+      recordGrantsRevoked: 0,
+      releaseGrantsRevoked: 0,
+      localCredentialRevoked: false,
+    });
+  });
+
   test("model-release consent can be withdrawn without revoking the Odoo record grant", async () => {
     const releasePrincipal = {
       ...principal,

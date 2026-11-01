@@ -22,7 +22,7 @@ import {
 } from "../src/db/schema";
 import { scoutResourceScopes } from "../src/db/schema/scout-scope";
 import { createTenantScope, type TenantScope } from "../src/scout/owned/scope";
-import type { ScoutBinding } from "../src/scout/types";
+import type { ScoutMembership } from "../src/scout/types";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
@@ -45,17 +45,7 @@ const scope = createTenantScope({
       deploymentId,
       fingerprint: `revision-${membership.revision}`,
       expiresAt: "2099-01-01T00:00:00.000Z",
-      command: ["synthetic-python", "-m", "scout_queue.mcp_server"],
-      cwd: "/synthetic",
-      environment: {
-        SCOUT_ODOO_URL: "https://synthetic.example.test",
-        SCOUT_ODOO_DB: "synthetic",
-        SCOUT_ODOO_UID: "1",
-        SCOUT_ODOO_COMPANY_IDS: "1",
-        SCOUT_ODOO_KEY_FILE: "/synthetic/key",
-      },
-      identity: { database: "synthetic", uid: 1, companyIds: [1] },
-    } satisfies ScoutBinding;
+    } satisfies ScoutMembership;
   },
 });
 const store = createAgentProfileStore(

@@ -104,8 +104,8 @@ export function createOwnedModelAgents(deps: {
                     binding.fingerprint !== bindingFingerprint)
                 )
                   throw new ModelPolicyError("MODEL_ACCESS_DENIED");
-                // A same-tenant requester/company/revision change need not alter the
-                // separate model policy. Pin the native source binding for this run.
+                // A same-tenant membership revision need not alter the separate
+                // model policy. Pin native admission independently for this run.
                 bindingFingerprint ??= binding.fingerprint;
                 await createBoundHistory(
                   deps.history,
@@ -115,7 +115,7 @@ export function createOwnedModelAgents(deps: {
                   modelPrincipal(person.id, binding, registered.id),
                 );
                 // History and protected-model reads await I/O. Recheck the pinned
-                // requester after those waits, rather than returning an earlier binding.
+                // membership after those waits, rather than returning an earlier binding.
                 const current = await deps.authority.binding(request);
                 if (
                   current.person.id !== actor.id ||

@@ -10,7 +10,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import {
   AbstractAgent,
   type BaseEvent,
@@ -32,7 +32,7 @@ import {
 import { scoutHistoryThreads } from "../src/db/schema/scout-history";
 import { scoutModelCalls } from "../src/db/schema/scout-model";
 import { scoutResourceScopes } from "../src/db/schema/scout-scope";
-import { parseScoutBinding } from "../src/scout/binding";
+import { parseScoutMembership } from "../src/scout/membership";
 import { createOwnedApplication } from "../src/scout/owned/application";
 import { createModelPolicyReader } from "../src/scout/owned-model/policy";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
@@ -73,24 +73,15 @@ const policy = () => ({
     tenantId,
     revision,
     active: membershipActive,
-    draftAnalysis: true,
     expiresAt: "2099-01-01T00:00:00Z",
   })),
-  bindings: [owner, nativeAdmin].map((userId, index) => ({
+  memberships: [owner, nativeAdmin].map((userId, index) => ({
     userId,
     tenantId: index ? "tenant-b" : ownerTenant,
+    revision,
     policyRevision: revision,
     active: true,
     expiresAt: "2099-01-01T00:00:00Z",
-    command: [process.execPath, "-m", "scout_queue.mcp_server"],
-    cwd: resolve("."),
-    environment: {
-      SCOUT_ODOO_URL: "https://synthetic-odoo.fixture.invalid",
-      SCOUT_ODOO_DB: "synthetic",
-      SCOUT_ODOO_UID: String(index + 1),
-      SCOUT_ODOO_COMPANY_IDS: "1",
-      SCOUT_ODOO_KEY_FILE: join(directory, "never-created-synthetic-key"),
-    },
   })),
 });
 class CoreAgent extends AbstractAgent {
@@ -198,8 +189,41 @@ beforeAll(async () => {
       role: "admin" as const,
     })),
   );
-  createFixture = (delegatedDrafts = false, modelPolicyFile) =>
-    createOwnedApplication(
+  createFixture = async (delegatedDrafts = false, modelPolicyFile) => {
+    const queuePolicyFile = join(directory, "synthetic-queue-policy.json");
+    if (delegatedDrafts)
+      await writeFile(
+        queuePolicyFile,
+        JSON.stringify({
+          version: 1,
+          deploymentId: prefix,
+          policies: ["tenant-a", "tenant-b"].map((tenantId) => ({
+            tenantId,
+            revision: 1,
+            active: true,
+            draftAnalysis: true,
+            expiresAt: "2099-01-01T00:00:00Z",
+          })),
+          bindings: [owner, nativeAdmin].map((userId, index) => ({
+            userId,
+            tenantId: index ? "tenant-b" : "tenant-a",
+            policyRevision: 1,
+            active: true,
+            expiresAt: "2099-01-01T00:00:00Z",
+            command: [process.execPath, "-m", "scout_queue.mcp_server"],
+            cwd: directory,
+            environment: {
+              SCOUT_ODOO_URL: "https://synthetic-odoo.fixture.invalid",
+              SCOUT_ODOO_DB: "synthetic",
+              SCOUT_ODOO_UID: String(index + 2),
+              SCOUT_ODOO_COMPANY_IDS: "1",
+              SCOUT_ODOO_KEY_FILE: join(directory, "never-created-queue-key"),
+            },
+          })),
+        }),
+        { mode: 0o600 },
+      );
+    return createOwnedApplication(
       loadOwnedConfig({
         DATABASE_URL: testDatabaseUrl(),
         KEY_ENCRYPTION_KEY: Buffer.alloc(32, 29).toString("base64"),
@@ -208,7 +232,12 @@ beforeAll(async () => {
         TENANT_PACKAGE_DIR: directory,
         OPENBOT_ORGANIZATION_AUTH_URL:
           "https://synthetic-identity.fixture.invalid",
-        SCOUT_QUEUE_BINDINGS_FILE: join(directory, "never-created-policy"),
+        SCOUT_MEMBERSHIPS_FILE: join(directory, "never-created-memberships"),
+        ...(delegatedDrafts
+          ? {
+              SCOUT_QUEUE_BINDINGS_FILE: queuePolicyFile,
+            }
+          : {}),
         SCOUT_PLATFORM_OWNER_IDS: owner,
         OPENBOT_HOST: "127.0.0.1",
         OPENBOT_GENERATIVE_UI: "false",
@@ -243,7 +272,8 @@ beforeAll(async () => {
             },
           },
         },
-        binding: async (actor) => parseScoutBinding(policy(), actor),
+        membership: async (actor) =>
+          parseScoutMembership(policy(), actor, prefix),
         ...(modelPolicyFile
           ? {
               modelFetch: Object.assign(async () => {
@@ -279,6 +309,7 @@ beforeAll(async () => {
           : { agents: async () => ({ [botId]: new CoreAgent() }) }),
       },
     );
+  };
   owned = await createFixture();
   sink = Bun.serve({
     hostname: "127.0.0.1",
@@ -407,7 +438,7 @@ describe("actual owned pilot capability boundary", () => {
       deploymentId: prefix,
       globalMaxConcurrent: 1,
       globalMaxCallsPerDay: 10,
-      bindings: [
+      memberships: [
         {
           userId: owner,
           tenantId: "tenant-a",
@@ -601,6 +632,9 @@ describe("actual owned pilot capability boundary", () => {
         delegatedDrafts: true,
       });
       expect((await call("/api/scout/tasks")).status).toBe(200);
+      // Native membership cannot substitute for the separately read queue policy.
+      await rm(join(directory, "synthetic-queue-policy.json"));
+      expect((await call("/api/scout/tasks")).status).toBe(503);
       // Invalid input refuses before any MCP child or remote queue connection can be constructed.
       expect((await call("/api/scout/tasks", "POST", {})).status).toBe(400);
       expect(
