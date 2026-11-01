@@ -14,6 +14,7 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ScoutDrafts } from "../src/components/scout/drafts";
 import { type AuthenticatedUser, authKeys } from "../src/lib/auth/queries";
+import { deploymentKeys } from "../src/lib/deployment/queries";
 import { settleReactWork } from "./settle-react-work";
 
 beforeAll(() => GlobalRegistrator.register({ url: "http://localhost/" }));
@@ -57,6 +58,10 @@ beforeEach(() => {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   cache.setQueryData(authKeys.currentUser(), alice);
+  cache.setQueryData(deploymentKeys.capabilities(), {
+    mode: "owned",
+    delegatedDrafts: true,
+  });
   current = alice;
   tasks = [];
   calls = [];
@@ -145,6 +150,27 @@ async function submit() {
   );
   await user.click(view.getByRole("button", { name: "Delegate draft" }));
 }
+
+test("unavailable delegation exposes no submission controls and makes no queue request", async () => {
+  cache.setQueryData(deploymentKeys.capabilities(), {
+    mode: "owned",
+    delegatedDrafts: false,
+  });
+  mount();
+  await view.findByText(
+    "Draft delegation is not available in this workspace yet.",
+  );
+  expect(view.queryByRole("button", { name: "Delegate draft" })).toBeNull();
+  expect(view.queryByLabelText("Draft title")).toBeNull();
+  await settleReactWork();
+  expect(
+    fetchSpy.mock.calls.some(([input]) =>
+      (input instanceof Request ? input.url : String(input)).includes(
+        "/api/scout/",
+      ),
+    ),
+  ).toBe(false);
+});
 
 test("delegating sends one explicit queue request with a stable nonce, without a chat/model turn", async () => {
   mount();

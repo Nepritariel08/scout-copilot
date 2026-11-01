@@ -1380,6 +1380,7 @@ export type OwnedDeploymentConfig =
   DeploymentConfig<OwnedRuntimeCapabilities> & {
     scoutModelPolicyFile?: string;
     scoutPlatformOwnerIds: readonly string[];
+    scoutDelegatedDraftsEnabled: boolean;
   };
 
 /** An explicit public-SDK composition; never supplies fabricated Intelligence credentials. */
@@ -1438,12 +1439,22 @@ export function loadOwnedConfig(
     throw new Error(
       "SCOUT_PLATFORM_OWNER_IDS must contain unique exact native subject IDs.",
     );
+  const delegatedDrafts = optional(
+    environment,
+    "SCOUT_DELEGATED_DRAFTS_ENABLED",
+  );
+  if (delegatedDrafts && !["true", "false", "1", "0"].includes(delegatedDrafts))
+    throw new Error(
+      "SCOUT_DELEGATED_DRAFTS_ENABLED must be true, false, 1 or 0.",
+    );
   return {
     ...config,
     learningAutoAssign: false,
     selfHostBanner: false,
     ...(scoutModelPolicyFile ? { scoutModelPolicyFile } : {}),
     scoutPlatformOwnerIds,
+    scoutDelegatedDraftsEnabled:
+      delegatedDrafts === "true" || delegatedDrafts === "1",
   };
 }
 

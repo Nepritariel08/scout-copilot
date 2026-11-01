@@ -141,6 +141,22 @@ application composition; their availability requires separate scoped adapters.
 
 ## Operator entry and current limits
 
+Owned pilot admission permits an explicit API/auth method and path inventory
+before public or feature handlers can dispatch. It supplements native identity,
+tenant, resource and platform-owner checks. New optional adapters remain
+unavailable until admitted and qualified. Canonical login/session protocols and
+the direct-only first-day conversation path remain available.
+
+`SCOUT_DELEGATED_DRAFTS_ENABLED` defaults to false. Keep it false until the
+selected deployed queue's Scout provenance and live contract pass. The browser
+reads the server capability and offers no submission controls or queue requests
+while unavailable; ordinary chat remains independent. An explicit true enables
+only the existing protected requester contract, never another worker.
+
+The concrete same-Linode preparation, ownership claim, service/resource limits,
+backup/restore and rollback packet is [PRIVATE-PILOT-DEPLOYMENT.md](PRIVATE-PILOT-DEPLOYMENT.md).
+It is prepared source, not an executed installation.
+
 Use [owned.env.example](owned.env.example) as an incomplete overlay. Provision a
 separate PostgreSQL database/service identity, verified native authentication,
 protected membership policy and matched database/encryption-key backups outside

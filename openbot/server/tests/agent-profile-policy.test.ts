@@ -21,7 +21,11 @@ function profile(overrides: Partial<AgentProfile> = {}): AgentProfile {
     ownerUserId: creator.id,
     systemOwned: false,
     hidden: false,
+    pinned: false,
     deletedAt: null,
+    endpoint: null,
+    hasAuth: false,
+    hasCallbackToken: false,
     ...overrides,
   };
 }

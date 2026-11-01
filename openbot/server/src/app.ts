@@ -140,6 +140,7 @@ import type { RoutineRunner } from "./routines/runner";
 import type { IntentRouter } from "./routing/classify";
 import { createRoutingRoutes } from "./routing/routes";
 import { createCoworkerRoutingService } from "./routing/service";
+import { ownedApiAllowed, ownedAuthAllowed } from "./scout/owned/capabilities";
 import type { TenantScope } from "./scout/owned/scope";
 import { createScoutRoutes } from "./scout/routes";
 import type { ScoutService } from "./scout/service";
@@ -440,6 +441,7 @@ export function createApp(
     scout?: ScoutService;
     scoutOwned?: {
       requireTenant: MiddlewareHandler<{ Variables: AppVariables }>;
+      delegatedDraftsEnabled?: boolean;
       scope?: TenantScope;
       requirePlatformAdmin?: (request: Request) => Promise<void>;
     };
@@ -496,6 +498,37 @@ export function createApp(
    * route registered ahead of a middleware in Hono never passes through it.
    */
   app.use("*", createSameOriginGuard(config));
+  if (config.runtime.mode === "owned") {
+    app.use("*", async (context, next) => {
+      const path = new URL(context.req.url).pathname;
+      const namespace = path.replace(/\/+/g, "/").split("/")[1] ?? "";
+      // Hono decodes static route segments. Admit raw paths before even public handlers can match.
+      if (namespace.includes("%"))
+        return context.json({ code: "SCOUT_CAPABILITY_UNAVAILABLE" }, 503);
+      const authPath = path === "/api/auth" || path.startsWith("/api/auth/");
+      if (
+        namespace.toLowerCase() === "api" &&
+        !(authPath
+          ? ownedAuthAllowed(path, context.req.method)
+          : ownedApiAllowed(path, context.req.method, {
+              delegatedDrafts: coworker?.scoutOwned?.delegatedDraftsEnabled,
+            }))
+      )
+        return context.json(
+          {
+            code: authPath
+              ? "SCOUT_IDENTITY_ROUTE_UNAVAILABLE"
+              : /^\/api\/(?:audio|voice)(?:\/|$)/.test(path)
+                ? "MODEL_ROUTE_UNAVAILABLE"
+                : path === "/api/agents/test-connection"
+                  ? "SCOUT_REMOTE_ROUTE_UNAVAILABLE"
+                  : "SCOUT_CAPABILITY_UNAVAILABLE",
+          },
+          503,
+        );
+      await next();
+    });
+  }
   mountDesktopConnectionFailure(app, desktopHostToken);
   mountProviderOAuthProxy(app, modelProviderProxy);
 
@@ -516,6 +549,12 @@ export function createApp(
       mode: config.runtime.mode,
       durableHistory: config.runtime.durableHistory,
       serverTurns: config.runtime.mode === "intelligence",
+      ...(config.runtime.mode === "owned"
+        ? {
+            delegatedDrafts:
+              coworker?.scoutOwned?.delegatedDraftsEnabled === true,
+          }
+        : {}),
       /*
        * Whether a Bot may answer with an interface it wrote itself.
        *
@@ -591,21 +630,6 @@ export function createApp(
     "/api/auth/sso/request-domain-verification",
     "/api/auth/sso/verify-domain",
   ]);
-  // Native login credentials are not a qualified connector credential or provider-context port.
-  const OWNED_UNADAPTED_ACCOUNT_ROUTES = new Set([
-    "/api/auth/get-access-token",
-    "/api/auth/refresh-token",
-    "/api/auth/account-info",
-    "/api/auth/list-accounts",
-  ]);
-  const ownedIdentityProtocol = (path: string, method: string) =>
-    (method === "GET" &&
-      /^\/api\/auth\/sso\/callback(?:\/[^/]+)?$/.test(path)) ||
-    (method === "GET" && path === "/api/auth/sso/saml2/sp/metadata") ||
-    (["GET", "POST"].includes(method) &&
-      /^\/api\/auth\/sso\/saml2\/sp\/(?:acs|slo)\/[^/]+$/.test(path)) ||
-    (method === "POST" &&
-      /^\/api\/auth\/sso\/saml2\/logout\/[^/]+$/.test(path));
 
   const AUTH_ROUTE_EVENTS: Record<string, AuditEventType | undefined> = {
     "/api/auth/sso/register": "identity_provider.registered",
@@ -615,25 +639,9 @@ export function createApp(
   app.on(["GET", "POST"], "/api/auth/*", async (context) => {
     if (config.runtime.mode === "owned") {
       const rawPath = new URL(context.req.url).pathname;
-      // Use one canonical boundary before the native handler can normalize an equivalent route.
-      if (rawPath.includes("%"))
+      if (!ownedAuthAllowed(rawPath, context.req.method))
         return context.json({ code: "SCOUT_IDENTITY_ROUTE_UNAVAILABLE" }, 503);
-      const path = rawPath.replace(/\/+$/, "");
-      if (
-        OWNED_UNADAPTED_ACCOUNT_ROUTES.has(path) ||
-        path === "/api/auth/admin" ||
-        path.startsWith("/api/auth/admin/") ||
-        path === "/api/auth/scim" ||
-        path.startsWith("/api/auth/scim/")
-      )
-        return context.json({ code: "SCOUT_IDENTITY_ROUTE_UNAVAILABLE" }, 503);
-      if (
-        path.startsWith("/api/auth/sso/") &&
-        !OWNED_IDENTITY_MANAGEMENT.has(path) &&
-        !ownedIdentityProtocol(path, context.req.method)
-      )
-        return context.json({ code: "SCOUT_IDENTITY_ROUTE_UNAVAILABLE" }, 503);
-      if (OWNED_IDENTITY_MANAGEMENT.has(path)) {
+      if (OWNED_IDENTITY_MANAGEMENT.has(rawPath)) {
         try {
           if (!coworker?.scoutOwned?.requirePlatformAdmin)
             throw new Error("unconfigured owner");
@@ -1571,9 +1579,9 @@ export function createApp(
               canHandOn: (agentId) => pluginStore.agentCanHandOn(agentId),
             }
           : undefined,
-        // Whether "built-in" is a kind of coworker this deployment can actually make: the create
-        // path falls back to the managed Bot's endpoint, so without one it can only refuse.
-        config.managedAgent?.endpoint !== undefined,
+        // Owned mode creates native built-in Bots; the licensed composition uses its managed Bot.
+        coworker?.scoutOwned !== undefined ||
+          config.managedAgent?.endpoint !== undefined,
         // The managed Bot's address, so a coworker created without an endpoint — which creation
         // stores as running at this address — can be told apart from one a person hosts.
         config.managedAgent?.endpoint?.toString(),
@@ -1588,6 +1596,9 @@ export function createApp(
                 config.managedAgent.alsoRun,
               ].filter((url): url is URL => url !== undefined),
             }
+          : undefined,
+        coworker?.scoutOwned
+          ? { remoteAvailable: false, ownedNativeBuiltIn: true }
           : undefined,
       ),
     );

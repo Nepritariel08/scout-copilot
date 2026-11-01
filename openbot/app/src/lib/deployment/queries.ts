@@ -11,6 +11,7 @@ import { client } from "@/lib/client";
 export type DeploymentCapabilities = {
   mode?: "owned" | "intelligence";
   serverTurns?: boolean;
+  delegatedDrafts?: boolean;
   /**
    * Whether a Bot may answer with an interface it wrote itself.
    *
@@ -69,6 +70,7 @@ export function deploymentCapabilitiesQueryOptions() {
       ).json()) as {
         mode?: string;
         serverTurns?: boolean;
+        delegatedDrafts?: boolean;
         generativeUi?: boolean;
         selfHostBanner?: boolean;
         localEvaluation?: boolean;
@@ -84,6 +86,10 @@ export function deploymentCapabilitiesQueryOptions() {
               ? "intelligence"
               : undefined,
         serverTurns: body.serverTurns !== false,
+        delegatedDrafts:
+          body.mode === "owned"
+            ? body.delegatedDrafts === true
+            : body.delegatedDrafts !== false,
         generativeUi: body.generativeUi === true,
         selfHostBanner: body.selfHostBanner === true,
         localEvaluation: body.localEvaluation === true,

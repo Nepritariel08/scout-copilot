@@ -329,6 +329,7 @@ export async function createOwnedApplication(
       scout,
       scoutOwned: {
         requireTenant: authority.requireTenant,
+        delegatedDraftsEnabled: config.scoutDelegatedDraftsEnabled,
         scope,
         requirePlatformAdmin: async (request) => {
           const { person } = await authority.binding(request);
