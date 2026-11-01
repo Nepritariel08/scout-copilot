@@ -5,7 +5,7 @@ import { createDatabase } from "../src/db/client";
 import {
   createEntraIdentityOperator,
   EntraOperatorError,
-  parseEntraIdentityRequest,
+  parseEntraOperatorRequest,
 } from "../src/scout/entra-operator";
 import { createEntraIdentityStore } from "../src/scout/entra-operator-store";
 
@@ -142,7 +142,7 @@ export async function runEntraOperator(
   const input = await readProtectedJson(
     parsed.mode === "preview" ? parsed.request : parsed.plan,
   );
-  if (parsed.mode === "preview") parseEntraIdentityRequest(input);
+  if (parsed.mode === "preview") parseEntraOperatorRequest(input);
   const database = createDatabase(environment.DATABASE_URL, { max: 1 });
   try {
     const operator = createEntraIdentityOperator(

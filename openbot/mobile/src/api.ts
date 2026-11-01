@@ -1,16 +1,23 @@
 import { authClient, serverUrl } from "./auth";
+import {
+  assertCurrentRequestScope,
+  type RequestScope,
+  scopedFetch,
+} from "./request-scope";
 
 export async function api<T>(
   path: string,
   input?: { method?: string; body?: unknown; signal?: AbortSignal },
+  scope?: RequestScope,
 ): Promise<T> {
   if (!path.startsWith("/api/")) throw new Error("Use a Scout API path.");
-  const cookie = await authClient.getCookie();
-  const response = await fetch(`${serverUrl}${path}`, {
+  const fetcher = scope
+    ? scopedFetch(() => authClient.getCookie(), scope, fetch)
+    : fetch;
+  const response = await fetcher(`${serverUrl}${path}`, {
     method: input?.method,
     credentials: "omit",
     headers: {
-      ...(cookie ? { Cookie: cookie } : {}),
       ...(input?.body !== undefined
         ? { "content-type": "application/json" }
         : {}),
@@ -20,6 +27,7 @@ export async function api<T>(
   });
   if (response.status === 204) return undefined as T;
   const body: unknown = await response.json();
+  if (scope) assertCurrentRequestScope(scope);
   if (!response.ok)
     throw new Error(
       body &&
@@ -32,6 +40,13 @@ export async function api<T>(
           : `Request failed (${response.status}).`,
     );
   return body as T;
+}
+
+export function scopedApi(scope: RequestScope) {
+  return <T>(
+    path: string,
+    input?: { method?: string; body?: unknown; signal?: AbortSignal },
+  ) => api<T>(path, input, scope);
 }
 
 export type ScoutAgent = {

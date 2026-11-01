@@ -363,11 +363,13 @@ export function createOwnedOdooGrantService(
       modelPolicyExpiresAt: string;
       provider: ProjectTaskContextProvider;
       modelPolicyFingerprint: string;
+      assertCurrent(): Promise<void>;
     }) {
       validPrincipal(input.principal);
       if (
         !/^[a-f0-9]{64}$/.test(input.modelPolicyFingerprint) ||
-        !["openrouter", "local"].includes(input.provider)
+        !["openrouter", "local"].includes(input.provider) ||
+        typeof input.assertCurrent !== "function"
       )
         throw new TypeError("Odoo release grant input is invalid");
       const modelPolicyExpiry = Date.parse(input.modelPolicyExpiresAt);
@@ -384,6 +386,7 @@ export function createOwnedOdooGrantService(
       );
       return database.transaction(async (tx) => {
         await lock(tx, input.principal);
+        await input.assertCurrent();
         const [latest] = await tx
           .select()
           .from(scoutContextReleaseGrants)
@@ -414,6 +417,7 @@ export function createOwnedOdooGrantService(
           .orderBy(desc(scoutContextReleaseGrants.revision))
           .limit(1);
         const revision = (latest?.revision ?? 0) + 1;
+        await input.assertCurrent();
         const [grant] = await tx
           .insert(scoutContextReleaseGrants)
           .values({
@@ -448,6 +452,7 @@ export function createOwnedOdooGrantService(
             },
           },
         );
+        await input.assertCurrent();
         return {
           revision,
           expiresAt: expiresAt.toISOString(),

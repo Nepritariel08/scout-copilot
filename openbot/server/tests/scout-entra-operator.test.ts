@@ -13,7 +13,9 @@ import {
   type EntraIdentityStore,
   type EntraIdentityTransaction,
   entraIdentityDigest,
+  type NativeContactRequest,
   parseEntraIdentityRequest,
+  parseEntraOperatorRequest,
 } from "../src/scout/entra-operator";
 
 const now = Date.parse("2026-11-02T10:00:00Z");
@@ -40,6 +42,18 @@ function request(
     },
   };
 }
+function contactRequest(input = request()): NativeContactRequest {
+  const { issuer: _issuer, objectId: _objectId, ...common } = input;
+  return { ...common, action: "create_contact" };
+}
+const contactDefaults = () => ({
+  image: null,
+  preferences: {},
+  groups: [] as string[],
+  onboardingStep: 0,
+  onboardingCompletedAt: null,
+  lastSignedInAt: null,
+});
 function fixture() {
   const input = request();
   let snapshot: EntraIdentitySnapshot = {
@@ -64,10 +78,30 @@ function fixture() {
   let writes = 0;
   let clock = now;
   let failAudit = false;
+  let corruptInsert: ((value: EntraIdentitySnapshot) => void) | undefined;
   const transaction: EntraIdentityTransaction = {
-    snapshot: async () => structuredClone(snapshot),
+    snapshot: async (request) => {
+      const value = structuredClone(snapshot);
+      if (request.action !== "create_contact") delete value.contactBootstrap;
+      return value;
+    },
     receipt: async (id) =>
       structuredClone(receipts.find((row) => row.operationId === id) ?? null),
+    async insertContact(value) {
+      writes++;
+      snapshot.user = {
+        ...value.nativeUser,
+        emailVerified: false,
+        createdAt: new Date(clock).toISOString(),
+        updatedAt: new Date(clock).toISOString(),
+      };
+      snapshot.contactBootstrap = {
+        matchingUserIds: [value.nativeUser.id],
+        roles: [],
+        defaults: contactDefaults(),
+      };
+      corruptInsert?.(snapshot);
+    },
     async insertBinding(value) {
       writes++;
       snapshot.accounts.push({
@@ -127,8 +161,278 @@ function fixture() {
     failAudit: () => {
       failAudit = true;
     },
+    prepareContact: () => {
+      snapshot.user = null;
+      snapshot.accounts = [];
+      snapshot.sessions = [];
+      snapshot.contactBootstrap = {
+        matchingUserIds: [],
+        roles: [],
+        defaults: null,
+      };
+      return contactRequest(input);
+    },
+    corruptInsert: (use: (value: EntraIdentitySnapshot) => void) => {
+      corruptInsert = use;
+    },
   };
 }
+
+describe("native contact bootstrap is separate from authentication and grants", () => {
+  test("strict contact request has no issuer, object, credentials, role or mutable defaults", () => {
+    const input = contactRequest();
+    expect(parseEntraOperatorRequest(input)).toEqual(input);
+    expect(() => parseEntraIdentityRequest(input)).toThrow(
+      "ENTRA_INPUT_REFUSED",
+    );
+    for (const extra of [
+      { issuer: request().issuer },
+      { objectId: request().objectId },
+      { role: "user" },
+      { password: "synthetic" },
+      { token: "synthetic" },
+      { emailVerified: true },
+      { groups: [] },
+      { preferences: {} },
+    ])
+      expect(() => parseEntraOperatorRequest({ ...input, ...extra })).toThrow(
+        "ENTRA_INPUT_REFUSED",
+      );
+  });
+  test("read-only preview and explicit apply create one exact default contact, without account/session/role grants", async () => {
+    const subject = fixture();
+    const input = subject.prepareContact();
+    const before = subject.state();
+    const { plan, digest } = await subject.operator.preview(input);
+    expect(plan.effect).toBe("insert_contact");
+    expect(subject.state()).toEqual(before);
+    const result = await subject.operator.apply(plan, digest);
+    expect(result).toMatchObject({
+      action: "create_contact",
+      effect: "insert_contact",
+      removedSessions: 0,
+      replayed: false,
+    });
+    const after = subject.state();
+    expect(after.snapshot.user).toMatchObject({
+      ...input.nativeUser,
+      emailVerified: false,
+    });
+    expect(after.snapshot).toMatchObject({
+      accounts: [],
+      sessions: [],
+      contactBootstrap: {
+        matchingUserIds: [input.nativeUser.id],
+        roles: [],
+        defaults: contactDefaults(),
+      },
+    });
+    expect(after.receipts).toHaveLength(1);
+    expect(after.receipts[0].kind).toBe("scout.native.contact.operation.v1");
+    for (const privateValue of [
+      input.nativeUser.id,
+      input.nativeUser.email,
+      input.nativeUser.name,
+      input.review.operatorUserId,
+      input.review.reference,
+    ])
+      expect(
+        JSON.stringify({ result, receipts: after.receipts }),
+      ).not.toContain(privateValue as string);
+    expect(await subject.operator.apply(plan, digest)).toMatchObject({
+      replayed: true,
+    });
+    expect(subject.state()).toEqual(after);
+  });
+  test("an existing person, including an exact contact, is preserved rather than claimed", async () => {
+    const subject = fixture();
+    const before = subject.state();
+    await expect(
+      subject.operator.preview(contactRequest(subject.input)),
+    ).rejects.toThrow("ENTRA_CONTACT_REFUSED");
+    expect(subject.state()).toEqual(before);
+  });
+  test.each([
+    "case-folded email",
+    "revoked contact",
+    "orphan role",
+    "orphan account",
+    "orphan session",
+  ])("bootstrap refuses %s without creating a user", async (kind) => {
+    const subject = fixture();
+    const input = subject.prepareContact();
+    subject.mutate((value) => {
+      if (kind === "case-folded email" && value.contactBootstrap)
+        value.contactBootstrap.matchingUserIds = ["another-native-user"];
+      if (kind === "revoked contact") value.revoked = true;
+      if (kind === "orphan role" && value.contactBootstrap)
+        value.contactBootstrap.roles = ["user"];
+      if (kind === "orphan account")
+        value.accounts = [
+          {
+            id: "orphan",
+            userId: input.nativeUser.id,
+            providerId: "microsoft",
+            issuer: subject.input.issuer,
+            accountId: subject.input.objectId,
+            createdAt: new Date(now).toISOString(),
+            updatedAt: new Date(now).toISOString(),
+          },
+        ];
+      if (kind === "orphan session")
+        value.sessions = [
+          {
+            id: "orphan",
+            createdAt: new Date(now).toISOString(),
+            expiresAt: new Date(now + 60_000).toISOString(),
+          },
+        ];
+    });
+    await expect(subject.operator.preview(input)).rejects.toThrow(
+      "ENTRA_CONTACT_REFUSED",
+    );
+    expect(subject.state().writes).toBe(0);
+  });
+  test("fresh snapshot, exact approval and short TTL are all required for contact creation", async () => {
+    const subject = fixture();
+    const input = subject.prepareContact();
+    const { plan, digest } = await subject.operator.preview(input);
+    await expect(subject.operator.apply(plan, "0".repeat(64))).rejects.toThrow(
+      "ENTRA_PLAN_REFUSED",
+    );
+    const badEffect = { ...plan, effect: "insert_binding" };
+    await expect(
+      subject.operator.apply(badEffect, entraIdentityDigest(badEffect)),
+    ).rejects.toThrow("ENTRA_PLAN_REFUSED");
+    subject.mutate((value) => {
+      value.target.serverPort = 54321;
+    });
+    await expect(subject.operator.apply(plan, digest)).rejects.toThrow(
+      "ENTRA_PLAN_STALE",
+    );
+    subject.mutate((value) => {
+      value.target.role = "wrong-role";
+    });
+    await expect(subject.operator.apply(plan, digest)).rejects.toThrow(
+      "ENTRA_TARGET_REFUSED",
+    );
+    subject.clock(now + 15 * 60_000);
+    await expect(subject.operator.apply(plan, digest)).rejects.toThrow(
+      "ENTRA_PLAN_REFUSED",
+    );
+    expect(subject.state().writes).toBe(0);
+  });
+  test("new email collision after preview denies the stale contact plan", async () => {
+    const subject = fixture();
+    const input = subject.prepareContact();
+    const { plan, digest } = await subject.operator.preview(input);
+    subject.mutate((value) => {
+      if (value.contactBootstrap)
+        value.contactBootstrap.matchingUserIds = ["concurrent-email-owner"];
+    });
+    await expect(subject.operator.apply(plan, digest)).rejects.toThrow(
+      "ENTRA_CONTACT_REFUSED",
+    );
+    expect(subject.state().writes).toBe(0);
+  });
+  test("replay never overwrites changed poststate or adds authentication after later onboarding", async () => {
+    const mutations: ((value: EntraIdentitySnapshot) => void)[] = [
+      (value) => {
+        if (value.user) value.user.name = "Changed contact";
+      },
+      (value) => {
+        if (value.user) value.user.emailVerified = true;
+      },
+      (value) => {
+        if (value.user) value.user.updatedAt = "2026-11-02T10:00:01.000Z";
+      },
+      (value) => {
+        if (value.contactBootstrap?.defaults)
+          value.contactBootstrap.defaults.groups = ["approved-later-group"];
+      },
+      (value) => {
+        if (value.contactBootstrap) value.contactBootstrap.roles = ["admin"];
+      },
+      (value) => {
+        if (value.contactBootstrap?.defaults)
+          value.contactBootstrap.defaults.preferences = { later: true };
+      },
+    ];
+    for (const mutate of mutations) {
+      const subject = fixture();
+      const input = subject.prepareContact();
+      const { plan, digest } = await subject.operator.preview(input);
+      await subject.operator.apply(plan, digest);
+      subject.mutate(mutate);
+      const before = subject.state();
+      await expect(subject.operator.apply(plan, digest)).rejects.toThrow(
+        "ENTRA_POSTCONDITION_REFUSED",
+      );
+      expect(subject.state()).toEqual(before);
+    }
+    const subject = fixture();
+    const input = subject.prepareContact();
+    const contact = await subject.operator.preview(input);
+    await subject.operator.apply(contact.plan, contact.digest);
+    const enrollment = await subject.operator.preview({
+      ...subject.input,
+      operationId: randomUUID(),
+    });
+    await subject.operator.apply(enrollment.plan, enrollment.digest);
+    expect(subject.state().snapshot.accounts).toHaveLength(1);
+    await expect(
+      subject.operator.apply(contact.plan, contact.digest),
+    ).rejects.toThrow("ENTRA_POSTCONDITION_REFUSED");
+  });
+  test("a contact operation ID cannot be reused as a different approved request", async () => {
+    const subject = fixture();
+    const input = subject.prepareContact();
+    const { plan, digest } = await subject.operator.preview(input);
+    await subject.operator.apply(plan, digest);
+    const different = {
+      ...plan,
+      request: {
+        ...input,
+        nativeUser: { ...input.nativeUser, email: "different@fixture.invalid" },
+      },
+    };
+    await expect(
+      subject.operator.apply(different, entraIdentityDigest(different)),
+    ).rejects.toThrow("ENTRA_OPERATION_CONFLICT");
+  });
+  test("audit failure rolls back the contact insert and its receipt", async () => {
+    const subject = fixture();
+    const input = subject.prepareContact();
+    const preview = await subject.operator.preview(input);
+    const before = subject.state();
+    subject.failAudit();
+    await expect(
+      subject.operator.apply(preview.plan, preview.digest),
+    ).rejects.toThrow("ENTRA_OPERATOR_FAILED");
+    expect(subject.state().snapshot).toEqual(before.snapshot);
+    expect(subject.state().receipts).toEqual([]);
+  });
+  test("unexpected inserted defaults or privileges cause rollback rather than acceptance", async () => {
+    for (const corrupt of [
+      (value: EntraIdentitySnapshot) => {
+        if (value.user) value.user.emailVerified = true;
+      },
+      (value: EntraIdentitySnapshot) => {
+        if (value.contactBootstrap) value.contactBootstrap.roles = ["user"];
+      },
+    ]) {
+      const subject = fixture();
+      const input = subject.prepareContact();
+      const preview = await subject.operator.preview(input);
+      subject.corruptInsert(corrupt);
+      await expect(
+        subject.operator.apply(preview.plan, preview.digest),
+      ).rejects.toThrow("ENTRA_POSTCONDITION_REFUSED");
+      expect(subject.state().snapshot.user).toBeNull();
+      expect(subject.state().receipts).toEqual([]);
+    }
+  });
+});
 
 describe("Entra identity operator exact-plan boundary", () => {
   test("preview is read only; apply adds only the exact account and clears old sessions", async () => {

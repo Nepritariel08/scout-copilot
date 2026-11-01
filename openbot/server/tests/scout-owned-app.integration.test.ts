@@ -33,6 +33,7 @@ import {
 import { scoutHistoryThreads } from "../src/db/schema/scout-history";
 import { parseScoutMembership } from "../src/scout/membership";
 import { createOwnedApplication } from "../src/scout/owned/application";
+import { createModelPolicyReader } from "../src/scout/owned-model/policy";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
@@ -155,6 +156,23 @@ function request(
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+}
+async function releaseConsent() {
+  const model = await createModelPolicyReader(
+    join(fixtureDirectory, "synthetic-model-policy.json"),
+  )({
+    userId: alice,
+    tenantId: "tenant-a",
+    deploymentId: "fixture-owned",
+    agentId,
+  });
+  return {
+    agentId,
+    consent: true,
+    expectedProvider: model.route.provider,
+    expectedModel: model.route.model,
+    expectedPolicyFingerprint: model.fingerprint,
+  };
 }
 function requestConfiguredGrant(
   method: "GET" | "POST" | "DELETE",
@@ -668,7 +686,7 @@ describe("owned composition through the actual Scout app", () => {
       const deniedConsent = await requestConfiguredGrant(
         "POST",
         "/api/scout/odoo/context-grants/release",
-        { agentId, consent: true },
+        await releaseConsent(),
         outsider,
       );
       expect(deniedConsent.status).toBe(403);
@@ -680,6 +698,12 @@ describe("owned composition through the actual Scout app", () => {
         provider: "openrouter",
         record: null,
         release: null,
+        route: {
+          provider: "openrouter",
+          model: "fixture-model",
+          policyFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+          expiresAt: "2099-01-01T00:00:00Z",
+        },
       });
       const visibleProfiles = await requestConfiguredGrant(
         "GET",
@@ -700,7 +724,7 @@ describe("owned composition through the actual Scout app", () => {
       const consent = await requestConfiguredGrant(
         "POST",
         "/api/scout/odoo/context-grants/release",
-        { agentId, consent: true },
+        await releaseConsent(),
       );
       expect(consent.status).toBe(201);
       const consentStatus = await requestConfiguredGrant("GET", statusPath);
@@ -785,7 +809,7 @@ describe("owned composition through the actual Scout app", () => {
           await requestConfiguredGrant(
             "POST",
             "/api/scout/odoo/context-grants/release",
-            { agentId, consent: true },
+            await releaseConsent(),
           )
         ).status,
       ).toBe(201);
@@ -800,7 +824,7 @@ describe("owned composition through the actual Scout app", () => {
         [
           "POST",
           "/api/scout/odoo/context-grants/release",
-          { agentId, consent: true },
+          await releaseConsent(),
         ],
         [
           "POST",
@@ -869,7 +893,7 @@ describe("owned composition through the actual Scout app", () => {
           await requestConfiguredGrant(
             "POST",
             "/api/scout/odoo/context-grants/release",
-            { agentId, consent: true },
+            await releaseConsent(),
           )
         ).status,
       ).toBe(201);

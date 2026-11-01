@@ -1,4 +1,5 @@
 import type { ChatMessage } from "./api";
+import { validOdooTaskId } from "./scout-work.ts";
 
 export type OwnedRunInput = {
   threadId: string;
@@ -6,7 +7,7 @@ export type OwnedRunInput = {
   messages: ChatMessage[];
   state: Record<string, never>;
   tools: [];
-  context: [];
+  context: { description: "scout.project_task_id"; value: string }[];
   forwardedProps: Record<string, never>;
 };
 
@@ -109,11 +110,17 @@ export function buildOwnedRunInput(input: {
   threadId: string;
   history: readonly ChatMessage[];
   text: string;
+  selectedOdooTaskId?: string | null;
   createId: () => string;
 }): { payload: OwnedRunInput; userMessage: ChatMessage } {
   const text = input.text.trim();
   if (!input.threadId || !text)
     throw new Error("A Scout conversation and message are required.");
+  if (
+    input.selectedOdooTaskId != null &&
+    !validOdooTaskId(input.selectedOdooTaskId)
+  )
+    throw new Error("Choose a valid Odoo project task ID.");
   const userMessage: ChatMessage = {
     id: input.createId(),
     role: "user",
@@ -127,15 +134,30 @@ export function buildOwnedRunInput(input: {
       messages: [...input.history, userMessage],
       state: {},
       tools: [],
-      context: [],
+      context:
+        input.selectedOdooTaskId == null
+          ? []
+          : [
+              {
+                description: "scout.project_task_id",
+                value: input.selectedOdooTaskId,
+              },
+            ],
       forwardedProps: {},
     },
   };
 }
 
-function sessionHeaders(cookie: string | null, accept: string) {
+function sessionHeaders(
+  cookie: string | null,
+  accept: string,
+  expectedUserId: string,
+) {
+  if (!expectedUserId)
+    throw new Error("A signed-in Scout identity is required.");
   return {
     Accept: accept,
+    "X-Scout-Expected-User": expectedUserId,
     ...(cookie ? { Cookie: cookie } : {}),
   };
 }
@@ -158,6 +180,7 @@ async function responseError(response: Response): Promise<Error> {
 export async function readOwnedHistory(input: {
   serverUrl: string;
   cookie: string | null;
+  expectedUserId: string;
   threadId: string;
   agentId: string;
   fetcher?: Fetcher;
@@ -167,7 +190,11 @@ export async function readOwnedHistory(input: {
   const response = await fetcher(`${input.serverUrl}${path}`, {
     method: "GET",
     credentials: "omit",
-    headers: sessionHeaders(input.cookie, "application/json"),
+    headers: sessionHeaders(
+      input.cookie,
+      "application/json",
+      input.expectedUserId,
+    ),
   });
   if (!response.ok) throw await responseError(response);
   const body: unknown = await response.json();
@@ -279,6 +306,7 @@ export async function consumeOwnedEventStream(
 export async function runOwnedAgent(input: {
   serverUrl: string;
   cookie: string | null;
+  expectedUserId: string;
   agentId: string;
   payload: OwnedRunInput;
   fetcher: Fetcher;
@@ -292,7 +320,11 @@ export async function runOwnedAgent(input: {
       method: "POST",
       credentials: "omit",
       headers: {
-        ...sessionHeaders(input.cookie, "text/event-stream"),
+        ...sessionHeaders(
+          input.cookie,
+          "text/event-stream",
+          input.expectedUserId,
+        ),
         "Content-Type": "application/json",
       },
       body: JSON.stringify(input.payload),

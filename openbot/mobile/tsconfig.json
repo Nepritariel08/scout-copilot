@@ -2,11 +2,13 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true,
+    "types": ["react", "node"],
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
   "include": [
     "app/**/*.tsx",
+    "components/**/*.tsx",
     "src/**/*.ts",
     "src/**/*.tsx",
     "tests/**/*.ts",

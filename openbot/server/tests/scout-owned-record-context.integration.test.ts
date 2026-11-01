@@ -15,6 +15,7 @@ import {
   createOdooJson2CredentialResolver,
   odooJson2CredentialKeyId,
 } from "../src/scout/owned-model/odoo-credentials";
+import { ModelPolicyError } from "../src/scout/owned-model/policy";
 import type { ProjectTaskReadRequest } from "../src/scout/owned-model/record-context";
 import { createProjectTaskContextStore } from "../src/scout/owned-model/record-context-store";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
@@ -159,6 +160,59 @@ afterAll(async () => {
 });
 
 describe("owned Odoo grant persistence and credential resolution", () => {
+  test("consent revalidation after lock, read and audit waits rolls back its grant and audit together", async () => {
+    const service = createOwnedOdooGrantService(
+      database,
+      encryptionKey,
+      sourceInstanceId,
+    );
+    for (const stopAt of [1, 2, 3]) {
+      const owner = {
+        ...principal,
+        userId: `${prefix}-consent-rollback-${stopAt}`,
+      };
+      let checks = 0;
+      const input = {
+        principal: owner,
+        bindingExpiresAt: "2099-01-01T00:00:00Z",
+        modelPolicyExpiresAt: "2099-01-01T00:00:00Z",
+        provider: "local" as const,
+        modelPolicyFingerprint,
+      };
+      await expect(
+        service.consentRelease({
+          ...input,
+          assertCurrent: async () => {
+            if (++checks === stopAt)
+              throw new ModelPolicyError("MODEL_CONFLICT");
+          },
+        }),
+      ).rejects.toThrow("MODEL_CONFLICT");
+      expect(checks).toBe(stopAt);
+      expect(
+        await database
+          .select()
+          .from(scoutContextReleaseGrants)
+          .where(eq(scoutContextReleaseGrants.nativeUserId, owner.userId)),
+      ).toEqual([]);
+      expect(
+        await database
+          .select()
+          .from(auditEvents)
+          .where(eq(auditEvents.actorUserId, owner.userId)),
+      ).toEqual([]);
+      checks = 0;
+      await expect(
+        service.consentRelease({
+          ...input,
+          assertCurrent: async () => {
+            checks++;
+          },
+        }),
+      ).resolves.toMatchObject({ revision: 1, provider: "local" });
+      expect(checks).toBe(3);
+    }
+  });
   test("provisions encrypted record access, records explicit release consent, and revokes both atomically", async () => {
     const grantPrincipal = {
       ...principal,
@@ -218,6 +272,7 @@ describe("owned Odoo grant persistence and credential resolution", () => {
       ).resolves.toEqual({ uid: 201, apiKey: "synthetic-new-api-key" });
 
       const consent = await service.consentRelease({
+        assertCurrent: async () => {},
         principal: grantPrincipal,
         bindingExpiresAt: "2099-01-01T00:00:00.000Z",
         modelPolicyExpiresAt: "2099-01-01T00:00:00.000Z",
@@ -453,6 +508,7 @@ describe("owned Odoo grant persistence and credential resolution", () => {
         allowedProjectIds: [701],
       });
       await target.consentRelease({
+        assertCurrent: async () => {},
         principal: owner,
         bindingExpiresAt: "2099-01-01T00:00:00Z",
         modelPolicyExpiresAt: "2099-01-01T00:00:00Z",
@@ -538,6 +594,7 @@ describe("owned Odoo grant persistence and credential resolution", () => {
       allowedProjectIds: [701],
     });
     await service.consentRelease({
+      assertCurrent: async () => {},
       principal: releasePrincipal,
       bindingExpiresAt: "2099-01-01T00:00:00.000Z",
       modelPolicyExpiresAt: "2099-01-01T00:00:00.000Z",

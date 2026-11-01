@@ -13,11 +13,13 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { DraftReviewPanel } from "../components/draft-review";
+import { OdooContextPanel } from "../components/odoo-context";
 import {
-  api,
   type ChatMessage,
   type Conversation,
   type ScoutAgent,
+  scopedApi,
 } from "../src/api";
 import { authClient, serverUrl } from "../src/auth";
 import {
@@ -28,6 +30,14 @@ import {
   recoverFailedSend,
   runOwnedAgent,
 } from "../src/owned-chat";
+import { scopedSession } from "../src/request-scope";
+import {
+  consumeOdooTaskSelection,
+  type OdooTaskSelection,
+  refreshForCurrentScope,
+  sameWorkScope,
+  selectedOdooTask,
+} from "../src/scout-work";
 
 type ConversationData = {
   channelId: string;
@@ -47,6 +57,12 @@ export default function ConversationScreen() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const sendInFlight = useRef(false);
+  const [taskSelection, setTaskSelection] = useState<OdooTaskSelection>();
+  const pendingTaskSelection = useRef<OdooTaskSelection | undefined>(undefined);
+  const [turnSelection, setTurnSelection] = useState<OdooTaskSelection>();
+  const mounted = useRef(false);
+  const refreshGeneration = useRef(0);
   const activeScope = useRef({ userId: session?.user.id, channelId });
   activeScope.current = { userId: session?.user.id, channelId };
   const previousScope = useRef({ userId: session?.user.id, channelId });
@@ -57,6 +73,51 @@ export default function ConversationScreen() {
   const conversation = conversationData?.conversation;
   const agent = conversationData?.agent;
   const messages = conversationData?.messages ?? [];
+  const workScope = {
+    userId: session?.user.id ?? "",
+    channelId: channelId ?? "",
+    agentId: agent?.id ?? "",
+  };
+  const activeWorkScope = useRef(workScope);
+  activeWorkScope.current = workScope;
+  const workClient = scopedApi({
+    userId: workScope.userId,
+    isCurrent: () =>
+      mounted.current && sameWorkScope(activeWorkScope.current, workScope),
+  });
+  const selectedTaskId = selectedOdooTask(taskSelection, workScope);
+  const turnTaskId = selectedOdooTask(turnSelection, workScope);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      refreshGeneration.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
+    const scope = {
+      userId: session?.user.id ?? "",
+      channelId: channelId ?? "",
+      agentId: agent?.id ?? "",
+    };
+    if (!selectedOdooTask(pendingTaskSelection.current, scope))
+      pendingTaskSelection.current = undefined;
+    setTaskSelection((current) =>
+      current && sameWorkScope(current, scope) ? current : undefined,
+    );
+    setTurnSelection((current) =>
+      current && sameWorkScope(current, scope) ? current : undefined,
+    );
+  }, [session?.user.id, channelId, agent?.id]);
+
+  function selectTask(taskId: string | null) {
+    if (!sameWorkScope(activeWorkScope.current, workScope)) return;
+    const selection = taskId ? { ...workScope, taskId } : undefined;
+    pendingTaskSelection.current = selection;
+    setTaskSelection(selection);
+  }
 
   useEffect(() => {
     const identityChanged = previousScope.current.userId !== session?.user.id;
@@ -73,55 +134,72 @@ export default function ConversationScreen() {
   const refresh = useCallback(
     async (options?: { preserveError?: boolean }) => {
       const userId = session?.user.id;
-      if (!channelId || !userId) return undefined;
+      if (
+        !channelId ||
+        !userId ||
+        !mounted.current ||
+        activeScope.current.userId !== userId ||
+        activeScope.current.channelId !== channelId
+      )
+        return undefined;
+      const generation = ++refreshGeneration.current;
+      const isCurrent = () =>
+        mounted.current &&
+        activeScope.current.userId === userId &&
+        activeScope.current.channelId === channelId &&
+        refreshGeneration.current === generation;
       setLoading(true);
       if (!options?.preserveError) setError("");
-      try {
-        const [channelResult, agentResult] = await Promise.all([
-          api<{ channel: Conversation }>(
-            `/api/channels/${encodeURIComponent(channelId)}`,
-          ),
-          api<{ agents: ScoutAgent[] }>("/api/agents"),
-        ]);
-        const channel = channelResult.channel;
-        const selectedAgent = agentResult.agents.find(
-          (candidate) =>
-            candidate.builtIn && channel.agentIds.includes(candidate.id),
-        );
-        if (!selectedAgent)
-          throw new Error(
-            "This conversation has no available Scout assistant.",
+      const snapshot = await refreshForCurrentScope<ConversationData>({
+        isCurrent,
+        read: async () => {
+          const client = scopedApi({ userId, isCurrent });
+          const [channelResult, agentResult] = await Promise.all([
+            client<{ channel: Conversation }>(
+              `/api/channels/${encodeURIComponent(channelId)}`,
+            ),
+            client<{ agents: ScoutAgent[] }>("/api/agents"),
+          ]);
+          const channel = channelResult.channel;
+          const selectedAgent = agentResult.agents.find(
+            (candidate) =>
+              candidate.builtIn && channel.agentIds.includes(candidate.id),
           );
+          if (!selectedAgent)
+            throw new Error(
+              "This conversation has no available Scout assistant.",
+            );
 
-        const cookie = (await authClient.getCookie()) || null;
-        const history = await readOwnedHistory({
-          serverUrl,
-          cookie,
-          threadId: channel.threadId,
-          agentId: selectedAgent.id,
-          fetcher: expoFetch,
-        });
-        setView({
-          userId,
-          value: {
+          const nativeSession = await scopedSession(
+            () => authClient.getCookie(),
+            { userId, isCurrent },
+          );
+          const history = await readOwnedHistory({
+            serverUrl,
+            ...nativeSession,
+            threadId: channel.threadId,
+            agentId: selectedAgent.id,
+            fetcher: expoFetch,
+          });
+          return {
             channelId,
             conversation: channel,
             agent: selectedAgent,
             messages: history,
-          },
-        });
-        return history;
-      } catch (failure) {
-        if (!options?.preserveError)
-          setError(
-            failure instanceof Error
-              ? failure.message
-              : "Could not load this Scout conversation.",
-          );
-        return undefined;
-      } finally {
-        setLoading(false);
-      }
+          };
+        },
+        apply: (value) => setView({ userId, value }),
+        failed: (failure) => {
+          if (!options?.preserveError)
+            setError(
+              failure instanceof Error
+                ? failure.message
+                : "Could not load this Scout conversation.",
+            );
+        },
+        finished: () => setLoading(false),
+      });
+      return snapshot?.messages;
     },
     [channelId, session?.user.id],
   );
@@ -136,15 +214,33 @@ export default function ConversationScreen() {
 
   async function send() {
     const userId = session?.user.id;
-    if (!conversation || !agent || !userId || !text.trim() || sending) return;
+    if (
+      !conversation ||
+      !agent ||
+      !userId ||
+      !text.trim() ||
+      sending ||
+      sendInFlight.current
+    )
+      return;
     const submittedText = text.trim();
     const placeholderId = Crypto.randomUUID();
+    const odooTaskId = consumeOdooTaskSelection(
+      pendingTaskSelection,
+      workScope,
+    );
     const run = buildOwnedRunInput({
       threadId: conversation.threadId,
       history: messages,
       text: submittedText,
+      selectedOdooTaskId: odooTaskId,
       createId: () => Crypto.randomUUID(),
     });
+    sendInFlight.current = true;
+    setTurnSelection(
+      odooTaskId ? { ...workScope, taskId: odooTaskId } : undefined,
+    );
+    setTaskSelection(undefined);
     const displayedAssistantId = { value: placeholderId };
     setSending(true);
     setError("");
@@ -171,14 +267,23 @@ export default function ConversationScreen() {
 
     let sendError: string | undefined;
     try {
-      const cookie = (await authClient.getCookie()) || null;
+      const nativeSession = await scopedSession(() => authClient.getCookie(), {
+        userId,
+        isCurrent: () =>
+          mounted.current && sameWorkScope(activeWorkScope.current, workScope),
+      });
       await runOwnedAgent({
         serverUrl,
-        cookie,
+        ...nativeSession,
         agentId: agent.id,
         payload: run.payload,
         fetcher: expoFetch,
         onAssistantStart: (messageId) => {
+          if (
+            !mounted.current ||
+            !sameWorkScope(activeWorkScope.current, workScope)
+          )
+            return;
           setView((current) => {
             if (
               !current ||
@@ -201,6 +306,11 @@ export default function ConversationScreen() {
           displayedAssistantId.value = messageId;
         },
         onTextDelta: (delta) => {
+          if (
+            !mounted.current ||
+            !sameWorkScope(activeWorkScope.current, workScope)
+          )
+            return;
           setView((current) => {
             if (
               !current ||
@@ -255,6 +365,9 @@ export default function ConversationScreen() {
         await refresh();
       }
       setSending(false);
+      sendInFlight.current = false;
+      if (sameWorkScope(activeWorkScope.current, workScope))
+        setTurnSelection(undefined);
     }
   }
 
@@ -285,6 +398,24 @@ export default function ConversationScreen() {
           }
           contentContainerStyle={{ gap: 12 }}
         >
+          {conversation && agent && session?.user.id ? (
+            <>
+              <OdooContextPanel
+                key={`${session.user.id}:${channelId}:${agent.id}:odoo`}
+                agentId={agent.id}
+                channelId={channelId}
+                selectedTaskId={selectedTaskId}
+                onSelectTaskId={selectTask}
+                sending={sending}
+                client={workClient}
+              />
+              <DraftReviewPanel
+                key={`${session.user.id}:${channelId}:drafts`}
+                channelId={channelId}
+                client={workClient}
+              />
+            </>
+          ) : null}
           {messages.map((message) => (
             <View
               key={message.id}
@@ -308,6 +439,22 @@ export default function ConversationScreen() {
             </View>
           ))}
         </ScrollView>
+        {selectedTaskId ? (
+          <View style={{ gap: 6 }}>
+            <Text>Next message uses Odoo task #{selectedTaskId} once.</Text>
+            <Button
+              title="Clear selected task"
+              disabled={sending}
+              onPress={() => selectTask(null)}
+            />
+          </View>
+        ) : null}
+        {turnTaskId && sending ? (
+          <Text>
+            This turn selected Odoo task #{turnTaskId}; Scout rechecks access
+            before sharing its summary.
+          </Text>
+        ) : null}
         <TextInput
           accessibilityLabel="Message Scout"
           multiline

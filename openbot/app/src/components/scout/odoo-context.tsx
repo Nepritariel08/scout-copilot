@@ -43,6 +43,12 @@ export function ScoutOdooContext({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const current = status.data;
+  const displayedRoute = current?.route;
+  const routeCurrent = Boolean(
+    displayedRoute &&
+      displayedRoute.provider === current?.provider &&
+      Date.parse(displayedRoute.expiresAt) > Date.now(),
+  );
   const recordActive = Boolean(
     current?.record?.active &&
       Date.parse(current.record.expiresAt) > Date.now(),
@@ -54,7 +60,7 @@ export function ScoutOdooContext({
   const canRevokeStoredAccess = Boolean(
     current?.record?.credentialStored || releaseActive,
   );
-  const canSelectTask = recordActive && releaseActive;
+  const canSelectTask = recordActive && releaseActive && routeCurrent;
 
   async function refreshStatus() {
     await cache.invalidateQueries({
@@ -74,9 +80,19 @@ export function ScoutOdooContext({
       setError(
         caught instanceof Error ? caught.message : "The request failed.",
       );
+      // Refresh the displayed route after a refusal, but require another
+      // explicit click; never retry consent against a newer policy.
+      await refreshStatus().catch(() => {});
     } finally {
       setActionPending(false);
     }
+  }
+
+  async function changeRelease() {
+    if (releaseActive) return revokeOdooContextRelease(agentId);
+    if (!displayedRoute || !routeCurrent)
+      throw new Error("Refresh and review the current model route first.");
+    return consentOdooContextRelease(agentId, displayedRoute);
   }
 
   return (
@@ -103,6 +119,7 @@ export function ScoutOdooContext({
               {current.provider === "openrouter"
                 ? "OpenRouter"
                 : "the configured local provider"}
+              {displayedRoute ? `, model ${displayedRoute.model}` : ""}
               {current.release
                 ? `; expires ${expiryText(current.release.expiresAt)}`
                 : ""}
@@ -163,16 +180,19 @@ export function ScoutOdooContext({
                 ? `Only the fixed project-task summary may be sent to ${current.provider === "openrouter" ? "OpenRouter" : "the configured local provider"} when you select a task.`
                 : `Allow the fixed project-task summary to reach ${current.provider === "openrouter" ? "OpenRouter" : "the configured local provider"} for this model route. This consent expires with the grant or model policy.`}
             </p>
+            {!routeCurrent ? (
+              <p className="text-sm text-muted-foreground">
+                Refresh Odoo access and review the current model route before
+                allowing task summaries.
+              </p>
+            ) : null}
             <Button
               type="button"
               variant={releaseActive ? "outline" : "default"}
-              disabled={actionPending}
+              disabled={actionPending || (!releaseActive && !routeCurrent)}
               onClick={() =>
                 void runAction(
-                  () =>
-                    releaseActive
-                      ? revokeOdooContextRelease(agentId)
-                      : consentOdooContextRelease(agentId),
+                  changeRelease,
                   releaseActive
                     ? "Model-sharing consent withdrawn."
                     : "Model-sharing consent recorded.",
@@ -263,6 +283,16 @@ export function ScoutOdooContext({
             Revoke Scout's Odoo access
           </Button>
         ) : null}
+        <Button
+          type="button"
+          variant="outline"
+          disabled={actionPending || keyPending}
+          onClick={() =>
+            void runAction(async () => {}, "Odoo access refreshed.")
+          }
+        >
+          Refresh Odoo access
+        </Button>
         {error ? <p role="alert">{error}</p> : null}
         {notice ? <p role="status">{notice}</p> : null}
       </div>

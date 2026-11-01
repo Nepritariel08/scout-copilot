@@ -18,6 +18,7 @@ import type {
   ProjectTaskContextPrincipal,
   ProjectTaskContextProvider,
 } from "../owned-model/record-context";
+import { ScoutError } from "../types";
 import type { createOwnedAuthority } from "./authority";
 
 const mintInput = z.strictObject({
@@ -29,6 +30,9 @@ const odooCredentialInput = z.strictObject({
 const releaseConsentInput = z.strictObject({
   agentId: z.string().trim().min(1).max(200),
   consent: z.literal(true),
+  expectedProvider: z.enum(["openrouter", "local"]),
+  expectedModel: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,199}$/),
+  expectedPolicyFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
 });
 const releaseRevokeInput = z.strictObject({
   agentId: z.string().trim().min(1).max(200),
@@ -54,6 +58,7 @@ type OwnedOdooGrants = {
     modelPolicyExpiresAt: string;
     provider: ProjectTaskContextProvider;
     modelPolicyFingerprint: string;
+    assertCurrent(): Promise<void>;
   }): Promise<unknown>;
   revokeRelease(input: {
     principal: ProjectTaskContextPrincipal;
@@ -132,9 +137,15 @@ export function createOwnedRuntimeRoutes(deps: {
     work: () => Promise<T>,
   ): Promise<T> {
     const check = async () => {
-      await admission.assertCurrent();
-      if (!bindingUnchanged(before, await deps.authority.binding(request)))
-        throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+      try {
+        await admission.assertCurrent();
+        if (!bindingUnchanged(before, await deps.authority.binding(request)))
+          throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+      } catch (error) {
+        if (error instanceof ScoutError && error.code === "SCOUT_ACCESS_DENIED")
+          throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+        throw error;
+      }
     };
     await check();
     const result = await work();
@@ -174,7 +185,11 @@ export function createOwnedRuntimeRoutes(deps: {
     if (error instanceof ModelPolicyError)
       return context.json(
         { code: error.code },
-        error.code === "MODEL_ACCESS_DENIED" ? 403 : 503,
+        error.code === "MODEL_ACCESS_DENIED"
+          ? 403
+          : error.code === "MODEL_CONFLICT"
+            ? 409
+            : 503,
       );
     return context.json({ code: "HISTORY_UNAVAILABLE" }, 503);
   });
@@ -219,6 +234,7 @@ export function createOwnedRuntimeRoutes(deps: {
     const depsGrants = deps.odooGrants;
     if (!depsGrants?.readModelPolicy || !depsGrants.admit)
       return context.json({ code: "MODEL_NOT_CONFIGURED" }, 503);
+    const readModelPolicy = depsGrants.readModelPolicy;
     const parsed = releaseConsentInput.safeParse(
       await context.req.json().catch(() => null),
     );
@@ -236,10 +252,31 @@ export function createOwnedRuntimeRoutes(deps: {
       ))
     )
       return context.json({ code: "MODEL_ACCESS_DENIED" }, 403);
-    const model = await depsGrants.readModelPolicy({
+    const model = await readModelPolicy({
       ...principal,
       agentId: parsed.data.agentId,
     });
+    const assertModel = (current: ModelGrant) => {
+      if (
+        current.fingerprint !== parsed.data.expectedPolicyFingerprint ||
+        current.route.provider !== parsed.data.expectedProvider ||
+        current.route.model !== parsed.data.expectedModel ||
+        !(Date.parse(current.expiresAt) > Date.now())
+      )
+        throw new ModelPolicyError("MODEL_CONFLICT");
+    };
+    assertModel(model);
+    // The displayed route is a precondition, never authority to select a route.
+    // Recheck after DB waits and inside the transaction before it can commit.
+    const assertCurrent = () =>
+      withCurrentAdmission(context.req.raw, before, admission, async () => {
+        assertModel(
+          await readModelPolicy({
+            ...principal,
+            agentId: parsed.data.agentId,
+          }),
+        );
+      });
 
     return context.json(
       await withCurrentAdmission(context.req.raw, before, admission, () =>
@@ -249,6 +286,7 @@ export function createOwnedRuntimeRoutes(deps: {
           modelPolicyExpiresAt: model.expiresAt,
           provider: model.route.provider,
           modelPolicyFingerprint: model.fingerprint,
+          assertCurrent,
         }),
       ),
       201,
@@ -298,14 +336,40 @@ export function createOwnedRuntimeRoutes(deps: {
       agentId: parsed.data,
     });
 
-    return context.json(
-      await withCurrentAdmission(context.req.raw, before, admission, () =>
+    const status = await withCurrentAdmission(
+      context.req.raw,
+      before,
+      admission,
+      () =>
         depsGrants.status(
           admission.principal,
           model.route.provider,
           model.fingerprint,
         ),
-      ),
+    );
+    // A stale status cannot mint consent, but do not knowingly display a route
+    // that changed while its scoped grant status was being read either.
+    const currentModel = await depsGrants.readModelPolicy({
+      ...principal,
+      agentId: parsed.data,
+    });
+    if (currentModel.fingerprint !== model.fingerprint)
+      throw new ModelPolicyError("MODEL_CONFLICT");
+    await withCurrentAdmission(
+      context.req.raw,
+      before,
+      admission,
+      async () => {},
+    );
+    return context.json(
+      Object.assign({}, status, {
+        route: {
+          provider: model.route.provider,
+          model: model.route.model,
+          policyFingerprint: model.fingerprint,
+          expiresAt: model.expiresAt,
+        },
+      }),
     );
   });
   app.delete("/api/scout/odoo/context-grants/release", async (context) => {

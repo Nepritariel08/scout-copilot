@@ -6,6 +6,7 @@ import { createDatabase } from "../src/db/client";
 import {
   accounts,
   auditEvents,
+  revokedAccess,
   sessions,
   userRoles,
   users,
@@ -18,6 +19,7 @@ import {
   createEntraIdentityOperator,
   type EntraIdentityRequest,
   type EntraIdentityStore,
+  type NativeContactRequest,
 } from "../src/scout/entra-operator";
 import {
   createEntraIdentityStore,
@@ -32,6 +34,7 @@ const tenantId = "8f2c1e40-0000-0000-0000-000000000000";
 const operator = createEntraIdentityOperator(store, { tenantId });
 const prefix = `entra-operator-${randomUUID()}`;
 const userIds: string[] = [];
+const revokedEmails: string[] = [];
 const accountReader = createScoutEntraAccountReader(database);
 
 async function fixture(): Promise<EntraIdentityRequest> {
@@ -64,6 +67,29 @@ async function fixture(): Promise<EntraIdentityRequest> {
     review: {
       operatorUserId: "synthetic-operator",
       reference: "synthetic-only/review",
+    },
+  };
+}
+async function contactFixture(): Promise<NativeContactRequest> {
+  const id = `${prefix}-${userIds.length}`;
+  userIds.push(id);
+  const targets = await database.execute(
+    sql`select current_database() as database, current_user as role`,
+  );
+  return {
+    version: 1,
+    operationId: randomUUID(),
+    action: "create_contact",
+    target: targets[0] as NativeContactRequest["target"],
+    tenantId,
+    nativeUser: {
+      id,
+      email: `${id}@fixture.invalid`,
+      name: "Reviewed synthetic contact",
+    },
+    review: {
+      operatorUserId: "synthetic-operator",
+      reference: "synthetic-only/create-contact",
     },
   };
 }
@@ -103,12 +129,202 @@ async function receiptRows(operationId: string) {
     );
 }
 afterAll(async () => {
+  if (revokedEmails.length)
+    await database
+      .delete(revokedAccess)
+      .where(inArray(revokedAccess.email, revokedEmails));
   if (userIds.length) {
     await database.delete(accounts).where(inArray(accounts.userId, userIds));
     await database.delete(users).where(inArray(users.id, userIds));
   }
   // Audit remains append-only, including synthetic operation receipts.
   await database.$client.end({ timeout: 5 });
+});
+
+describe("native contact bootstrap PostgreSQL boundary", () => {
+  test("creates only normal contact defaults, leaves authentication and grants absent, and replays one receipt", async () => {
+    const input = await contactFixture();
+    const other = await fixture();
+    const otherBefore = await snapshotNative(other.nativeUser.id);
+    const preview = await operator.preview(input);
+    expect((await snapshotNative(input.nativeUser.id)).user).toEqual([]);
+    expect(await receiptRows(input.operationId)).toEqual([]);
+    expect(await operator.apply(preview.plan, preview.digest)).toMatchObject({
+      action: "create_contact",
+      effect: "insert_contact",
+      removedSessions: 0,
+      replayed: false,
+    });
+    const after = await snapshotNative(input.nativeUser.id);
+    expect(after.user).toHaveLength(1);
+    expect(after.user[0]).toMatchObject({
+      ...input.nativeUser,
+      emailVerified: false,
+      image: null,
+      groups: [],
+      preferences: {},
+      onboardingStep: 0,
+      onboardingCompletedAt: null,
+      lastSignedInAt: null,
+    });
+    expect(after.roles).toEqual([]);
+    expect(after.recordGrants).toEqual([]);
+    expect(after.releaseGrants).toEqual([]);
+    expect(
+      await database
+        .select()
+        .from(accounts)
+        .where(eq(accounts.userId, input.nativeUser.id)),
+    ).toEqual([]);
+    expect(
+      await database
+        .select()
+        .from(sessions)
+        .where(eq(sessions.userId, input.nativeUser.id)),
+    ).toEqual([]);
+    expect(
+      await accountReader({
+        issuer: `https://login.microsoftonline.com/${tenantId}/v2.0`,
+        userId: input.nativeUser.id,
+      }),
+    ).toBeNull();
+    expect(await operator.apply(preview.plan, preview.digest)).toMatchObject({
+      replayed: true,
+    });
+    expect(await snapshotNative(input.nativeUser.id)).toEqual(after);
+    expect(await snapshotNative(other.nativeUser.id)).toEqual(otherBefore);
+    const receipts = await receiptRows(input.operationId);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].payload).toMatchObject({
+      kind: "scout.native.contact.operation.v1",
+      action: "create_contact",
+    });
+    for (const value of [
+      input.nativeUser.id,
+      input.nativeUser.email,
+      input.nativeUser.name,
+      input.review.reference,
+    ])
+      expect(JSON.stringify(receipts[0].payload)).not.toContain(
+        value as string,
+      );
+  });
+  test("case-insensitive email and exact-ID conflicts preserve the existing person without relinking", async () => {
+    const existing = await fixture();
+    const before = await snapshotNative(existing.nativeUser.id);
+    const fresh = await contactFixture();
+    await expect(
+      operator.preview({
+        ...fresh,
+        nativeUser: {
+          ...fresh.nativeUser,
+          email: existing.nativeUser.email.toUpperCase(),
+        },
+      }),
+    ).rejects.toThrow("ENTRA_CONTACT_REFUSED");
+    await expect(
+      operator.preview({ ...fresh, nativeUser: existing.nativeUser }),
+    ).rejects.toThrow("ENTRA_CONTACT_REFUSED");
+    expect(await snapshotNative(existing.nativeUser.id)).toEqual(before);
+    expect((await snapshotNative(fresh.nativeUser.id)).user).toEqual([]);
+    expect(await receiptRows(fresh.operationId)).toEqual([]);
+  });
+  test("a contact collision added after preview is refused by the new locked snapshot", async () => {
+    const input = await contactFixture();
+    const preview = await operator.preview(input);
+    const competitor = await fixture();
+    await database
+      .update(users)
+      .set({ email: input.nativeUser.email.toUpperCase() })
+      .where(eq(users.id, competitor.nativeUser.id));
+    await expect(operator.apply(preview.plan, preview.digest)).rejects.toThrow(
+      "ENTRA_CONTACT_REFUSED",
+    );
+    expect((await snapshotNative(input.nativeUser.id)).user).toEqual([]);
+    expect(await receiptRows(input.operationId)).toEqual([]);
+  });
+  test("a revoked address cannot be recreated under a different native ID", async () => {
+    const input = await contactFixture();
+    const email = input.nativeUser.email.toUpperCase();
+    revokedEmails.push(email);
+    await database
+      .insert(revokedAccess)
+      .values({ email, revokedBy: "synthetic-operator" });
+    await expect(operator.preview(input)).rejects.toThrow(
+      "ENTRA_CONTACT_REFUSED",
+    );
+    expect((await snapshotNative(input.nativeUser.id)).user).toEqual([]);
+  });
+  test("an audit error after insert rolls back the new native contact and its receipt", async () => {
+    const input = await contactFixture();
+    const failingStore: EntraIdentityStore = {
+      read: store.read,
+      write: (use) =>
+        store.write((transaction) =>
+          use({
+            ...transaction,
+            record: async (receipt) => {
+              await transaction.record(receipt);
+              throw new Error("synthetic contact audit rollback");
+            },
+          }),
+        ),
+    };
+    const failing = createEntraIdentityOperator(failingStore, { tenantId });
+    const preview = await failing.preview(input);
+    await expect(failing.apply(preview.plan, preview.digest)).rejects.toThrow(
+      "ENTRA_OPERATOR_FAILED",
+    );
+    expect((await snapshotNative(input.nativeUser.id)).user).toEqual([]);
+    expect(await receiptRows(input.operationId)).toEqual([]);
+  });
+  test("concurrent contact retries create one person and receipt; later changes are never overwritten", async () => {
+    const input = await contactFixture();
+    const preview = await operator.preview(input);
+    const results = await Promise.all([
+      operator.apply(preview.plan, preview.digest),
+      operator.apply(preview.plan, preview.digest),
+    ]);
+    expect(results.map((row) => row.replayed).sort()).toEqual([false, true]);
+    expect((await snapshotNative(input.nativeUser.id)).user).toHaveLength(1);
+    expect(await receiptRows(input.operationId)).toHaveLength(1);
+    await database
+      .update(users)
+      .set({ name: "Reviewed later contact change" })
+      .where(eq(users.id, input.nativeUser.id));
+    await expect(operator.apply(preview.plan, preview.digest)).rejects.toThrow(
+      "ENTRA_POSTCONDITION_REFUSED",
+    );
+    expect((await snapshotNative(input.nativeUser.id)).user[0]?.name).toBe(
+      "Reviewed later contact change",
+    );
+  });
+  test("Entra enrollment remains a separately reviewed step after contact creation", async () => {
+    const input = await contactFixture();
+    const contact = await operator.preview(input);
+    await operator.apply(contact.plan, contact.digest);
+    const enrollment = await operator.preview({
+      ...input,
+      operationId: randomUUID(),
+      action: "enroll",
+      issuer: `https://login.microsoftonline.com/${tenantId}/v2.0`,
+      objectId: randomUUID(),
+    });
+    await operator.apply(enrollment.plan, enrollment.digest);
+    expect(
+      await accountReader({
+        issuer: `https://login.microsoftonline.com/${tenantId}/v2.0`,
+        userId: input.nativeUser.id,
+      }),
+    ).toMatchObject({
+      userId: input.nativeUser.id,
+      email: input.nativeUser.email,
+    });
+    expect((await snapshotNative(input.nativeUser.id)).roles).toEqual([]);
+    await expect(operator.apply(contact.plan, contact.digest)).rejects.toThrow(
+      "ENTRA_POSTCONDITION_REFUSED",
+    );
+  });
 });
 
 describe("Entra operator PostgreSQL transaction boundary", () => {
@@ -332,33 +548,40 @@ describe("Entra operator PostgreSQL transaction boundary", () => {
     ).toHaveLength(1);
     expect(await receiptRows(input.operationId)).toHaveLength(1);
   });
-  test("the maintenance lock also fences a native writer that does not use operator advisory locks", async () => {
-    const input = await fixture();
-    await store.write(async () => {
-      const failure = await database
-        .transaction(async (transaction) => {
-          await transaction.execute(sql`set local lock_timeout = '150ms'`);
-          await transaction
-            .update(users)
-            .set({ name: "Must be rolled back" })
-            .where(eq(users.id, input.nativeUser.id));
-        })
-        .then(
-          () => null,
-          (error: unknown) => error,
-        );
-      const driver =
-        typeof failure === "object" && failure !== null && "cause" in failure
-          ? failure.cause
-          : failure;
-      expect(
-        typeof driver === "object" && driver !== null && "errno" in driver
-          ? driver.errno
-          : undefined,
-      ).toBe("55P03");
-    });
-    expect((await snapshotNative(input.nativeUser.id)).user[0]?.name).toBe(
-      input.nativeUser.name,
-    );
-  });
+  test.each(["users", "user_roles"])(
+    "the maintenance lock fences a native %s writer without operator advisory locks",
+    async (table) => {
+      const input = await fixture();
+      const before = await snapshotNative(input.nativeUser.id);
+      await store.write(async () => {
+        const failure = await database
+          .transaction(async (transaction) => {
+            await transaction.execute(sql`set local lock_timeout = '150ms'`);
+            if (table === "users")
+              await transaction
+                .update(users)
+                .set({ name: "Must be rolled back" })
+                .where(eq(users.id, input.nativeUser.id));
+            else
+              await transaction
+                .delete(userRoles)
+                .where(eq(userRoles.userId, input.nativeUser.id));
+          })
+          .then(
+            () => null,
+            (error: unknown) => error,
+          );
+        const driver =
+          typeof failure === "object" && failure !== null && "cause" in failure
+            ? failure.cause
+            : failure;
+        expect(
+          typeof driver === "object" && driver !== null && "errno" in driver
+            ? driver.errno
+            : undefined,
+        ).toBe("55P03");
+      });
+      expect(await snapshotNative(input.nativeUser.id)).toEqual(before);
+    },
+  );
 });
