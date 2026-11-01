@@ -19,5 +19,4 @@ Match User scout-matepad-forward
     AllowStreamLocalForwarding no
     PermitTunnel no
     PermitUserRC no
-    PermitUserEnvironment no
     MaxSessions 0

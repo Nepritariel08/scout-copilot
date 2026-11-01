@@ -1,28 +1,51 @@
 #!/usr/bin/env python3
-"""Prove the fixed local llama.cpp key boundary with one synthetic token call."""
+"""Run one bounded, authenticated MatePad model-link session.
+
+This verifier assumes a trusted Termux device account. It proves that this
+launcher started the pinned server binary with the fixed loopback arguments,
+that the child remains alive, and that the endpoint enforces its protected key.
+It does not claim kernel-level socket ownership or protection from compromised
+code running as the same Android UID.
+"""
 
 from __future__ import annotations
 
+import errno
 import hashlib
-import http.client
 import json
 import os
 import re
 import secrets
+import select
+import signal
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
 MODEL_ID = "Qwen3-0.6B"
-LLAMA_VERSION_LINE = "version: 9590 (`d2462f8`)"
+SENTINEL = "SCOUT_MATEPAD_LOCAL_OK"
+SERVER_BINARY_SHA256 = "6e8f34cac967060aa042a8bd2f65f06cf960c3c58063d0fb1876a3fc755e02b8"
 REMOTE_HOST = "172.104.173.160"
 DEVICE_PORT = 8081
+LINODE_PORT = 22
+REMOTE_LISTEN = "127.0.0.1:18088"
+REMOTE_USER = "scout-matepad-forward"
 PROOF_TTL_SECONDS = 300
+SERVER_START_TIMEOUT_SECONDS = 120
+AUTH_PROBE_TOTAL_DEADLINE_SECONDS = 60
+SUPERVISOR_POLL_SECONDS = 5
+HEALTH_INTERVAL_SECONDS = 30
+HTTP_REQUEST_TIMEOUT_SECONDS = 5
 MAX_RESPONSE_BYTES = 65536
+MAX_SERVER_LOG_LINE_BYTES = 1024
+SERVER_READY_MARKER = f"main: server is listening on http://127.0.0.1:{DEVICE_PORT}"
 PROFILE_FIELDS = {
     "format",
     "linode_host",
@@ -40,6 +63,45 @@ PROFILE_FIELDS = {
 
 class VerificationError(Exception):
     """A safe-to-print refusal without response bodies or credential values."""
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    profile: dict[str, str]
+    model_path: Path
+    server_path: Path
+    key_path: Path
+    ssh_path: Path
+    ssh_key_path: Path
+    known_hosts_path: Path
+    model_sha256: str
+    server_sha256: str
+    key_sha256: str
+    ssh_sha256: str
+    ssh_key_sha256: str
+    known_hosts_sha256: str
+
+
+@dataclass(frozen=True)
+class AuthProbeResult:
+    missing_status: int
+    wrong_status: int
+    valid_status: int
+    response_model: str
+    response_text: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    finish_reason: str
+
+
+@dataclass
+class ManagedServer:
+    process: subprocess.Popen[bytes]
+    output_event: threading.Event = field(default_factory=threading.Event)
+    readiness_message: str | None = None
+    output_eof: bool = False
+    output_thread: threading.Thread | None = None
 
 
 def _read_kv(path: Path, allowed: set[str], exact_count: int) -> dict[str, str]:
@@ -114,9 +176,9 @@ def _profile(home: Path, prefix: Path) -> tuple[dict[str, str], Path, Path, Path
     expected = {
         "format": "1",
         "linode_host": REMOTE_HOST,
-        "linode_port": "22",
-        "remote_user": "scout-matepad-forward",
-        "remote_listen": "127.0.0.1:18088",
+        "linode_port": str(LINODE_PORT),
+        "remote_user": REMOTE_USER,
+        "remote_listen": REMOTE_LISTEN,
         "device_target": "127.0.0.1:8081",
         "model_id": MODEL_ID,
     }
@@ -133,118 +195,158 @@ def _profile(home: Path, prefix: Path) -> tuple[dict[str, str], Path, Path, Path
         raise VerificationError("model path is outside the one-model allowlist")
     if not re.fullmatch(r"[a-f0-9]{64}", profile["model_sha256"]):
         raise VerificationError("model digest is missing")
-    if not re.fullmatch(r"[a-f0-9]{64}", profile["llama_server_sha256"]):
-        raise VerificationError("server digest is missing")
-    if _digest(model_path) != profile["model_sha256"]:
-        raise VerificationError("model digest changed")
+    if profile["llama_server_sha256"] != SERVER_BINARY_SHA256:
+        raise VerificationError("server digest does not match the protected device readback")
     _owned_regular_file(server_path)
     _owned_regular_file(model_path)
+    if _digest(model_path) != profile["model_sha256"]:
+        raise VerificationError("model digest changed")
     if _digest(server_path) != profile["llama_server_sha256"]:
         raise VerificationError("server binary digest changed")
-    try:
-        version = subprocess.run(
-            [str(server_path), "--version"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise VerificationError("llama-server version cannot be verified") from exc
-    if len(version.stdout) > 2048 or LLAMA_VERSION_LINE not in version.stdout.splitlines():
-        raise VerificationError("llama-server is not the approved b9590 build")
-    _private_file(key_path, max_bytes=512)
-    key_bytes = key_path.read_bytes()
-    key = key_bytes.removesuffix(b"\n").decode("ascii", errors="strict")
-    if not re.fullmatch(r"[A-Za-z0-9._~-]{32,512}", key):
-        raise VerificationError("model API key is not one bounded key")
+    _read_key(key_path)
     return profile, model_path, server_path, key_path
 
 
-def _key_value_file(path: Path, allowed: set[str], exact_count: int) -> dict[str, str]:
-    _private_file(path)
-    return _read_kv(path, allowed, exact_count)
-
-
-def _proc_start_ticks(proc_root: Path, pid: int) -> str:
+def _read_key(path: Path) -> str:
+    _private_file(path, max_bytes=512)
     try:
-        value = (proc_root / str(pid) / "stat").read_text(encoding="ascii")
-    except OSError as exc:
-        raise VerificationError("the recorded model process is no longer available") from exc
-    closing = value.rfind(")")
-    fields = value[closing + 2 :].split() if closing >= 0 else []
-    # Fields after comm start at proc field 3; starttime is field 22.
-    if len(fields) <= 19 or not fields[19].isdigit():
-        raise VerificationError("model process identity cannot be read")
-    return fields[19]
+        raw = path.read_bytes()
+        value = raw.removesuffix(b"\n").decode("ascii", errors="strict")
+    except (OSError, UnicodeError) as exc:
+        raise VerificationError("model API key cannot be read safely") from exc
+    if not re.fullmatch(r"[A-Za-z0-9._~-]{32,512}", value):
+        raise VerificationError("model API key is not one bounded key")
+    return value
 
 
-def _cmdline(proc_root: Path, pid: int) -> list[str]:
-    try:
-        raw = (proc_root / str(pid) / "cmdline").read_bytes()
-    except OSError as exc:
-        raise VerificationError("model process arguments cannot be read") from exc
-    return [item.decode("utf-8", errors="strict") for item in raw.split(b"\0") if item]
-
-
-def _listener_inode(proc_root: Path) -> str:
-    listeners: list[tuple[str, str, str]] = []
-    for table in (proc_root / "net" / "tcp", proc_root / "net" / "tcp6"):
-        try:
-            rows = table.read_text(encoding="ascii").splitlines()[1:]
-        except OSError as exc:
-            raise VerificationError("local listener state cannot be read") from exc
-        for row in rows:
-            fields = row.split()
-            if len(fields) < 10:
-                raise VerificationError("local listener state is malformed")
-            local_address, local_port = fields[1].split(":", 1)
-            if local_port.upper() == f"{DEVICE_PORT:04X}" and fields[3] == "0A":
-                proto = "tcp6" if table.name == "tcp6" else "tcp"
-                listeners.append((proto, local_address.upper(), fields[9]))
-    if len(listeners) != 1:
-        raise VerificationError("the expected loopback model listener is not unique")
-    proto, address, inode = listeners[0]
-    if proto != "tcp" or address != "0100007F" or not inode.isdigit():
-        raise VerificationError("model listener is not bound only to IPv4 loopback")
-    return inode
-
-
-def _check_live_process(
-    home: Path,
-    prefix: Path,
-    proc_root: Path = Path("/proc"),
-) -> tuple[dict[str, str], dict[str, str], Path, Path, Path]:
+def _capture_snapshot(home: Path, prefix: Path) -> Snapshot:
     profile, model_path, server_path, key_path = _profile(home, prefix)
-    identity_path = home / ".config" / "scout-matepad-link" / "server-identity.conf"
-    identity = _key_value_file(
-        identity_path,
-        {"format", "pid", "start_ticks", "server_sha256", "model_sha256", "key_sha256"},
-        6,
+    ssh_path = prefix / "bin" / "ssh"
+    ssh_key_path = home / ".ssh" / "scout-matepad-link"
+    known_hosts_path = home / ".ssh" / "scout-matepad-known_hosts"
+    _owned_regular_file(ssh_path)
+    if not os.access(ssh_path, os.X_OK):
+        raise VerificationError("existing OpenSSH client is unavailable")
+    _private_file(ssh_key_path, max_bytes=16384)
+    _private_file(known_hosts_path, max_bytes=16384)
+    return Snapshot(
+        profile=profile,
+        model_path=model_path,
+        server_path=server_path,
+        key_path=key_path,
+        ssh_path=ssh_path,
+        ssh_key_path=ssh_key_path,
+        known_hosts_path=known_hosts_path,
+        model_sha256=_digest(model_path),
+        server_sha256=_digest(server_path),
+        key_sha256=_digest(key_path),
+        ssh_sha256=_digest(ssh_path),
+        ssh_key_sha256=_digest(ssh_key_path),
+        known_hosts_sha256=_digest(known_hosts_path),
     )
-    if identity.get("format") != "1" or not identity.get("pid", "").isdigit():
-        raise VerificationError("server identity record is invalid")
-    pid = int(identity["pid"])
-    if _proc_start_ticks(proc_root, pid) != identity["start_ticks"]:
-        raise VerificationError("model process identity has changed")
-    expected_key_hash = _digest(key_path)
-    expected_identity = {
-        "server_sha256": profile["llama_server_sha256"],
-        "model_sha256": profile["model_sha256"],
-        "key_sha256": expected_key_hash,
-    }
-    if any(identity.get(key) != value for key, value in expected_identity.items()):
-        raise VerificationError("server launch identity does not match protected artifacts")
+
+
+def _validate_ssh_identity(snapshot: Snapshot) -> None:
+    ssh_keygen = snapshot.ssh_path.with_name("ssh-keygen")
+    _owned_regular_file(ssh_keygen)
+    if not os.access(ssh_keygen, os.X_OK):
+        raise VerificationError("existing ssh-keygen is unavailable")
     try:
-        executable = os.path.realpath(proc_root / str(pid) / "exe")
+        key_check = subprocess.run(
+            [str(ssh_keygen), "-y", "-P", "", "-f", str(snapshot.ssh_key_path)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+        pin_check = subprocess.run(
+            [str(ssh_keygen), "-F", "scout-pilot-linode", "-f", str(snapshot.known_hosts_path)],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        fingerprint_check = subprocess.run(
+            [str(ssh_keygen), "-lf", str(snapshot.known_hosts_path), "-E", "sha256"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise VerificationError("strict SSH key and host-pin validation could not complete") from exc
+    if key_check.returncode != 0:
+        raise VerificationError("dedicated SSH private key is unreadable or requires interaction")
+    if pin_check.returncode != 0:
+        raise VerificationError("out-of-band pinned SSH host is missing")
+    entries = [line.split() for line in pin_check.stdout.splitlines() if line and not line.startswith("#")]
+    if len(entries) != 1 or len(entries[0]) < 3 or entries[0][0] != "scout-pilot-linode" or entries[0][1] != "ssh-ed25519":
+        raise VerificationError("pinned SSH host entry is ambiguous or has changed")
+    fingerprints = [line.split() for line in fingerprint_check.stdout.splitlines() if line.strip()]
+    if fingerprint_check.returncode != 0 or len(fingerprints) != 1 or len(fingerprints[0]) < 2:
+        raise VerificationError("pinned SSH host fingerprint cannot be read")
+    if fingerprints[0][1] != snapshot.profile["host_key_fingerprint"]:
+        raise VerificationError("known-host key differs from the out-of-band pin")
+
+
+def _assert_snapshot(home: Path, prefix: Path, initial: Snapshot) -> None:
+    current = _capture_snapshot(home, prefix)
+    if current != initial:
+        raise VerificationError("server, model, credential, host pin, or profile identity changed")
+
+
+def _endpoint_is_free(host: str, port: int, family: int) -> bool:
+    try:
+        sock = socket.socket(family, socket.SOCK_STREAM)
     except OSError as exc:
-        raise VerificationError("model process executable cannot be read") from exc
-    if executable != os.path.realpath(server_path):
-        raise VerificationError("the recorded process is not the approved llama-server")
-    expected_argv = [
-        str(server_path),
+        if family == socket.AF_INET6 and exc.errno in {
+            errno.EAFNOSUPPORT,
+            errno.EPROTONOSUPPORT,
+            errno.ENOPROTOOPT,
+            errno.EADDRNOTAVAIL,
+        }:
+            return True
+        raise VerificationError("cannot determine whether the model endpoint is already occupied") from exc
+    try:
+        sock.settimeout(0.75)
+        try:
+            address = (host, port) if family == socket.AF_INET else (host, port, 0, 0)
+            result = sock.connect_ex(address)
+        except OSError as exc:
+            if exc.errno in {errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT, errno.ENOPROTOOPT, errno.EADDRNOTAVAIL}:
+                return True
+            raise VerificationError("cannot determine whether the model endpoint is already occupied") from exc
+        if result == 0:
+            return False
+        if result == errno.ECONNREFUSED:
+            return True
+        if family == socket.AF_INET6 and result in {
+            errno.EAFNOSUPPORT,
+            errno.EPROTONOSUPPORT,
+            errno.ENOPROTOOPT,
+            errno.EADDRNOTAVAIL,
+        }:
+            return True
+        raise VerificationError("model endpoint occupancy is unknown; refusing to start")
+    finally:
+        sock.close()
+
+
+def assert_port_free(port: int = DEVICE_PORT) -> None:
+    if not _endpoint_is_free("127.0.0.1", port, socket.AF_INET):
+        raise VerificationError("port 8081 already has a responding listener; unknown processes are left untouched")
+    if hasattr(socket, "AF_INET6") and not _endpoint_is_free("::1", port, socket.AF_INET6):
+        raise VerificationError("IPv6 loopback port 8081 is occupied; refusing to start")
+
+
+def _server_argv(snapshot: Snapshot) -> list[str]:
+    return [
+        str(snapshot.server_path),
         "--model",
-        str(model_path),
+        str(snapshot.model_path),
         "--alias",
         MODEL_ID,
         "--host",
@@ -252,7 +354,7 @@ def _check_live_process(
         "--port",
         str(DEVICE_PORT),
         "--api-key-file",
-        str(key_path),
+        str(snapshot.key_path),
         "--parallel",
         "1",
         "--ctx-size",
@@ -264,74 +366,228 @@ def _check_live_process(
         "--no-cont-batching",
         "--no-ui",
     ]
-    if _cmdline(proc_root, pid) != expected_argv:
-        raise VerificationError("model process arguments do not match the fixed profile")
-    inode = _listener_inode(proc_root)
+
+
+def _ssh_argv(snapshot: Snapshot) -> list[str]:
+    return [
+        str(snapshot.ssh_path),
+        "-F",
+        "/dev/null",
+        "-N",
+        "-T",
+        "-p",
+        str(LINODE_PORT),
+        "-i",
+        str(snapshot.ssh_key_path),
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "PreferredAuthentications=publickey",
+        "-o",
+        "PubkeyAuthentication=yes",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "IdentityAgent=none",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        f"UserKnownHostsFile={snapshot.known_hosts_path}",
+        "-o",
+        "GlobalKnownHostsFile=/dev/null",
+        "-o",
+        "HostKeyAlias=scout-pilot-linode",
+        "-o",
+        "HostKeyAlgorithms=ssh-ed25519",
+        "-o",
+        "UpdateHostKeys=no",
+        "-o",
+        "CanonicalizeHostname=no",
+        "-o",
+        "ProxyCommand=none",
+        "-o",
+        "ProxyJump=none",
+        "-o",
+        "PermitLocalCommand=no",
+        "-o",
+        "ForwardAgent=no",
+        "-o",
+        "ForwardX11=no",
+        "-o",
+        "RequestTTY=no",
+        "-o",
+        "ControlMaster=no",
+        "-o",
+        "ControlPath=none",
+        "-o",
+        "ClearAllForwardings=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ConnectionAttempts=1",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-R",
+        f"{REMOTE_LISTEN}:127.0.0.1:{DEVICE_PORT}",
+        f"{REMOTE_USER}@{REMOTE_HOST}",
+    ]
+
+
+def _request_json(
+    host: str,
+    port: int,
+    path: str,
+    api_key: str | None,
+    body: bytes | None,
+    deadline: float,
+) -> tuple[int, bytes]:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise VerificationError("local model probe exceeded its total deadline")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    headers: list[str] = [f"Host: {host}:{port}", "Connection: close"]
+    if api_key is not None:
+        headers.append(f"Authorization: Bearer {api_key}")
+    if body is not None:
+        headers.append("Content-Type: application/json")
+        headers.append(f"Content-Length: {len(body)}")
+    request_body = body or b""
+    request = (
+        f"{'POST' if body is not None else 'GET'} {path} HTTP/1.1\r\n"
+        + "\r\n".join(headers)
+        + "\r\n\r\n"
+    ).encode("ascii") + request_body
     try:
-        descriptors = os.listdir(proc_root / str(pid) / "fd")
-        owns_listener = any(
-            os.readlink(proc_root / str(pid) / "fd" / descriptor) == f"socket:[{inode}]"
-            for descriptor in descriptors
-        )
-    except OSError as exc:
-        raise VerificationError("model listener ownership cannot be verified") from exc
-    if not owns_listener:
-        raise VerificationError("the approved process does not own the local model listener")
-    return profile, identity, model_path, server_path, key_path
+        sock.settimeout(min(HTTP_REQUEST_TIMEOUT_SECONDS, remaining))
+        sock.connect((host, port))
+        sock.setblocking(False)
+        sent = 0
+        while sent < len(request):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise VerificationError("local model probe exceeded its total deadline")
+            _, writable, _ = select.select([], [sock], [], remaining)
+            if not writable:
+                raise VerificationError("local model probe exceeded its total deadline")
+            sent_count = sock.send(request[sent:])
+            if sent_count <= 0:
+                raise VerificationError("local model endpoint connection closed while sending a request")
+            sent += sent_count
+
+        received = bytearray()
+        header_end: int | None = None
+        expected_length: int | None = None
+        status: int | None = None
+        while True:
+            if header_end is not None and expected_length is not None:
+                if len(received) >= header_end + expected_length:
+                    return status or 0, bytes(received[header_end : header_end + expected_length])
+            if len(received) > MAX_RESPONSE_BYTES + 8192:
+                raise VerificationError("model response exceeds the bounded proof limit")
+            if header_end is None and len(received) > 8192:
+                raise VerificationError("model response headers exceed the bounded proof limit")
+            if header_end is None:
+                marker = received.find(b"\r\n\r\n")
+                if marker >= 0:
+                    header_end = marker + 4
+                    header_lines = bytes(received[:marker]).decode("iso-8859-1").split("\r\n")
+                    status_fields = header_lines[0].split()
+                    if len(status_fields) < 2 or not status_fields[0].startswith("HTTP/") or not status_fields[1].isdigit():
+                        raise VerificationError("local model endpoint returned an invalid HTTP status line")
+                    status = int(status_fields[1])
+                    response_headers: dict[str, list[str]] = {}
+                    for line in header_lines[1:]:
+                        if ":" not in line:
+                            raise VerificationError("local model endpoint returned invalid HTTP headers")
+                        name, value = line.split(":", 1)
+                        response_headers.setdefault(name.strip().lower(), []).append(value.strip())
+                    if response_headers.get("transfer-encoding"):
+                        raise VerificationError("chunked model responses are not accepted by the bounded probe")
+                    lengths = response_headers.get("content-length", [])
+                    if len(lengths) > 1 or (lengths and not lengths[0].isdigit()):
+                        raise VerificationError("local model endpoint returned ambiguous response length")
+                    if lengths:
+                        expected_length = int(lengths[0])
+                        if expected_length > MAX_RESPONSE_BYTES:
+                            raise VerificationError("model response exceeds the bounded proof limit")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise VerificationError("local model probe exceeded its total deadline")
+            readable, _, _ = select.select([sock], [], [], remaining)
+            if not readable:
+                raise VerificationError("local model probe exceeded its total deadline")
+            chunk = sock.recv(8192)
+            if not chunk:
+                if header_end is None or status is None:
+                    raise VerificationError("local model endpoint closed before returning a response")
+                if expected_length is not None and len(received) < header_end + expected_length:
+                    raise VerificationError("local model endpoint closed an incomplete response")
+                return status, bytes(received[header_end:])
+            received.extend(chunk)
+    except (OSError, select.error) as exc:
+        raise VerificationError("local model endpoint did not complete the bounded probe") from exc
+    finally:
+        sock.close()
 
 
-def _read_key(path: Path) -> str:
-    info = _private_file(path, max_bytes=512)
-    del info
-    raw = path.read_bytes()
-    value = raw.removesuffix(b"\n").decode("ascii", errors="strict")
-    if not re.fullmatch(r"[A-Za-z0-9._~-]{32,512}", value):
-        raise VerificationError("model API key is not one bounded key")
-    return value
+def _expect_model_ready(host: str, port: int, api_key: str, deadline: float) -> None:
+    status, body = _request_json(host, port, "/v1/models", api_key, None, deadline)
+    if status != 200:
+        raise VerificationError("managed model child is not ready")
+    try:
+        result = json.loads(body)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise VerificationError("model readiness response was not valid JSON") from exc
+    data = result.get("data") if isinstance(result, dict) else None
+    if (
+        not isinstance(data, list)
+        or len(data) != 1
+        or not isinstance(data[0], dict)
+        or data[0].get("id") != MODEL_ID
+    ):
+        raise VerificationError("local endpoint did not expose exactly the approved model")
 
 
-def probe_api_auth(host: str, port: int, api_key: str) -> tuple[int, int, int, str]:
-    """Use two rejected requests and one one-token synthetic inference."""
+def probe_api_auth(
+    host: str,
+    port: int,
+    api_key: str,
+    total_deadline_seconds: float = AUTH_PROBE_TOTAL_DEADLINE_SECONDS,
+) -> AuthProbeResult:
+    """Prove two auth refusals and one bounded exact synthetic generation."""
+    deadline = time.monotonic() + total_deadline_seconds
     wrong_key = secrets.token_urlsafe(48)
     while secrets.compare_digest(wrong_key, api_key):
         wrong_key = secrets.token_urlsafe(48)
     payload = json.dumps(
         {
             "model": MODEL_ID,
-            "messages": [{"role": "user", "content": "Reply with one token: OK"}],
-            "max_tokens": 1,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"Return exactly {SENTINEL} and nothing else. Do not add commentary.",
+                }
+            ],
+            "max_tokens": 16,
             "temperature": 0,
             "stream": False,
+            "chat_template_kwargs": {"enable_thinking": False},
         },
         separators=(",", ":"),
     ).encode("utf-8")
 
-    def request(bearer: str | None, body: bytes) -> tuple[int, bytes]:
-        connection = http.client.HTTPConnection(host, port, timeout=5)
-        headers = {"Content-Type": "application/json"}
-        if bearer is not None:
-            headers["Authorization"] = f"Bearer {bearer}"
-        try:
-            connection.request("POST", "/v1/chat/completions", body=body, headers=headers)
-            response = connection.getresponse()
-            body = response.read(MAX_RESPONSE_BYTES + 1)
-            if len(body) > MAX_RESPONSE_BYTES:
-                raise VerificationError("model response exceeds the bounded proof limit")
-            return response.status, body
-        except (OSError, http.client.HTTPException) as exc:
-            raise VerificationError("local model endpoint did not complete the bounded probe") from exc
-        finally:
-            connection.close()
-
-    # Deliberately invalid payloads ensure a server without auth cannot perform
-    # an inference during either rejection check.
-    missing_status, _ = request(None, b"{}")
+    # Invalid empty bodies ensure rejected credentials cannot trigger inference.
+    missing_status, _ = _request_json(host, port, "/v1/chat/completions", None, b"{}", deadline)
     if missing_status != 401:
         raise VerificationError("local model endpoint did not reject missing and wrong API keys")
-    wrong_status, _ = request(wrong_key, b"{}")
+    wrong_status, _ = _request_json(host, port, "/v1/chat/completions", wrong_key, b"{}", deadline)
     if wrong_status != 401:
         raise VerificationError("local model endpoint did not reject missing and wrong API keys")
-    valid_status, valid_body = request(api_key, payload)
+    valid_status, valid_body = _request_json(host, port, "/v1/chat/completions", api_key, payload, deadline)
     if valid_status != 200:
         raise VerificationError("local model endpoint rejected the protected synthetic request")
     try:
@@ -339,12 +595,38 @@ def probe_api_auth(host: str, port: int, api_key: str) -> tuple[int, int, int, s
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise VerificationError("protected synthetic request response was not valid JSON") from exc
     choices = result.get("choices") if isinstance(result, dict) else None
-    if not isinstance(result, dict) or result.get("model") != MODEL_ID or not isinstance(choices, list) or not choices:
+    if not isinstance(result, dict) or result.get("model") != MODEL_ID or not isinstance(choices, list) or len(choices) != 1:
         raise VerificationError("protected synthetic request response did not match the approved model")
-    first_choice = choices[0]
-    if not isinstance(first_choice, dict) or not isinstance(first_choice.get("message"), dict):
-        raise VerificationError("protected synthetic request response was incomplete")
-    return missing_status, wrong_status, valid_status, MODEL_ID
+    choice = choices[0]
+    message = choice.get("message") if isinstance(choice, dict) else None
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        raise VerificationError("protected synthetic request did not return an assistant message")
+    content = message.get("content")
+    finish_reason = choice.get("finish_reason")
+    if not isinstance(content, str) or content != SENTINEL or finish_reason != "stop":
+        raise VerificationError("protected synthetic request did not complete the exact bounded sentinel")
+    usage = result.get("usage")
+    if not isinstance(usage, dict):
+        raise VerificationError("protected synthetic request omitted token usage")
+    tokens = [usage.get("prompt_tokens"), usage.get("completion_tokens"), usage.get("total_tokens")]
+    if any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in tokens):
+        raise VerificationError("protected synthetic request returned invalid token usage")
+    prompt_tokens, completion_tokens, total_tokens = tokens
+    if total_tokens != prompt_tokens + completion_tokens:
+        raise VerificationError("protected synthetic request token usage is inconsistent")
+    if time.monotonic() > deadline:
+        raise VerificationError("local model probe exceeded its total deadline")
+    return AuthProbeResult(
+        missing_status=missing_status,
+        wrong_status=wrong_status,
+        valid_status=valid_status,
+        response_model=MODEL_ID,
+        response_text=content,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        finish_reason=finish_reason,
+    )
 
 
 def _atomic_private_write(path: Path, content: str) -> None:
@@ -368,8 +650,12 @@ def _atomic_private_write(path: Path, content: str) -> None:
         raise VerificationError("protected proof record could not be written") from exc
 
 
-def _remove_old_proof(home: Path) -> None:
-    proof_path = home / ".config" / "scout-matepad-link" / "auth-proof.conf"
+def _proof_path(home: Path) -> Path:
+    return home / ".config" / "scout-matepad-link" / "auth-proof.conf"
+
+
+def _remove_proof(home: Path) -> None:
+    proof_path = _proof_path(home)
     try:
         if proof_path.exists() and not proof_path.is_symlink():
             proof_path.unlink()
@@ -377,88 +663,257 @@ def _remove_old_proof(home: Path) -> None:
         pass
 
 
-def record_server(home: Path, prefix: Path, proc_root: Path = Path("/proc")) -> None:
-    profile, model_path, server_path, key_path = _profile(home, prefix)
-    del model_path, server_path
-    pid = os.getppid()
-    args = _cmdline(proc_root, pid)
-    if not args or args[-1] != "--serve" or not any(arg.endswith("matepad-link.sh") for arg in args):
-        raise VerificationError("server launch identity must be recorded by the trusted --serve action")
-    start_ticks = _proc_start_ticks(proc_root, pid)
-    identity = {
-        "format": "1",
-        "pid": str(pid),
-        "start_ticks": start_ticks,
-        "server_sha256": profile["llama_server_sha256"],
-        "model_sha256": profile["model_sha256"],
-        "key_sha256": _digest(key_path),
-    }
-    path = home / ".config" / "scout-matepad-link" / "server-identity.conf"
-    _atomic_private_write(path, "".join(f"{key}={value}\n" for key, value in identity.items()))
-    _remove_old_proof(home)
+def _assert_child_alive(child: subprocess.Popen[bytes], name: str) -> None:
+    if child.poll() is not None:
+        raise VerificationError(f"managed {name} child exited; session is stopped")
 
 
-def verify(home: Path, prefix: Path, proc_root: Path = Path("/proc")) -> None:
-    _remove_old_proof(home)
-    profile, identity, model_path, server_path, key_path = _check_live_process(home, prefix, proc_root)
-    del model_path, server_path
-    api_key = _read_key(key_path)
-    missing_status, wrong_status, valid_status, response_model = probe_api_auth(
-        "127.0.0.1", DEVICE_PORT, api_key
-    )
-    # Detect process replacement or key rotation during the network probe.
-    profile_after, identity_after, _, _, key_path_after = _check_live_process(home, prefix, proc_root)
-    if identity_after != identity or profile_after != profile or _digest(key_path_after) != identity["key_sha256"]:
-        raise VerificationError("server or key identity changed during auth verification")
-    created = int(time.time())
-    proof = {
-        "format": "2",
-        "created_epoch": str(created),
-        "expires_epoch": str(created + PROOF_TTL_SECONDS),
+def _stop_child(child: subprocess.Popen[bytes] | None) -> None:
+    if child is None or child.poll() is not None:
+        return
+    try:
+        child.terminate()
+        child.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            child.kill()
+            child.wait(timeout=2)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _write_proof(home: Path, snapshot: Snapshot, child: subprocess.Popen[bytes], result: AuthProbeResult) -> None:
+    created = time.time()
+    fields = {
+        "format": "4",
+        "created_epoch": f"{created:.3f}",
+        "expires_epoch": f"{created + PROOF_TTL_SECONDS:.3f}",
+        "scope": "managed-trusted-Termux-account-only",
+        "kernel_socket_attestation": "false",
+        "server_pid": str(child.pid),
+        "server_sha256": snapshot.server_sha256,
+        "model_sha256": snapshot.model_sha256,
+        "api_key_sha256": snapshot.key_sha256,
+        "ssh_sha256": snapshot.ssh_sha256,
+        "ssh_key_sha256": snapshot.ssh_key_sha256,
+        "known_hosts_sha256": snapshot.known_hosts_sha256,
         "model_id": MODEL_ID,
-        "server_pid": identity["pid"],
-        "process_start_ticks": identity["start_ticks"],
-        "server_sha256": profile["llama_server_sha256"],
-        "model_sha256": profile["model_sha256"],
-        "api_key_file": str(key_path),
-        "api_key_sha256": identity["key_sha256"],
-        "listener": "127.0.0.1:8081",
-        "missing_key_status": str(missing_status),
-        "wrong_key_status": str(wrong_status),
-        "protected_synthetic_status": str(valid_status),
-        "response_model": response_model,
+        "listener_target": f"127.0.0.1:{DEVICE_PORT}",
+        "server_readiness_marker": SERVER_READY_MARKER,
+        "missing_key_status": str(result.missing_status),
+        "wrong_key_status": str(result.wrong_status),
+        "protected_synthetic_status": str(result.valid_status),
+        "response_model": result.response_model,
+        "response_text": result.response_text,
+        "finish_reason": result.finish_reason,
+        "prompt_tokens": str(result.prompt_tokens),
+        "completion_tokens": str(result.completion_tokens),
+        "total_tokens": str(result.total_tokens),
         "inference_count": "1",
     }
-    proof_path = home / ".config" / "scout-matepad-link" / "auth-proof.conf"
-    _atomic_private_write(proof_path, "".join(f"{key}={value}\n" for key, value in proof.items()))
+    _atomic_private_write(_proof_path(home), "".join(f"{key}={value}\n" for key, value in fields.items()))
+
+
+def _popen(argv: list[str], *, capture_output: bool = False) -> subprocess.Popen[bytes]:
+    try:
+        return subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if capture_output else subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if capture_output else subprocess.DEVNULL,
+            bufsize=0,
+            close_fds=True,
+        )
+    except OSError as exc:
+        raise VerificationError("managed child could not be started") from exc
+
+
+def _drain_server_output(server: ManagedServer) -> None:
+    stream = server.process.stdout
+    if stream is None:
+        server.output_eof = True
+        server.output_event.set()
+        return
+    buffered = bytearray()
+    discarding_long_line = False
+    try:
+        while True:
+            chunk = stream.readline(MAX_SERVER_LOG_LINE_BYTES + 1)
+            if not chunk:
+                server.output_eof = True
+                server.output_event.set()
+                return
+            newline_terminated = chunk.endswith(b"\n")
+            if discarding_long_line:
+                if newline_terminated:
+                    discarding_long_line = False
+                continue
+            if len(buffered) + len(chunk) > MAX_SERVER_LOG_LINE_BYTES:
+                buffered.clear()
+                discarding_long_line = not newline_terminated
+                continue
+            buffered.extend(chunk)
+            if not newline_terminated:
+                continue
+            try:
+                line = buffered.decode("utf-8").rstrip("\r\n")
+            except UnicodeDecodeError:
+                line = ""
+            buffered.clear()
+            if line == SERVER_READY_MARKER or line.startswith(SERVER_READY_MARKER + " - "):
+                # Retain only the known-safe fixed marker, never arbitrary child logs.
+                server.readiness_message = SERVER_READY_MARKER
+                server.output_event.set()
+    except (OSError, ValueError):
+        server.output_eof = True
+        server.output_event.set()
+
+
+def _start_server(argv: list[str]) -> ManagedServer:
+    process = _popen(argv, capture_output=True)
+    if process.stdout is None:
+        _stop_child(process)
+        raise VerificationError("managed model child has no private readiness channel")
+    server = ManagedServer(process=process)
+    reader = threading.Thread(target=_drain_server_output, args=(server,), daemon=True)
+    server.output_thread = reader
+    reader.start()
+    return server
+
+
+def _wait_server_readiness(server: ManagedServer, deadline: float) -> None:
+    while True:
+        _assert_child_alive(server.process, "model server")
+        if server.readiness_message == SERVER_READY_MARKER:
+            return
+        if server.output_eof:
+            raise VerificationError("managed model child exited its private output without a readiness marker")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise VerificationError("managed model child did not emit its bounded readiness marker in time")
+        server.output_event.wait(min(0.1, remaining))
+
+
+def _stop_server(server: ManagedServer | None) -> None:
+    if server is None:
+        return
+    _stop_child(server.process)
+    if server.output_thread is not None:
+        server.output_thread.join(timeout=1)
+    if server.process.stdout is not None:
+        try:
+            server.process.stdout.close()
+        except OSError:
+            pass
+
+
+def run_managed(home: Path, prefix: Path, *, sleep_fn=time.sleep) -> None:
+    """Start one server and one fixed SSH child; stop both at drift or TTL."""
+    _remove_proof(home)
+    server: ManagedServer | None = None
+    tunnel: subprocess.Popen[bytes] | None = None
+    proof_written = False
+    try:
+        snapshot = _capture_snapshot(home, prefix)
+        _validate_ssh_identity(snapshot)
+        assert_port_free(DEVICE_PORT)
+        api_key = _read_key(snapshot.key_path)
+        if hashlib.sha256(snapshot.key_path.read_bytes()).hexdigest() != snapshot.key_sha256:
+            raise VerificationError("model API key changed before server launch")
+        server = _start_server(_server_argv(snapshot))
+        ready_deadline = time.monotonic() + SERVER_START_TIMEOUT_SECONDS
+        # An authenticated listener is not enough: the exact child started above
+        # must first announce its fixed loopback bind over this private pipe.
+        _wait_server_readiness(server, ready_deadline)
+        while True:
+            _assert_child_alive(server.process, "model server")
+            _assert_snapshot(home, prefix, snapshot)
+            try:
+                _expect_model_ready("127.0.0.1", DEVICE_PORT, api_key, min(ready_deadline, time.monotonic() + HTTP_REQUEST_TIMEOUT_SECONDS))
+                break
+            except VerificationError:
+                if time.monotonic() >= ready_deadline:
+                    raise VerificationError("managed model child did not become ready within the bounded wait")
+                sleep_fn(min(1.0, max(0.0, ready_deadline - time.monotonic())))
+
+        _assert_child_alive(server.process, "model server")
+        _assert_snapshot(home, prefix, snapshot)
+        result = probe_api_auth("127.0.0.1", DEVICE_PORT, api_key)
+        _assert_child_alive(server.process, "model server")
+        _assert_snapshot(home, prefix, snapshot)
+        proof_started = time.monotonic()
+        _write_proof(home, snapshot, server.process, result)
+        proof_written = True
+
+        tunnel = _popen(_ssh_argv(snapshot))
+        _assert_child_alive(server.process, "model server")
+        _assert_child_alive(tunnel, "SSH tunnel")
+        expires_at = proof_started + PROOF_TTL_SECONDS
+        if time.monotonic() >= expires_at:
+            raise VerificationError("synthetic auth proof expired before the managed tunnel became ready")
+        next_health = time.monotonic() + HEALTH_INTERVAL_SECONDS
+        while time.monotonic() < expires_at:
+            _assert_child_alive(server.process, "model server")
+            _assert_child_alive(tunnel, "SSH tunnel")
+            _assert_snapshot(home, prefix, snapshot)
+            if time.monotonic() >= next_health:
+                _expect_model_ready(
+                    "127.0.0.1",
+                    DEVICE_PORT,
+                    api_key,
+                    time.monotonic() + HTTP_REQUEST_TIMEOUT_SECONDS,
+                )
+                _assert_child_alive(server.process, "model server")
+                _assert_child_alive(tunnel, "SSH tunnel")
+                next_health = time.monotonic() + HEALTH_INTERVAL_SECONDS
+            sleep_fn(min(SUPERVISOR_POLL_SECONDS, max(0.0, expires_at - time.monotonic())))
+        print("SCOUT_MODEL_LINK_SESSION_EXPIRED: managed children stopped; explicit requalification is required")
+    except BaseException:
+        if proof_written:
+            _remove_proof(home)
+        raise
+    finally:
+        # Only Popen objects created by this invocation are ever stopped.
+        _stop_child(tunnel)
+        _stop_server(server)
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     home = Path(os.environ.get("HOME", ""))
     prefix = Path(os.environ.get("PREFIX", "/data/data/com.termux/files/usr"))
-    if sys.version_info < (3, 9) or not home.is_absolute() or not prefix.is_absolute():
-        print("SCOUT_MODEL_AUTH_REFUSED: Python 3.9+ and absolute Termux paths are required", file=sys.stderr)
+    if sys.version_info < (3, 10) or not home.is_absolute() or not prefix.is_absolute():
+        print("SCOUT_MODEL_LINK_REFUSED: Python 3.10+ and absolute Termux paths are required", file=sys.stderr)
         return 2
+
+    def stop_managed_run(_signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    for stop_signal in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(stop_signal, stop_managed_run)
     try:
-        if args == ["--record-server"]:
-            record_server(home, prefix)
-            print("SCOUT_MODEL_SERVER_IDENTITY_RECORDED")
+        if args == ["--check"]:
+            snapshot = _capture_snapshot(home, prefix)
+            _validate_ssh_identity(snapshot)
+            assert_port_free(DEVICE_PORT)
+            print("SCOUT_MODEL_LINK_PREFLIGHT_OK: no live auth proof or model request was performed")
             return 0
-        if args == ["--verify"]:
-            verify(home, prefix)
-            print("SCOUT_MODEL_AUTH_PROOF_OK: protected synthetic request passed; proof expires in 300 seconds")
+        if args == ["--run"]:
+            run_managed(home, prefix)
             return 0
-        print("SCOUT_MODEL_AUTH_REFUSED: accepted only --record-server or --verify", file=sys.stderr)
+        print("SCOUT_MODEL_LINK_REFUSED: accepted only --check or --run", file=sys.stderr)
         return 2
-    except (VerificationError, OSError, UnicodeError, ValueError) as exc:
-        _remove_old_proof(home)
-        if isinstance(exc, VerificationError):
-            reason = str(exc)
-        else:
-            reason = "local identity or response validation failed"
-        print(f"SCOUT_MODEL_AUTH_REFUSED: {reason}", file=sys.stderr)
+    except (VerificationError, OSError, UnicodeError, ValueError, subprocess.SubprocessError) as exc:
+        _remove_proof(home)
+        reason = str(exc) if isinstance(exc, VerificationError) else "local identity or bounded process validation failed"
+        print(f"SCOUT_MODEL_LINK_REFUSED: {reason}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        _remove_proof(home)
+        print("SCOUT_MODEL_LINK_STOPPED: managed children were asked to stop", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":

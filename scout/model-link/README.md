@@ -1,150 +1,180 @@
 # MatePad local-model link proposal
 
-This folder is a source-only, fail-closed proposal for one path:
+This is a source-only, fail-closed proposal for a narrowly bounded path:
 
 ```text
 Scout on Linode -> 127.0.0.1:18088 -> SSH reverse forward -> MatePad 127.0.0.1:8081
 ```
 
-The Scout local-model route would use `http://127.0.0.1:18088/v1` with a
-protected `apiKeyFile`. The MatePad server must independently enforce that
-same model API key from its own protected key file. The SSH key and model API
-key are separate credentials. This adds no Scout route, identity, employee or
-customer access, conversation context, Odoo grant, DSH behavior, scheduler, or
-task execution. It must not add automatic OpenRouter fallback or replay an
-uncertain model call.
+Scout's selected local-model route would use `http://127.0.0.1:18088/v1` and
+its existing protected `apiKeyFile`. The MatePad server must independently
+enforce the same model key from a protected local key file. The SSH key and
+model API key remain separate credentials. This source adds no Scout route,
+identity, employee/customer access, conversation context, Odoo grant, DSH
+behavior, scheduler, task execution, or automatic OpenRouter fallback. It
+never replays an inference whose outcome is uncertain.
 
-The current source already allows an explicitly protected local route, but its
-`apiKeyFile` is optional. A client sending a bearer key does not prove that the
-local server checks it. `verify_auth.py` is a bounded verifier invoked by both
-`--check` and `--link`; the link refuses unless the verifier matches the live
-process, listener, model, server binary, and protected key file, then confirms
-that missing and wrong keys receive 401 and a synthetic one-token request with
-the correct key succeeds as the approved model. It writes a private proof that
-expires after five minutes. `--link` runs the verifier again each time, so a
-handwritten success flag or stale proof cannot authorize the connection. The
-proof records only file and process identity plus response statuses; it never
-prints request/response content or credentials. It verifies the exact
-``version: 9590 (`d2462f8`)`` build line. The official `llama.cpp` build b9590
-(`d2462f8`) documents `--api-key-file`; the future device owner must still
-verify the actual installed binary and live behavior. A model-list endpoint is
-not an auth proof. Termux Python 3.9 or newer is a verifier prerequisite; if it
-is absent, the launcher refuses, and this source does not install it.
+The installed MatePad runtime was read-only identified as the existing
+`llama-server` binary with SHA-256
+`6e8f34cac967060aa042a8bd2f65f06cf960c3c58063d0fb1876a3fc755e02b8`;
+its version string is `0 (unknown)`. The profile and launcher pin that exact
+binary hash and do not infer a release version from a different build. The
+existing llama.cpp server documentation for the pinned source commit describes
+`--api-key-file`, but only a future device qualification can prove that this
+installed executable enforces it.
 
-## What the launchers enforce
+## Managed session and evidence
 
-`matepad-link.sh --link` accepts no arbitrary host, port, model, SSH command,
-or shell instructions. It parses a strict key/value profile without sourcing
-it, rejects extra and duplicate fields, pins the remote host/user/listen
-address/device destination/model, checks protected local files and SHA-256
-digests, verifies the out-of-band OpenSSH host-key fingerprint, and runs the
-live API-auth verifier before opening a link. It calls one foreground `ssh` process with
-`-F /dev/null`, `-N`, `-T`, strict host-key checking, public-key-only
-authentication, no agent/X11/command/session, one fixed `-R`, a ten-second
-connect timeout, `ExitOnForwardFailure`, and bounded keepalives. It does not
-retry: a timeout, disconnect, or unknown outcome must be reconciled before an
-owner starts it again.
+`matepad-link.sh --check` validates the fixed profile, protected files,
+artifact hashes, SSH key, and out-of-band host-key pin, then refuses if the
+local model endpoint is occupied or its state is unknown. It performs no
+inference and creates no live proof.
 
-`matepad-link.sh --serve` is a separate explicit action. It starts the existing
-`llama-server` binary only if `/proc/net/tcp` and `/proc/net/tcp6` prove port
-8081 is free. If the port is occupied or state is unreadable, it refuses; it
-never kills, signals, restarts, or replaces an unknown router. Its fixed
-arguments bind only to `127.0.0.1`, select the one allowlisted Qwen3 0.6B model,
-enforce `--api-key-file`, disable the Web UI, and cap the initial profile at one
-parallel slot, a 4096-token context, and two inference threads. Those resource
-values are conservative starting limits, not device qualification or an
-always-on guarantee. The owner must measure memory, heat, screen-off behavior,
-reboot recovery, and actual request quality on the MatePad before adopting them.
+`matepad-link.sh --run` hands control to one bounded Python supervisor. The
+supervisor starts only its own pinned `llama-server` child, with fixed
+`127.0.0.1:8081`, model, protected `--api-key-file`, one parallel slot, a
+4096-token context, two inference threads, and no Web UI. It refuses to start
+if a TCP connection to either IPv4 or available IPv6 loopback shows an existing
+listener. It never kills or replaces an unknown or pre-existing process. The
+free-port check and child launch have a small race; operation assumes the
+Termux application account remains trusted during the managed run.
 
-The profile, SSH private key, model API key, pinned `known_hosts` file, model,
-server binary, server identity, and auth proof must live in Termux app-private
-storage. The `.config/scout-matepad-link` directory must be owned by the
-Termux app user with mode `700`. Key files are checked for regular-file status,
-ownership, and no group/world permissions; key contents never appear in
-command arguments or output. The
-known-host entry must be supplied from an independently verified host-key
-fingerprint. The launcher does not run `ssh-keyscan` or accept a first-use key.
+Readiness first requires the exact `Popen` child this run created to emit the
+bounded private log line `main: server is listening on
+http://127.0.0.1:8081`; the supervisor drains the child's output through a
+private pipe and retains only that fixed marker. Only then does it require the
+child to remain alive and an authenticated `/v1/models` request to report
+exactly `Qwen3-0.6B`. A foreign listener that wins the free-port/launch race
+cannot pass by answering the API checks if the owned child never emits its
+readiness marker. Then the supervisor makes one protected synthetic inference, using the exact
+`SCOUT_MATEPAD_LOCAL_OK` sentinel, `max_tokens: 16`, and
+`chat_template_kwargs.enable_thinking: false`. It requires the exact assistant
+text, approved model name, normal `stop` finish, and internally consistent
+prompt/completion/total token usage. Before that inference, it requires empty
+and random-wrong credentials to receive HTTP 401 on invalid empty request
+bodies. The successful protected inference is the only model generation in
+each run.
 
-The starter profile is deliberately unusable: it has placeholder hashes.
-Generate no key and start no service from this source branch. A later exact
-device work item must record the real model/binary hashes, host-key pin, and
-protected-file paths. If any target or model changes, update and review the
-source instead of editing around the fixed assertions.
+The supervisor then starts one fixed foreground reverse-SSH child and checks
+both owned children, profile/artifact/key/host-pin digests, and authenticated
+model readiness during the session. It stops only the children it created if
+either child exits, any identity changes, the health check fails, or the
+five-minute proof window expires. It never retries a generation or silently
+restarts either child. The private `auth-proof.conf` records the bounded
+synthetic result and its expiry; it is evidence only and is not a Scout route
+authorization token. A route still requires the existing per-route consent and
+model policy. A successful SSH child is not independent proof of the Linode
+listener; host-side readback remains a future qualification step.
+
+### Android trust boundary
+
+The verified MatePad Android surface denies both `/proc/net` socket inspection
+and `ss` netlink access. The supervisor therefore uses the trusted-device
+account contract: it checks that loopback has no responding endpoint, launches
+the approved binary itself with the exact fixed arguments, requires that
+specific `Popen` child to emit the private bounded bind/readiness marker,
+observes it remain alive, and validates the endpoint with the
+missing/wrong/correct-key requests and synthetic inference. It also monitors
+the child and the server/model/key/SSH/host-pin files for change.
+
+This provides no kernel socket-inode attestation and does not protect against
+malicious or compromised code running under the same Android UID. It does not
+claim the endpoint is cryptographically bound to the child at the kernel
+level. The SSH tunnel stays within the same trusted-account assumption. A
+stronger isolation boundary would require a separately reviewed platform
+capability, not an unsupported `/proc` or `ss` check.
+
+The five-minute managed run is a qualification session, not an always-on
+service. Do not adopt a startup manager, unattended restart policy, or
+long-running tunnel until device thermals, memory, screen-off behavior, reboot
+recovery, sustained request quality, connection revocation, and the runtime
+trust boundary are separately qualified.
+
+The supervisor requires Python 3.10 or newer; the current MatePad readback
+reported Python 3.13.13. It does not install or update Python.
+
+## Protected files and source scope
+
+Keep the profile, SSH private key, model API key, pinned `known_hosts`, model,
+and server binary in Termux app-private storage. The
+`.config/scout-matepad-link` directory must be owned by the Termux app user
+with mode `700`. Secret files must be regular files with owner-only
+permissions. The host key must be pinned from an independent trusted readback;
+the launcher neither runs `ssh-keyscan` nor accepts first-use trust.
+
+The starter profile is not operational: model and host-pin values remain
+placeholders. No key is generated and no service is started from this source
+branch. The server binary hash is fixed to the verified device readback; a
+binary update requires a new exact device readback and reviewed source change.
 
 ## Future Linode receiver boundary
 
-The templates show a dedicated `scout-matepad-forward` public-key account.
+The templates describe a dedicated `scout-matepad-forward` public-key account.
 Never reuse root, Odoo, DSH, queue-tunnel, or other service keys. Give this
 account no sudo, application/database credentials, writable Scout paths, or
 shell purpose. Install one dedicated device public key with the
 `authorized_keys` restrictions shown in the example.
 
-The sshd profile permits remote TCP forwarding only and exactly
-`127.0.0.1:18088`, disables local-destination forwarding with `PermitOpen none`,
-disallows TTY, shell/subsystem sessions (`MaxSessions 0`), agent/X11,
-StreamLocal, tunnel, user RC and user environment, and uses public-key auth
-only. `GatewayPorts no` keeps the reverse listener private. OpenSSH documents
-that `PermitListen` controls the remote bind address/port and `MaxSessions 0`
-still permits forwarding. `PermitOpen none` does not limit the destination
-inside a client-requested `-R`; the trusted MatePad launcher fixes that target
-to `127.0.0.1:8081`, and the device key must remain protected.
+The sshd template permits remote TCP forwarding only and exactly
+`127.0.0.1:18088`, disables local-destination forwarding with `PermitOpen
+none`, disallows TTY, shell/subsystem sessions (`MaxSessions 0`), agent/X11,
+StreamLocal, tunnel, and user RC. Do not add global-only directives inside a
+`Match` block. `GatewayPorts no` keeps the reverse listener private.
+`PermitOpen none` does not constrain the destination inside a client-requested
+`-R`; the trusted MatePad launcher fixes that target to `127.0.0.1:8081`, and
+the device key must remain protected.
 
 Do not install the `Match` example as an early drop-in. `Match` scopes later
-configuration until another `Match`; inspect the complete include order, stage
-and validate the full candidate, and compare `sshd -T -C` effective output for
-the dedicated account and existing accounts before any reload. On the exact
-Linode, first prove the listener is bound only to loopback and verify that
-unrelated SSH users retain their previous effective settings. Test a valid
-forward and refusals for another listen port/address, local forwarding,
-shell/exec/SFTP, wrong database/other TCP destinations, and public listener
-reachability. A successful SSH login alone is not sufficient.
+settings until another `Match`; inspect the complete include order, stage and
+validate the full candidate config, and compare `sshd -T -C` effective output
+for the dedicated account and existing accounts before any reload. Any future
+host operation needs a fresh exact host claim, a byte-identical preimage,
+`sshd -t`, listener readback, positive/negative forwarding tests, and a
+targeted rollback. Preserve unrelated settings and users.
 
-## Later owner-controlled qualification
+## Future owner-controlled qualification
 
-The source branch does not create keys, configure the host/tablet, connect an
-SSH tunnel, start/restart llama.cpp, alter a Scout policy, or prove the device
-is always on. Those actions require fresh owner-controlled claims for the
-shared Linode SSH configuration and the MatePad process/startup path.
+This branch does not create keys, configure the host/tablet, connect an SSH
+tunnel, start/restart llama.cpp, alter Scout policy, or prove that the device
+stays awake. Those steps require fresh owner-controlled claims for the shared
+Linode SSH config and the MatePad process/startup path.
 
 1. Under a fresh host claim, verify the current OpenSSH version/config/include
-   order, create only the dedicated account and key, stage the full sshd
-   config, run `sshd -t`, compare effective settings for the dedicated and
-   existing accounts, then apply the narrowly scoped reload and read back
-   listeners. Keep a byte-identical preimage and targeted rollback.
-2. Under a fresh MatePad claim, identify the exact installed signer, binary,
-   model artifact and startup manager. Confirm the original process and active
-   slots before cutover. If 8081 is occupied, stop only the exact verified
-   process with owner control; otherwise use the launcher's refusal. The
-   verifier proves loopback bind, 401 rejection for missing/wrong keys, and a
-   successful one-token synthetic request with the protected key. Then verify
-   `/v1/models` returns only `Qwen3-0.6B`. No public model endpoint is opened.
-3. Pin the Linode host key through an independent trusted readback. Create a
-   dedicated device SSH key and separate random model API key inside protected
-   storage. Transfer the model key to the existing protected Scout deployment
-   through its approved secret path, then use the existing per-route consent
-   and model policy. The source key never appears in chat, Git, shell history,
-   process arguments, logs, or fixtures.
-4. Connect once and read back both ends: the Linode listener is only
-   `127.0.0.1:18088`; the device server is only `127.0.0.1:8081`; unauthenticated
-   inference is refused; the authorized key works; and Scout's selected local
-   route returns the exact model. Then test loss of device/network, screen-off,
-   reboot, disconnect, and controlled revocation. No automatic restart or
-   request replay is accepted until separately designed and tested.
+   order, create only the dedicated account and key, stage and validate the
+   complete sshd config, compare effective settings for the dedicated and
+   existing accounts, then apply the narrow reload and read back listeners.
+2. Under a fresh MatePad claim, confirm the exact installed binary/model
+   hashes, trusted account, available runtime, protected API key, and that the
+   endpoint is unused. Run the managed five-minute proof. Never stop an
+   unknown or pre-existing router; any cutover is a separately claimed future
+   operation with an exact rollback.
+3. Pin the Linode host key independently. Transfer a dedicated device public
+   key and separate random model API key through approved protected paths; use
+   existing per-route consent and model policy. Secrets never enter chat,
+   Git, shell history, process arguments, logs, or fixtures.
+4. Independently read back the Linode listener at `127.0.0.1:18088`, test
+   expected forwarding and refusal cases, and confirm Scout uses the exact
+   approved local route. Then test loss of device/network, screen-off, reboot,
+   disconnect, and controlled revocation. No restart, request replay, or
+   OpenRouter fallback is enabled by this source.
 
-Revocation removes only this account's marked public key / account access,
-withdraws the existing Scout local route through its policy process, and
-rotates the model API key if it may have been exposed. Stop only the exact
-owner-verified device tunnel/server process. If process state or a model call
-outcome is unknown, preserve the current state for reconciliation; do not kill
-an unknown PID, retry a call, or fall back to OpenRouter automatically.
+Revocation must remove only this account's marked public key/account access,
+withdraw the existing Scout local route through its policy process, and rotate
+the model API key if it may have been exposed. Stop only exact owner-verified
+device children. If state or a model-call outcome is unknown, preserve it for
+reconciliation.
 
-The established physical-PC-off exercise remains deferred. A protected
-reverse-SSH connection and one successful local-model request do not prove
-unattended persistence, business-context authorization, DSH execution, or
-customer access.
+The established physical-PC-off exercise remains deferred. This source and a
+successful synthetic local request do not prove unattended persistence,
+business-context authorization, DSH execution, or customer access.
 
 ## References
 
-- [OpenSSH `sshd_config(5)`](https://man.openbsd.org/sshd_config): `AllowTcpForwarding`, `PermitListen`, `PermitOpen`, `MaxSessions`, and user/session restrictions.
-- [OpenSSH `ssh_config(5)`](https://man.openbsd.org/ssh_config): strict host-key checking, `ExitOnForwardFailure`, and bounded server-alive settings.
-- [llama.cpp server README at b9590 (`d2462f8`)](https://github.com/ggml-org/llama.cpp/blob/d2462f8/tools/server/README.md): `--api-key-file`, bind/port/model alias and resource flags. The installed MatePad binary still requires exact readback.
+- [OpenSSH `sshd_config(5)`](https://man.openbsd.org/sshd_config):
+  `AllowTcpForwarding`, `PermitListen`, `PermitOpen`, `MaxSessions`, and
+  forwarding/session restrictions.
+- [OpenSSH `ssh_config(5)`](https://man.openbsd.org/ssh_config): strict
+  host-key checking, `ExitOnForwardFailure`, and bounded keepalives.
+- [llama.cpp server README at b9590 (`d2462f8`)](https://github.com/ggml-org/llama.cpp/blob/d2462f8/tools/server/README.md):
+  `--api-key-file`, bind/port/model alias, and resource flags. The installed
+  MatePad binary still requires a future exact runtime test.
