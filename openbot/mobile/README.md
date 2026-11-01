@@ -1,10 +1,31 @@
 # Scout mobile chat client
 
-This Expo app provides a native sign-in and text chat for built-in Scout agents.
+This Expo app provides native sign-in and text chat for built-in Scout agents.
 It reads conversations from the owned CopilotKit history endpoint and submits
 turns through the owned AG-UI runner; PostgreSQL on the server remains the
-transcript authority. The client does not include delivery, routines, memory,
-approvals, computer access, plugins or push notifications.
+transcript authority.
+
+The conversation's Odoo context panel shows the current user's access and
+provider-sharing status. Users explicitly allow or withdraw the existing
+model-release consent, then select one project task ID for their next message.
+The reference is scoped to the user, conversation and agent and consumed once
+when a turn is attempted. A failed turn restores only the chat draft under the
+existing recovery rules; selecting a task again requires another explicit choice.
+The server rechecks membership, grants, model policy and Odoo visibility before
+releasing the fixed summary. Configure or replace the Odoo credential through
+the authenticated web setup link; mobile has no raw-key enrollment field.
+
+The DSH draft-review panel loads existing receipts only when the server's
+`delegatedDrafts` capability is explicitly true. It filters to the current
+conversation and renders returned results as plain text. Refreshing a task reads
+its current receipt. Acceptance requires a separate review/confirmation action
+and carries the exact reviewed revision and draft digest. A conflict requires
+refresh and review rather than automatic acceptance of a newer result.
+
+This slice adds no draft submission, cancellation, recovery worker, scheduler,
+routines, memory, computer access, plugins or push notifications. Existing queue
+and server authorization remain authoritative. Runtime activation, live Entra/
+Odoo/model/DSH qualification and physical-device acceptance are separate work.
 
 ## Build
 
@@ -31,4 +52,6 @@ server.
 
 Run `npm run typecheck` and `npm test` from this directory. The focused
 tests cover persisted history reads, authenticated request shape, owned-run
-payloads, streamed text, terminal events and error handling.
+payloads, streamed text, terminal events, failure recovery, one-turn task
+selection, consent request shapes, capability gating and exact draft acceptance.
+They use synthetic fixtures and fake API ports, not live providers or queue work.

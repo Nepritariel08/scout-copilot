@@ -1,4 +1,5 @@
 import type { ChatMessage } from "./api";
+import { validOdooTaskId } from "./scout-work.ts";
 
 export type OwnedRunInput = {
   threadId: string;
@@ -6,7 +7,7 @@ export type OwnedRunInput = {
   messages: ChatMessage[];
   state: Record<string, never>;
   tools: [];
-  context: [];
+  context: { description: "scout.project_task_id"; value: string }[];
   forwardedProps: Record<string, never>;
 };
 
@@ -109,11 +110,17 @@ export function buildOwnedRunInput(input: {
   threadId: string;
   history: readonly ChatMessage[];
   text: string;
+  selectedOdooTaskId?: string | null;
   createId: () => string;
 }): { payload: OwnedRunInput; userMessage: ChatMessage } {
   const text = input.text.trim();
   if (!input.threadId || !text)
     throw new Error("A Scout conversation and message are required.");
+  if (
+    input.selectedOdooTaskId != null &&
+    !validOdooTaskId(input.selectedOdooTaskId)
+  )
+    throw new Error("Choose a valid Odoo project task ID.");
   const userMessage: ChatMessage = {
     id: input.createId(),
     role: "user",
@@ -127,7 +134,15 @@ export function buildOwnedRunInput(input: {
       messages: [...input.history, userMessage],
       state: {},
       tools: [],
-      context: [],
+      context:
+        input.selectedOdooTaskId == null
+          ? []
+          : [
+              {
+                description: "scout.project_task_id",
+                value: input.selectedOdooTaskId,
+              },
+            ],
       forwardedProps: {},
     },
   };
