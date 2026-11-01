@@ -57,7 +57,9 @@ scheduler or managed memory service is required for this persistence slice.
   audit/credential administration, preferences, onboarding, pages and the DSH
   requester. No Intelligence client or second background scheduler is created.
   Global administration remains a platform-owner function, as detailed below.
-- Requires sign-in plus protected current per-user tenant/requester policy.
+- Requires sign-in plus protected current native `SCOUT_MEMBERSHIPS_FILE` policy,
+  independent of queue commands/requester keys and draft capabilities. The queue
+  is optional and separately admitted. See [membership and migration](MEMBERSHIP.md).
   Every protected API route checks membership. History/run/stream checks refresh
   native identity and grants. Body fields, headers and prompts grant no rights.
   The organization bridge requires matching verified subject IDs in owned mode;

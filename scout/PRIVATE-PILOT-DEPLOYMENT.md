@@ -125,13 +125,14 @@ Before Scout startup or activation, the deployment record must additionally supp
   no key is ready merely because a previous local pilot had one. Do not paste,
   print or place them in source, shell arguments, fixtures or build artifacts.
 
-The current membership reader still uses the strict queue-binding schema and
-requires an active, unexpired `draftAnalysis` policy to resolve the native tenant.
-The separate delegated-drafts switch remains false. Populate the actual verified
-requester fields; an inactive example, dummy UID or invented key path is not a
-working identity configuration. Missing authentication or binding configuration
-correctly refuses owned startup. Model policy can remain absent/empty so inference
-stays unavailable while identity/history are qualified.
+Native admission requires the independent protected `SCOUT_MEMBERSHIPS_FILE`;
+see [its strict schema and required migration](MEMBERSHIP.md). The delegated-drafts
+switch remains false, so omit queue commands, Odoo UID/key configuration and
+`SCOUT_QUEUE_BINDINGS_FILE` for identity/history qualification. Missing verified
+authentication or native membership configuration refuses owned startup. An
+inactive/expired membership grants nothing. Model policy can remain absent so
+inference stays unavailable while identity/history are qualified. Enabling drafts
+later requires separate verified queue authority matching the native membership.
 
 ## Release and filesystem preparation
 
@@ -275,7 +276,7 @@ COPILOTKIT_TELEMETRY_DISABLED=true
 DO_NOT_TRACK=1
 SCOUT_DELEGATED_DRAFTS_ENABLED=false
 SCOUT_MODEL=openrouter/free
-SCOUT_QUEUE_BINDINGS_FILE=/etc/scout-pilot/private/queue-bindings.json
+SCOUT_MEMBERSHIPS_FILE=/etc/scout-pilot/private/memberships.json
 OPENBOT_PUBLIC_URL=https://scout-pilot.example.invalid
 OPENBOT_APP_URL=https://scout-pilot.example.invalid
 TRUSTED_ORIGINS=https://scout-pilot.example.invalid

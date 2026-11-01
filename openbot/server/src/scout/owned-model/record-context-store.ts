@@ -70,10 +70,13 @@ export function createProjectTaskContextStore(
           qualification:
             row.qualification === "verified_nonadmin" ? "qualified" : "pending",
           qualificationExpiresAt: iso(row.qualificationExpiresAt),
-          companyIds: row.companyIds,
+          // Bun SQL may return PostgreSQL integer[] as Int32Array, whose map()
+          // remains typed through Drizzle. The strict grant port requires plain
+          // wire arrays; copy values without coercing or broadening their scope.
+          companyIds: Array.from(row.companyIds),
           credentialRef: row.credentialRef,
         },
-        allowedProjectIds: row.allowedProjectIds,
+        allowedProjectIds: Array.from(row.allowedProjectIds),
       };
     },
     async getReleaseGrant(

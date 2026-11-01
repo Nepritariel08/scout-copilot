@@ -10,15 +10,13 @@ import {
 import type { ChannelStore } from "../../channels/routes";
 import { HistoryError } from "../history/protocol";
 import type { HistoryAuthority } from "../history/service";
-import type { ScoutActor, ScoutBinding } from "../types";
-
-export type BindingReader = (actor: ScoutActor) => Promise<ScoutBinding>;
+import type { MembershipReader } from "../membership";
 
 /** Revalidate native identity and membership on every call; no mutable global current user. */
 export function createOwnedAuthority(deps: {
   auth: AuthService;
   roles: RoleRepository;
-  binding: BindingReader;
+  binding: MembershipReader;
   profiles: Pick<AgentProfileStore, "get">;
   channels: Pick<ChannelStore, "get">;
 }) {
@@ -49,19 +47,34 @@ export function createOwnedAuthority(deps: {
     actor,
     binding,
     forRequest(request: Request): HistoryAuthority {
+      let fingerprint: string | undefined;
+      const current = async () => {
+        const value = await binding(request);
+        if (
+          fingerprint !== undefined &&
+          value.policy.fingerprint !== fingerprint
+        )
+          throw new HistoryError("HISTORY_ACCESS_DENIED");
+        fingerprint ??= value.policy.fingerprint;
+        return value;
+      };
       return {
         principal: async () => {
-          const { person, policy } = await binding(request);
+          const { person, policy } = await current();
           return { userId: person.id, tenantId: policy.tenantId };
         },
         authorize: async (scope, resource) => {
-          const { person, policy } = await binding(request);
+          const { person, policy } = await current();
           if (scope.userId !== person.id || scope.tenantId !== policy.tenantId)
             return false;
           if (!(await deps.profiles.get(person, resource.agentId)))
             return false;
-          if (!resource.channelId) return true;
+          if (!resource.channelId) {
+            await current();
+            return true;
+          }
           const channel = await deps.channels.get(person, resource.channelId);
+          await current();
           return Boolean(
             channel?.agentIds.includes(resource.agentId) &&
               (!resource.id || resource.id === channel.threadId),

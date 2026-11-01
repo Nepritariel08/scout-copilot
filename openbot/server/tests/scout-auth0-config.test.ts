@@ -11,10 +11,8 @@ const environment = {
   DATABASE_URL: "postgres://fixture:fixture@127.0.0.1:25434/scout_model_test",
   KEY_ENCRYPTION_KEY: Buffer.alloc(32, 19).toString("base64"),
   SCOUT_RUNTIME_MODE: "owned",
-  SCOUT_QUEUE_BINDINGS_FILE: join(
-    tmpdir(),
-    "scout-auth0-synthetic-binding.json",
-  ),
+  DEPLOYMENT_ID: "scout-auth0-test",
+  SCOUT_MEMBERSHIPS_FILE: join(tmpdir(), "scout-auth0-synthetic-binding.json"),
   AUTH0_OAUTH_CLIENT_ID: "synthetic-client",
   AUTH0_OAUTH_CLIENT_SECRET: "synthetic-client-secret",
   AUTH0_OAUTH_ISSUER: "https://identity.auth0.fixture.example/",

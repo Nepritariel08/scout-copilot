@@ -443,10 +443,11 @@ describe("deployment configuration", () => {
       ...withoutSignIn,
       ...SESSION,
       SCOUT_RUNTIME_MODE: "owned",
+      DEPLOYMENT_ID: "scout-owned-entra-test",
       DATABASE_URL:
         "postgres://fixture:fixture@127.0.0.1:25434/scout_model_test",
       KEY_ENCRYPTION_KEY: Buffer.alloc(32, 19).toString("base64"),
-      SCOUT_QUEUE_BINDINGS_FILE: join(
+      SCOUT_MEMBERSHIPS_FILE: join(
         tmpdir(),
         "scout-owned-entra-config-test.json",
       ),
@@ -473,10 +474,11 @@ describe("deployment configuration", () => {
       ...withoutSignIn,
       ...SESSION,
       SCOUT_RUNTIME_MODE: "owned",
+      DEPLOYMENT_ID: "scout-owned-entra-test",
       DATABASE_URL:
         "postgres://fixture:fixture@127.0.0.1:25434/scout_model_test",
       KEY_ENCRYPTION_KEY: Buffer.alloc(32, 19).toString("base64"),
-      SCOUT_QUEUE_BINDINGS_FILE: join(
+      SCOUT_MEMBERSHIPS_FILE: join(
         tmpdir(),
         "scout-owned-entra-config-test.json",
       ),
@@ -496,10 +498,11 @@ describe("deployment configuration", () => {
       ...withoutSignIn,
       ...SESSION,
       SCOUT_RUNTIME_MODE: "owned",
+      DEPLOYMENT_ID: "scout-owned-entra-test",
       DATABASE_URL:
         "postgres://fixture:fixture@127.0.0.1:25434/scout_model_test",
       KEY_ENCRYPTION_KEY: Buffer.alloc(32, 19).toString("base64"),
-      SCOUT_QUEUE_BINDINGS_FILE: join(
+      SCOUT_MEMBERSHIPS_FILE: join(
         tmpdir(),
         "scout-owned-entra-config-test.json",
       ),

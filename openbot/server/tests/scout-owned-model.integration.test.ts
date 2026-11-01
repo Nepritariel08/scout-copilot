@@ -10,15 +10,15 @@ import {
 import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { RunAgentInput } from "@ag-ui/client";
 import { eq, inArray } from "drizzle-orm";
 import { loadOwnedConfig } from "../src/config";
 import { createDatabase } from "../src/db/client";
 import { agents, deploymentPackages, userRoles, users } from "../src/db/schema";
 import { scoutModelCalls as calls } from "../src/db/schema/scout-model";
-import { parseScoutBinding } from "../src/scout/binding";
 import { createHistoryStore } from "../src/scout/history/store";
+import { parseScoutMembership } from "../src/scout/membership";
 import { createOwnedApplication } from "../src/scout/owned/application";
 import { OwnedTextModel } from "../src/scout/owned-model/model";
 import {
@@ -52,7 +52,7 @@ let directory = "",
 let provider: ReturnType<typeof Bun.serve>;
 let app: Awaited<ReturnType<typeof createOwnedApplication>>;
 let active = true;
-let aliceRequesterUid = 101;
+let aliceMembershipRevision = 1;
 let behavior = "normal";
 let providerCalls = 0;
 let contextGrantEnabled = false;
@@ -62,7 +62,7 @@ let contextReleaseGrantReads = 0;
 let contextReadCount = 0;
 let revokeOnGrantRead: number | undefined;
 let revokeAfterTaskRead: number | undefined;
-let changeRequesterAfterTaskRead: number | undefined;
+let changeMembershipAfterTaskRead: number | undefined;
 let hideTaskOnRead: number | undefined;
 let contextRecordRows: unknown = [];
 let capturedContextRead: ProjectTaskReadRequest | undefined;
@@ -76,24 +76,15 @@ const bindings = () => ({
     tenantId,
     revision: 1,
     active,
-    draftAnalysis: true,
     expiresAt: "2099-01-01T00:00:00Z",
   })),
-  bindings: [alice, bob].map((userId, index) => ({
+  memberships: [alice, bob].map((userId, index) => ({
     userId,
     tenantId: index ? "tenant-b" : "tenant-a",
+    revision: index ? 1 : aliceMembershipRevision,
     policyRevision: 1,
     active: true,
     expiresAt: "2099-01-01T00:00:00Z",
-    command: [process.execPath, "-m", "scout_queue.mcp_server"],
-    cwd: resolve("."),
-    environment: {
-      SCOUT_ODOO_URL: "https://synthetic-odoo.fixture.example",
-      SCOUT_ODOO_DB: "fixture_db",
-      SCOUT_ODOO_UID: String(index ? 102 : aliceRequesterUid),
-      SCOUT_ODOO_COMPANY_IDS: "1",
-      SCOUT_ODOO_KEY_FILE: keyFile,
-    },
   })),
 });
 function configuration() {
@@ -217,8 +208,8 @@ const recordContext: ProjectTaskContextPort = {
     capturedContextRead = request;
     if (revokeAfterTaskRead === contextReadCount)
       revokeOnGrantRead = contextGrantReads + 1;
-    if (changeRequesterAfterTaskRead === contextReadCount)
-      aliceRequesterUid = 301;
+    if (changeMembershipAfterTaskRead === contextReadCount)
+      aliceMembershipRevision = 2;
     return hideTaskOnRead === contextReadCount ? [] : contextRecordRows;
   },
 };
@@ -276,7 +267,7 @@ beforeAll(async () => {
       };
       const ledger = await rows();
       expect(ledger.some((row) => row.status === "dispatched")).toBe(true);
-      if (behavior === "requester-change") aliceRequesterUid = 301;
+      if (behavior === "membership-change") aliceMembershipRevision = 2;
       if (behavior === "error")
         return new Response("synthetic-owned-provider-key", { status: 502 });
       if (behavior === "stall")
@@ -361,8 +352,9 @@ beforeAll(async () => {
       DATABASE_URL: testDatabaseUrl(),
       KEY_ENCRYPTION_KEY: Buffer.alloc(32, 13).toString("base64"),
       SCOUT_RUNTIME_MODE: "owned",
+      DEPLOYMENT_ID: prefix,
       OPENBOT_ORGANIZATION_AUTH_URL: "https://identity.fixture.example",
-      SCOUT_QUEUE_BINDINGS_FILE: join(directory, "unused-queue-policy"),
+      SCOUT_MEMBERSHIPS_FILE: join(directory, "unused-membership-policy"),
       SCOUT_MODEL_POLICY_FILE: policyFile,
       TENANT_PACKAGE_DIR: directory,
       OPENBOT_HOST: "127.0.0.1",
@@ -381,14 +373,15 @@ beforeAll(async () => {
           },
         },
       },
-      binding: async (actor) => parseScoutBinding(bindings(), actor),
+      membership: async (actor) =>
+        parseScoutMembership(bindings(), actor, prefix),
       recordContext,
     },
   );
 });
 beforeEach(async () => {
   active = true;
-  aliceRequesterUid = 101;
+  aliceMembershipRevision = 1;
   behavior = "normal";
   providerCalls = 0;
   captured = undefined;
@@ -399,7 +392,7 @@ beforeEach(async () => {
   contextReadCount = 0;
   revokeOnGrantRead = undefined;
   revokeAfterTaskRead = undefined;
-  changeRequesterAfterTaskRead = undefined;
+  changeMembershipAfterTaskRead = undefined;
   hideTaskOnRead = undefined;
   contextRecordRows = [];
   capturedContextRead = undefined;
@@ -873,7 +866,7 @@ describe("owned model: real SQL and SDK chat-completions", () => {
   test("a native binding change during the final task read cannot reach the provider", async () => {
     contextGrantEnabled = true;
     contextReleaseGrantEnabled = true;
-    changeRequesterAfterTaskRead = 4;
+    changeMembershipAfterTaskRead = 4;
     contextRecordRows = [
       {
         id: 700,
@@ -887,7 +880,7 @@ describe("owned model: real SQL and SDK chat-completions", () => {
       { description: PROJECT_TASK_SELECTION_MARKER, value: "700" },
     ]);
     await response.text();
-    expect(aliceRequesterUid).toBe(301);
+    expect(aliceMembershipRevision).toBe(2);
     expect(providerCalls).toBe(0);
     expect(await rows()).toMatchObject([
       { status: "uncertain", errorCode: "MODEL_ACCESS_DENIED" },
@@ -929,12 +922,12 @@ describe("owned model: real SQL and SDK chat-completions", () => {
     ).rejects.toThrow("MODEL_ACCESS_DENIED");
     expect(providerCalls).toBe(0);
   });
-  test("a same-tenant requester change while the provider responds releases and persists no answer", async () => {
+  test("a same-tenant membership revision change while the provider responds releases and persists no answer", async () => {
     const minted = await request("/api/threads/mint", { agentId });
     expect(minted.status).toBe(200);
     const { threadId } = (await minted.json()) as { threadId: string };
-    const before = parseScoutBinding(bindings(), { id: alice });
-    behavior = "requester-change";
+    const before = parseScoutMembership(bindings(), { id: alice }, prefix);
+    behavior = "membership-change";
     const response = await request(
       `/api/copilotkit/agent/${agentId}/run`,
       input(threadId),
@@ -942,8 +935,8 @@ describe("owned model: real SQL and SDK chat-completions", () => {
     const events = await response.text();
     expect(response.status).toBe(200);
     expect(providerCalls).toBe(1);
-    expect(aliceRequesterUid).toBe(301);
-    const after = parseScoutBinding(bindings(), { id: alice });
+    expect(aliceMembershipRevision).toBe(2);
+    const after = parseScoutMembership(bindings(), { id: alice }, prefix);
     expect(after.tenantId).toBe(before.tenantId);
     expect(after.fingerprint).not.toBe(before.fingerprint);
     expect(events).not.toContain("OWNED_MODEL_SYNTHETIC_OK");
@@ -958,7 +951,7 @@ describe("owned model: real SQL and SDK chat-completions", () => {
     expect(ledger[0]?.errorCode).toBe("MODEL_ACCESS_DENIED");
     expect(ledger[0]?.outputBytes).toBe(0);
   });
-  test("a requester change during awaited history authorization cannot release the earlier binding's answer", async () => {
+  test("a membership revision change during awaited history authorization cannot release the earlier binding's answer", async () => {
     const minted = await request("/api/threads/mint", { agentId });
     expect(minted.status).toBe(200);
     const { threadId } = (await minted.json()) as { threadId: string };
@@ -981,7 +974,7 @@ describe("owned model: real SQL and SDK chat-completions", () => {
             !changedDuringHistory
           ) {
             changedDuringHistory = true;
-            aliceRequesterUid = 301;
+            aliceMembershipRevision = 2;
           }
           return allowed;
         },

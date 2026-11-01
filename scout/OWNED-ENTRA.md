@@ -88,6 +88,9 @@ as separate reviewed grants. Entra guest membership alone must never create an
 Odoo grant. Do not derive DSH's fixed requester UID/company from an employee's
 or customer's Entra claims. The current DSH requester remains a separate
 server-side integration principal.
+Native tenant admission uses the separate protected `SCOUT_MEMBERSHIPS_FILE`;
+see [membership and migration](MEMBERSHIP.md). Optional Odoo context provisioning
+requires `SCOUT_ODOO_BINDINGS_FILE`, independently of DSH's queue mapping.
 
 Migration `0073` adds the `(issuer, account_id)` unique index while retaining
 the existing `(provider_id, account_id)` index. The issuer column stays nullable

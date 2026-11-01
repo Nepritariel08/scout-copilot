@@ -72,13 +72,17 @@ export type DraftAction = z.infer<typeof draftAction>;
 /** An already authenticated native user, never a user id from an HTTP body. */
 export type ScoutActor = { id: string };
 
-export type ScoutBinding = {
+export type ScoutMembership = {
   userId: string;
   tenantId: string;
   fingerprint: string;
-  /** Expiration of the current protected membership binding. */
+  /** Earliest expiration of the current protected tenant policy and membership. */
   expiresAt: string;
   deploymentId: string;
+};
+
+/** Separate delegated-draft requester authority; never native tenant admission. */
+export type ScoutBinding = ScoutMembership & {
   command: [string, "-m", "scout_queue.mcp_server"];
   cwd: string;
   environment: {

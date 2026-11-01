@@ -31,7 +31,7 @@ import {
   workItems,
 } from "../src/db/schema";
 import { scoutHistoryThreads } from "../src/db/schema/scout-history";
-import { parseScoutBinding } from "../src/scout/binding";
+import { parseScoutMembership } from "../src/scout/membership";
 import { createOwnedApplication } from "../src/scout/owned/application";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
@@ -45,27 +45,27 @@ const unapprovedAgentId = `${agentId}-unapproved`;
 let fixtureDirectory = "";
 let owned: Awaited<ReturnType<typeof createOwnedApplication>>;
 let ownedWithGrants: Awaited<ReturnType<typeof createOwnedApplication>>;
+let configuredOdooConfig: ReturnType<typeof loadOwnedConfig> | undefined;
 let active = true;
 let invocations = 0;
 let odooFixtureCalls = 0;
+let modelFixtureCalls = 0;
+let revokeOdooMapOnTaskRead = false;
 let issuedFresh = true;
 let changingPolicy = false;
 let policyReads = 0;
-const member = (userId: string, tenantId: string, uid: number) => ({
+let membershipRevision = 1;
+let odooMapRevision = 1;
+let changeMembershipOnLookup = false;
+let changeOdooMapOnLookup = false;
+let odooMapActive = true;
+const member = (userId: string, tenantId: string) => ({
   userId,
   tenantId,
+  revision: membershipRevision,
   policyRevision: 1,
   active: true,
   expiresAt: "2099-01-01T00:00:00Z",
-  command: [process.execPath, "-m", "scout_queue.mcp_server"],
-  cwd: resolve("."),
-  environment: {
-    SCOUT_ODOO_URL: "https://synthetic-odoo.fixture.example",
-    SCOUT_ODOO_DB: "fixture_db",
-    SCOUT_ODOO_UID: String(uid),
-    SCOUT_ODOO_COMPANY_IDS: "1",
-    SCOUT_ODOO_KEY_FILE: join(tmpdir(), "synthetic-unused-key"),
-  },
 });
 const policy = () => ({
   version: 1,
@@ -74,11 +74,32 @@ const policy = () => ({
     tenantId,
     revision: 1,
     active,
-    draftAnalysis: true,
     expiresAt: "2099-01-01T00:00:00Z",
   })),
-  bindings: [member(alice, "tenant-a", 101), member(bob, "tenant-b", 102)],
+  memberships: [member(alice, "tenant-a"), member(bob, "tenant-b")],
 });
+const odooPolicy = () => ({
+  version: 1,
+  deploymentId: "fixture-owned",
+  sourceInstanceId: "fixture-odoo",
+  bindings: [
+    {
+      userId: alice,
+      tenantId: "tenant-a",
+      revision: odooMapRevision,
+      active: odooMapActive,
+      expiresAt: "2099-01-01T00:00:00Z",
+      sourceUid: 101,
+      companyIds: [1],
+    },
+  ],
+});
+const writeOdooPolicy = () =>
+  writeFile(
+    join(fixtureDirectory, "synthetic-odoo-bindings.json"),
+    JSON.stringify(odooPolicy()),
+    { mode: 0o600 },
+  );
 class FixtureAgent extends AbstractAgent {
   constructor() {
     super({ agentId });
@@ -176,7 +197,7 @@ beforeAll(async () => {
     DEPLOYMENT_ID: "fixture-owned",
     OPENBOT_ORGANIZATION_AUTH_URL: "https://synthetic-identity.fixture.example",
     OPENBOT_HOST: "127.0.0.1",
-    SCOUT_QUEUE_BINDINGS_FILE: join(fixtureDirectory, "synthetic-policy.json"),
+    SCOUT_MEMBERSHIPS_FILE: join(fixtureDirectory, "synthetic-policy.json"),
     TENANT_PACKAGE_DIR: fixtureDirectory,
     OPENBOT_GENERATIVE_UI: "false",
     OPENBOT_SELF_HOST_BANNER: "false",
@@ -200,8 +221,8 @@ beforeAll(async () => {
         },
       },
     },
-    binding: async (actor) => {
-      const value = parseScoutBinding(policy(), actor);
+    membership: async (actor) => {
+      const value = parseScoutMembership(policy(), actor, "fixture-owned");
       return changingPolicy
         ? { ...value, fingerprint: String(++policyReads) }
         : value;
@@ -209,6 +230,12 @@ beforeAll(async () => {
     agents: async () => ({ [agentId]: new FixtureAgent() }),
   });
   if (process.platform === "linux") {
+    await writeOdooPolicy();
+    await writeFile(
+      join(fixtureDirectory, "synthetic-model-key"),
+      "synthetic-owned-model-key",
+      { mode: 0o600 },
+    );
     const sourcePath = join(fixtureDirectory, "synthetic-odoo-source.json");
     const modelPath = join(fixtureDirectory, "synthetic-model-policy.json");
     await writeFile(
@@ -265,16 +292,18 @@ beforeAll(async () => {
       OPENBOT_ORGANIZATION_AUTH_URL:
         "https://synthetic-identity.fixture.example",
       OPENBOT_HOST: "127.0.0.1",
-      SCOUT_QUEUE_BINDINGS_FILE: join(
-        fixtureDirectory,
-        "synthetic-policy.json",
-      ),
+      SCOUT_MEMBERSHIPS_FILE: join(fixtureDirectory, "synthetic-policy.json"),
       SCOUT_ODOO_CONTEXT_SOURCE_FILE: sourcePath,
+      SCOUT_ODOO_BINDINGS_FILE: join(
+        fixtureDirectory,
+        "synthetic-odoo-bindings.json",
+      ),
       SCOUT_MODEL_POLICY_FILE: modelPath,
       TENANT_PACKAGE_DIR: fixtureDirectory,
       OPENBOT_GENERATIVE_UI: "false",
       OPENBOT_SELF_HOST_BANNER: "false",
     });
+    configuredOdooConfig = configured;
     ownedWithGrants = await createOwnedApplication(configured, database, {
       auth: {
         handler: () => new Response(null),
@@ -294,13 +323,47 @@ beforeAll(async () => {
           },
         },
       },
-      binding: async (actor) => {
-        const value = parseScoutBinding(policy(), actor);
+      membership: async (actor) => {
+        const value = parseScoutMembership(policy(), actor, "fixture-owned");
         return changingPolicy
           ? { ...value, fingerprint: String(++policyReads) }
           : value;
       },
-      agents: async () => ({ [agentId]: new FixtureAgent() }),
+      modelFetch: Object.assign(
+        async () => {
+          modelFixtureCalls++;
+          const packets = [
+            {
+              id: "fixture",
+              model: "fixture-reported",
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    role: "assistant",
+                    content: "ODOO_MODEL_SYNTHETIC_OK",
+                  },
+                  finish_reason: null,
+                },
+              ],
+            },
+            {
+              id: "fixture",
+              choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+            },
+            {
+              id: "fixture",
+              choices: [],
+              usage: { prompt_tokens: 12, completion_tokens: 4, cost: 0 },
+            },
+          ];
+          return new Response(
+            `${packets.map((value) => `data: ${JSON.stringify(value)}\n\n`).join("")}data: [DONE]\n\n`,
+            { headers: { "content-type": "text/event-stream" } },
+          );
+        },
+        { preconnect: fetch.preconnect },
+      ),
       odooFetch: Object.assign(
         async (
           input: Parameters<typeof fetch>[0],
@@ -310,8 +373,14 @@ beforeAll(async () => {
           const path = new URL(
             input instanceof Request ? input.url : String(input),
           ).pathname;
-          if (path === "/json/2/res.users/context_get")
+          if (path === "/json/2/res.users/context_get") {
+            if (changeMembershipOnLookup) membershipRevision++;
+            if (changeOdooMapOnLookup) {
+              odooMapRevision++;
+              await writeOdooPolicy();
+            }
             return Response.json({ uid: 101 });
+          }
           if (path === "/json/2/res.users/has_group") {
             // Only internal-user membership is true; the two administrator checks are false.
             const body = JSON.parse(String(init?.body ?? "{}")) as {
@@ -321,6 +390,21 @@ beforeAll(async () => {
           }
           if (path === "/json/2/project.project/search_read")
             return Response.json([{ id: 501, company_id: [1, "Fixture"] }]);
+          if (path === "/json/2/project.task/search_read") {
+            if (revokeOdooMapOnTaskRead) {
+              odooMapActive = false;
+              await writeOdooPolicy();
+            }
+            return Response.json([
+              {
+                id: 42,
+                name: "Synthetic mapped task",
+                stage_id: [9, "Fixture"],
+                date_deadline: null,
+                company_id: [1, "Fixture"],
+              },
+            ]);
+          }
           return Response.json(
             { code: "UNEXPECTED_FIXTURE_REQUEST" },
             { status: 404 },
@@ -331,13 +415,21 @@ beforeAll(async () => {
     });
   }
 });
-beforeEach(() => {
+beforeEach(async () => {
   active = true;
   invocations = 0;
   issuedFresh = true;
   changingPolicy = false;
   policyReads = 0;
   odooFixtureCalls = 0;
+  modelFixtureCalls = 0;
+  revokeOdooMapOnTaskRead = false;
+  membershipRevision = 1;
+  odooMapRevision = 1;
+  changeMembershipOnLookup = false;
+  changeOdooMapOnLookup = false;
+  odooMapActive = true;
+  if (process.platform === "linux" && fixtureDirectory) await writeOdooPolicy();
 });
 afterAll(async () => {
   await ownedWithGrants?.close();
@@ -362,6 +454,79 @@ afterAll(async () => {
     await rm(fixtureDirectory, { recursive: true, force: true });
 });
 describe("owned composition through the actual Scout app", () => {
+  test("actual protected membership admits identity/channel/history/chat without queue configuration or credentials", async () => {
+    const path = join(fixtureDirectory, "native-memberships-only.json");
+    const value = policy();
+    await writeFile(path, JSON.stringify(value), { mode: 0o600 });
+    const config = loadOwnedConfig({
+      DATABASE_URL: testDatabaseUrl(),
+      KEY_ENCRYPTION_KEY: Buffer.alloc(32, 13).toString("base64"),
+      SCOUT_RUNTIME_MODE: "owned",
+      DEPLOYMENT_ID: "fixture-owned",
+      TENANT_PACKAGE_DIR: fixtureDirectory,
+      OPENBOT_ORGANIZATION_AUTH_URL:
+        "https://synthetic-identity.fixture.example",
+      OPENBOT_HOST: "127.0.0.1",
+      OPENBOT_GENERATIVE_UI: "false",
+      SCOUT_MEMBERSHIPS_FILE: path,
+    });
+    expect(config.scoutQueueBindingsFile).toBeUndefined();
+    expect(config.scoutDelegatedDraftsEnabled).toBe(false);
+    expect(JSON.stringify(value)).not.toMatch(
+      /command|SCOUT_ODOO|draftAnalysis/,
+    );
+    const standalone = await createOwnedApplication(config, database, {
+      auth: {
+        handler: () => new Response(null),
+        api: {
+          getSession: async () => ({
+            user: {
+              id: alice,
+              email: `${alice}@fixture.example`,
+              role: "user",
+            },
+          }),
+        },
+      },
+      agents: async () => ({ [agentId]: new FixtureAgent() }),
+    });
+    try {
+      const call = (path: string, body?: unknown) =>
+        standalone.app.request(path, {
+          method: body === undefined ? "GET" : "POST",
+          headers: { "content-type": "application/json" },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+      expect((await call("/api/me")).status).toBe(200);
+      const channel = await standalone.channels.create(
+        { id: alice, role: "user" },
+        [agentId],
+      );
+      const response = await call(
+        `/api/copilotkit/agent/${agentId}/run`,
+        input(channel.threadId),
+      );
+      expect(await response.text()).toContain("OWNED_APP_SYNTHETIC_OK");
+      const historyPath = `/api/copilotkit/threads/${channel.threadId}/messages?agentId=${agentId}`;
+      expect(await (await call(historyPath)).text()).toContain(
+        "OWNED_APP_SYNTHETIC_OK",
+      );
+      expect((await call("/api/scout/tasks")).status).toBe(503);
+      expect(
+        (
+          await call("/api/scout/odoo/context-grants", {
+            apiKey: "synthetic-unused",
+          })
+        ).status,
+      ).toBe(503);
+      value.memberships[0].active = false;
+      await writeFile(path, JSON.stringify(value));
+      expect((await call(historyPath)).status).toBe(403);
+      expect((await call("/api/agents")).status).toBe(403);
+    } finally {
+      await standalone.close();
+    }
+  });
   test("public capabilities expose owned durability without any vendor settings", async () => {
     const response = await request("/api/capabilities", undefined, "none");
     expect(response.status).toBe(200);
@@ -584,8 +749,7 @@ describe("owned composition through the actual Scout app", () => {
       const before = await requestConfiguredGrant("GET", statusPath);
       expect(before.status).toBe(200);
       const beforeStatus = await before.json();
-      changingPolicy = true;
-      policyReads = 0;
+      changeMembershipOnLookup = true;
       let response: Response;
       try {
         response = await requestConfiguredGrant(
@@ -594,13 +758,240 @@ describe("owned composition through the actual Scout app", () => {
           { apiKey: "synthetic-changing-binding-key" },
         );
       } finally {
-        changingPolicy = false;
+        changeMembershipOnLookup = false;
+        membershipRevision = 1;
       }
       expect(response.status).toBe(403);
       expect(odooFixtureCalls).toBeGreaterThan(0);
 
       const after = await requestConfiguredGrant("GET", statusPath);
       expect(await after.json()).toEqual(beforeStatus);
+    },
+  );
+  test.skipIf(process.platform !== "linux")(
+    "revoking the independent Odoo mapping denies saved grant status, consent and use without revoking chat",
+    async () => {
+      expect(
+        (
+          await requestConfiguredGrant(
+            "POST",
+            "/api/scout/odoo/context-grants",
+            { apiKey: "synthetic-revocation-key" },
+          )
+        ).status,
+      ).toBe(201);
+      expect(
+        (
+          await requestConfiguredGrant(
+            "POST",
+            "/api/scout/odoo/context-grants/release",
+            { agentId, consent: true },
+          )
+        ).status,
+      ).toBe(201);
+      odooMapActive = false;
+      await writeOdooPolicy();
+      for (const [method, path, body] of [
+        [
+          "GET",
+          `/api/scout/odoo/context-grants?agentId=${encodeURIComponent(agentId)}`,
+          undefined,
+        ],
+        [
+          "POST",
+          "/api/scout/odoo/context-grants/release",
+          { agentId, consent: true },
+        ],
+        [
+          "POST",
+          "/api/scout/odoo/context-grants",
+          { apiKey: "synthetic-revoked-key" },
+        ],
+      ] as const)
+        expect((await requestConfiguredGrant(method, path, body)).status).toBe(
+          403,
+        );
+      expect((await requestConfiguredGrant("GET", "/api/agents")).status).toBe(
+        200,
+      );
+      expect(
+        (await requestConfiguredGrant("POST", "/api/threads/mint", { agentId }))
+          .status,
+      ).toBe(200);
+      // Withdrawal remains possible after source admission is removed, and touches only own local authority.
+      expect(
+        (
+          await requestConfiguredGrant(
+            "DELETE",
+            "/api/scout/odoo/context-grants/release",
+            { agentId },
+          )
+        ).status,
+      ).toBe(200);
+      const revoked = await requestConfiguredGrant(
+        "DELETE",
+        "/api/scout/odoo/context-grants",
+      );
+      expect(revoked.status).toBe(200);
+      expect(await revoked.json()).toMatchObject({
+        localCredentialRevoked: true,
+        recordGrantRevoked: true,
+      });
+    },
+  );
+  test.skipIf(process.platform !== "linux")(
+    "changing the Odoo mapping during key qualification cannot issue a grant against the earlier source identity",
+    async () => {
+      changeOdooMapOnLookup = true;
+      const response = await requestConfiguredGrant(
+        "POST",
+        "/api/scout/odoo/context-grants",
+        { apiKey: "synthetic-rotating-map-key" },
+      );
+      expect(response.status).toBe(403);
+      expect(odooFixtureCalls).toBeGreaterThan(0);
+    },
+  );
+  test.skipIf(process.platform !== "linux")(
+    "production saved Odoo grants support selected context and revoked or rotated mappings then prevent provider egress",
+    async () => {
+      expect(
+        (
+          await requestConfiguredGrant(
+            "POST",
+            "/api/scout/odoo/context-grants",
+            { apiKey: "synthetic-production-context-key" },
+          )
+        ).status,
+      ).toBe(201);
+      expect(
+        (
+          await requestConfiguredGrant(
+            "POST",
+            "/api/scout/odoo/context-grants/release",
+            { agentId, consent: true },
+          )
+        ).status,
+      ).toBe(201);
+      const selected = async () => {
+        const minted = await requestConfiguredGrant(
+          "POST",
+          "/api/threads/mint",
+          { agentId },
+        );
+        expect(minted.status).toBe(200);
+        const { threadId } = await minted.json();
+        const response = await requestConfiguredGrant(
+          "POST",
+          `/api/copilotkit/agent/${agentId}/run`,
+          {
+            ...input(threadId),
+            context: [{ description: "scout.project_task_id", value: "42" }],
+          },
+        );
+        return response.text();
+      };
+      expect(await selected()).toContain("ODOO_MODEL_SYNTHETIC_OK");
+      expect(modelFixtureCalls).toBe(1);
+      odooMapRevision++;
+      await writeOdooPolicy();
+      modelFixtureCalls = 0;
+      expect(await selected()).not.toContain("ODOO_MODEL_SYNTHETIC_OK");
+      expect(modelFixtureCalls).toBe(0);
+      odooMapRevision--;
+      odooMapActive = false;
+      await writeOdooPolicy();
+      expect(await selected()).not.toContain("ODOO_MODEL_SYNTHETIC_OK");
+      expect(modelFixtureCalls).toBe(0);
+      odooMapActive = true;
+      await writeOdooPolicy();
+      revokeOdooMapOnTaskRead = true;
+      expect(await selected()).not.toContain("ODOO_MODEL_SYNTHETIC_OK");
+      expect(modelFixtureCalls).toBe(0);
+    },
+  );
+  test.skipIf(process.platform !== "linux")(
+    "configured Odoo admission still gates an injected context transport and missing mapping cannot bypass the production composition",
+    async () => {
+      if (!configuredOdooConfig)
+        throw new Error("Linux source fixture was not configured");
+      // This composition deliberately uses the production membership reader rather than
+      // the mutable reader seam on ownedWithGrants. Supply its actual protected policy.
+      await writeFile(
+        configuredOdooConfig.scoutMembershipsFile,
+        JSON.stringify(policy()),
+        { mode: 0o600 },
+      );
+      for (const removeMapping of [false, true]) {
+        odooMapActive = false;
+        await writeOdooPolicy();
+        let sourceReads = 0,
+          providerCalls = 0;
+        const composed = await createOwnedApplication(
+          {
+            ...configuredOdooConfig,
+            ...(removeMapping ? { scoutOdooBindingsFile: undefined } : {}),
+          },
+          database,
+          {
+            auth: {
+              handler: () => new Response(null),
+              api: {
+                getSession: async () => ({
+                  user: {
+                    id: alice,
+                    email: `${alice}@fixture.example`,
+                    role: "user",
+                  },
+                }),
+              },
+            },
+            recordContext: {
+              sourceInstanceId: "fixture-odoo",
+              getGrant: async () => {
+                sourceReads++;
+                return null;
+              },
+              getReleaseGrant: async () => {
+                sourceReads++;
+                return null;
+              },
+              readProjectTask: async () => {
+                sourceReads++;
+                return [];
+              },
+            },
+            modelFetch: Object.assign(
+              async () => {
+                providerCalls++;
+                return new Response(null, { status: 500 });
+              },
+              { preconnect: fetch.preconnect },
+            ),
+          },
+        );
+        try {
+          const call = (path: string, body: unknown) =>
+            composed.app.request(path, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(body),
+            });
+          const minted = await call("/api/threads/mint", { agentId });
+          expect(minted.status).toBe(200);
+          const { threadId } = await minted.json();
+          await (
+            await call(`/api/copilotkit/agent/${agentId}/run`, {
+              ...input(threadId),
+              context: [{ description: "scout.project_task_id", value: "42" }],
+            })
+          ).text();
+          expect(sourceReads).toBe(0);
+          expect(providerCalls).toBe(0);
+        } finally {
+          await composed.close();
+        }
+      }
     },
   );
   test("direct chat server mint persists native ownership and rejects injected identity", async () => {
@@ -754,7 +1145,7 @@ describe("owned composition through the actual Scout app", () => {
           PORT: String(port),
           OPENBOT_HOST: "127.0.0.1",
           OPENBOT_ORGANIZATION_AUTH_URL: issuer.url.origin,
-          SCOUT_QUEUE_BINDINGS_FILE: policyFile,
+          SCOUT_MEMBERSHIPS_FILE: policyFile,
           TENANT_PACKAGE_DIR: fixtureDirectory,
           OPENBOT_GENERATIVE_UI: "false",
           COPILOTKIT_TELEMETRY_DISABLED: "true",

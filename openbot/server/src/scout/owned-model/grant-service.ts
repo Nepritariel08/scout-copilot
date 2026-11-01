@@ -52,7 +52,6 @@ function lockKey(
     principal.deploymentId,
     principal.tenantId,
     principal.userId,
-    principal.bindingFingerprint,
     sourceInstanceId,
   ]);
 }
@@ -533,59 +532,69 @@ export function createOwnedOdooGrantService(
       });
     },
 
-    async revokeAll(principal: ProjectTaskContextPrincipal) {
+    async revokeAll(
+      principal: ProjectTaskContextPrincipal,
+      options: { allBindingRevisions?: boolean; releasesOnly?: boolean } = {},
+    ) {
       validPrincipal(principal);
       return database.transaction(async (tx) => {
         await lock(tx, principal);
         const now = new Date();
-        const records = await tx
-          .select()
-          .from(scoutOdooRecordAccessGrants)
-          .where(
-            and(
-              eq(
-                scoutOdooRecordAccessGrants.deploymentId,
-                principal.deploymentId,
-              ),
-              eq(scoutOdooRecordAccessGrants.tenantId, principal.tenantId),
-              eq(scoutOdooRecordAccessGrants.nativeUserId, principal.userId),
-              eq(
-                scoutOdooRecordAccessGrants.bindingFingerprint,
-                principal.bindingFingerprint,
-              ),
-              eq(
-                scoutOdooRecordAccessGrants.sourceInstanceId,
-                sourceInstanceId,
-              ),
-            ),
-          )
-          .orderBy(desc(scoutOdooRecordAccessGrants.revision));
+        const records = options.releasesOnly
+          ? []
+          : await tx
+              .select()
+              .from(scoutOdooRecordAccessGrants)
+              .where(
+                and(
+                  eq(
+                    scoutOdooRecordAccessGrants.deploymentId,
+                    principal.deploymentId,
+                  ),
+                  eq(scoutOdooRecordAccessGrants.tenantId, principal.tenantId),
+                  eq(
+                    scoutOdooRecordAccessGrants.nativeUserId,
+                    principal.userId,
+                  ),
+                  options.allBindingRevisions
+                    ? undefined
+                    : eq(
+                        scoutOdooRecordAccessGrants.bindingFingerprint,
+                        principal.bindingFingerprint,
+                      ),
+                  eq(
+                    scoutOdooRecordAccessGrants.sourceInstanceId,
+                    sourceInstanceId,
+                  ),
+                ),
+              )
+              .orderBy(desc(scoutOdooRecordAccessGrants.revision));
         const seenRecords = new Set<string>();
         let recordGrantCount = 0;
         let localCredentialRevoked = false;
         const revokedCredentialRefs = new Set<string>();
         for (const row of records) {
           const group = JSON.stringify([row.tenantId, row.bindingFingerprint]);
-          if (seenRecords.has(group)) continue;
+          if (!seenRecords.has(group) && row.active) {
+            await tx.insert(scoutOdooRecordAccessGrants).values({
+              deploymentId: row.deploymentId,
+              tenantId: row.tenantId,
+              nativeUserId: row.nativeUserId,
+              bindingFingerprint: row.bindingFingerprint,
+              revision: row.revision + 1,
+              active: false,
+              sourceInstanceId: row.sourceInstanceId,
+              sourceUid: row.sourceUid,
+              qualification: row.qualification,
+              qualificationExpiresAt: now,
+              companyIds: row.companyIds,
+              allowedProjectIds: row.allowedProjectIds,
+              credentialRef: row.credentialRef,
+              expiresAt: now,
+            });
+            recordGrantCount++;
+          }
           seenRecords.add(group);
-          if (!row.active) continue;
-          await tx.insert(scoutOdooRecordAccessGrants).values({
-            deploymentId: row.deploymentId,
-            tenantId: row.tenantId,
-            nativeUserId: row.nativeUserId,
-            bindingFingerprint: row.bindingFingerprint,
-            revision: row.revision + 1,
-            active: false,
-            sourceInstanceId: row.sourceInstanceId,
-            sourceUid: row.sourceUid,
-            qualification: row.qualification,
-            qualificationExpiresAt: now,
-            companyIds: row.companyIds,
-            allowedProjectIds: row.allowedProjectIds,
-            credentialRef: row.credentialRef,
-            expiresAt: now,
-          });
-          recordGrantCount++;
           if (revokedCredentialRefs.has(row.credentialRef)) continue;
           revokedCredentialRefs.add(row.credentialRef);
           const [liveCredential] = await tx
@@ -598,11 +607,10 @@ export function createOwnedOdooGrantService(
                 eq(credentials.provider, ODOO_JSON2_CREDENTIAL_PROVIDER),
                 eq(
                   credentials.keyId,
-                  odooJson2CredentialKeyId(
-                    sourceInstanceId,
-                    row.sourceUid,
-                    principal,
-                  ),
+                  odooJson2CredentialKeyId(sourceInstanceId, row.sourceUid, {
+                    ...principal,
+                    bindingFingerprint: row.bindingFingerprint,
+                  }),
                 ),
               ),
             )
@@ -624,10 +632,12 @@ export function createOwnedOdooGrantService(
               ),
               eq(scoutContextReleaseGrants.tenantId, principal.tenantId),
               eq(scoutContextReleaseGrants.nativeUserId, principal.userId),
-              eq(
-                scoutContextReleaseGrants.bindingFingerprint,
-                principal.bindingFingerprint,
-              ),
+              options.allBindingRevisions
+                ? undefined
+                : eq(
+                    scoutContextReleaseGrants.bindingFingerprint,
+                    principal.bindingFingerprint,
+                  ),
               eq(scoutContextReleaseGrants.sourceInstanceId, sourceInstanceId),
               eq(scoutContextReleaseGrants.dataClass, dataClass),
             ),
@@ -661,7 +671,11 @@ export function createOwnedOdooGrantService(
           releasesRevoked++;
         }
 
-        if (recordGrantCount > 0 || releasesRevoked > 0) {
+        if (
+          recordGrantCount > 0 ||
+          releasesRevoked > 0 ||
+          localCredentialRevoked
+        ) {
           await recordAuditEvent(
             createAuditStore(tx as unknown as Database, { emitTaps: false }),
             {

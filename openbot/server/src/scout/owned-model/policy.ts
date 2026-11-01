@@ -3,7 +3,7 @@ import { lstat, open } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { historyDigest } from "../history/protocol";
-import type { ScoutBinding } from "../types";
+import type { ScoutMembership } from "../types";
 
 export class ModelPolicyError extends Error {
   constructor(
@@ -208,7 +208,7 @@ export async function readModelKey(grant: ModelGrant): Promise<string | null> {
 
 export function modelPrincipal(
   userId: string,
-  binding: ScoutBinding,
+  binding: ScoutMembership,
   agentId: string,
 ): ModelPrincipal {
   return {

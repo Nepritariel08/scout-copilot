@@ -569,7 +569,8 @@ describe("actual BetterAuth Auth0 authorization-code flow", () => {
       DATABASE_URL: testDatabaseUrl(),
       KEY_ENCRYPTION_KEY: nativeConfig.keyEncryptionKey,
       SCOUT_RUNTIME_MODE: "owned",
-      SCOUT_QUEUE_BINDINGS_FILE: `${process.cwd()}/synthetic-unused-auth0-binding.json`,
+      DEPLOYMENT_ID: "scout-auth0-test",
+      SCOUT_MEMBERSHIPS_FILE: `${process.cwd()}/synthetic-unused-auth0-binding.json`,
       BETTER_AUTH_URL: origin,
       OPENBOT_HOST: "127.0.0.1",
     });

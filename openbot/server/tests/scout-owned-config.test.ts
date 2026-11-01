@@ -7,11 +7,25 @@ const environment = {
   DATABASE_URL: "postgres://fixture:fixture@127.0.0.1:25433/scout_owned_test",
   KEY_ENCRYPTION_KEY: Buffer.alloc(32, 13).toString("base64"),
   SCOUT_RUNTIME_MODE: "owned",
+  DEPLOYMENT_ID: "scout-owned-test",
   OPENBOT_ORGANIZATION_AUTH_URL: "https://identity.fixture.example",
-  SCOUT_QUEUE_BINDINGS_FILE: join(tmpdir(), "scout-owned-fixture-policy.json"),
+  SCOUT_MEMBERSHIPS_FILE: join(tmpdir(), "scout-owned-fixture-policy.json"),
   OPENBOT_HOST: "127.0.0.1",
 };
 describe("explicit owned runtime configuration", () => {
+  test("owned deployment IDs are explicit and bounded, with no tenant-package fallback", () => {
+    for (const value of [
+      undefined,
+      "",
+      "invalid deployment",
+      "../foreign",
+      "x".repeat(101),
+    ])
+      expect(() =>
+        loadOwnedConfig({ ...environment, DEPLOYMENT_ID: value }),
+      ).toThrow("DEPLOYMENT_ID");
+    expect(loadOwnedConfig(environment).deploymentId).toBe("scout-owned-test");
+  });
   test("delegated drafts require explicit valid admission after live queue qualification", () => {
     expect(loadOwnedConfig(environment).scoutDelegatedDraftsEnabled).toBe(
       false,
@@ -21,6 +35,14 @@ describe("explicit owned runtime configuration", () => {
         loadOwnedConfig({
           ...environment,
           SCOUT_DELEGATED_DRAFTS_ENABLED: value,
+          ...(value === "true" || value === "1"
+            ? {
+                SCOUT_QUEUE_BINDINGS_FILE: join(
+                  tmpdir(),
+                  "scout-queue-policy.json",
+                ),
+              }
+            : {}),
         }).scoutDelegatedDraftsEnabled,
       ).toBe(value === "true" || value === "1");
     expect(() =>
@@ -29,6 +51,13 @@ describe("explicit owned runtime configuration", () => {
         SCOUT_DELEGATED_DRAFTS_ENABLED: "ture",
       }),
     ).toThrow("SCOUT_DELEGATED_DRAFTS_ENABLED");
+    expect(() =>
+      loadOwnedConfig({
+        ...environment,
+        SCOUT_DELEGATED_DRAFTS_ENABLED: "true",
+      }),
+    ).toThrow("SCOUT_QUEUE_BINDINGS_FILE");
+    expect(loadOwnedConfig(environment).scoutQueueBindingsFile).toBeUndefined();
   });
   test("platform owners are exact bounded native subjects and absent configuration grants none", () => {
     expect(loadOwnedConfig(environment).scoutPlatformOwnerIds).toEqual([]);
@@ -94,6 +123,29 @@ describe("explicit owned runtime configuration", () => {
       }),
     ).toThrow("absolute protected file path");
   });
+  test("Odoo identity mapping is optional and independent of native membership and queue configuration", () => {
+    const config = loadOwnedConfig(environment);
+    expect(config.scoutOdooBindingsFile).toBeUndefined();
+    expect(config.scoutQueueBindingsFile).toBeUndefined();
+    const path = join(tmpdir(), "scout-odoo-identities.json");
+    expect(
+      loadOwnedConfig({ ...environment, SCOUT_ODOO_BINDINGS_FILE: path })
+        .scoutOdooBindingsFile,
+    ).toBe(path);
+    expect(() =>
+      loadOwnedConfig({
+        ...environment,
+        SCOUT_ODOO_BINDINGS_FILE: "relative.json",
+      }),
+    ).toThrow("SCOUT_ODOO_BINDINGS_FILE");
+    expect(() =>
+      loadOwnedConfig({
+        ...environment,
+        SCOUT_MEMBERSHIPS_FILE: undefined,
+        SCOUT_ODOO_BINDINGS_FILE: path,
+      }),
+    ).toThrow("SCOUT_MEMBERSHIPS_FILE");
+  });
   test("requires no vendor key, emits no fabricated Intelligence settings, and turns off licensed auto assignment", () => {
     const config = loadOwnedConfig(environment);
     expect(config.runtime).toEqual({ mode: "owned", durableHistory: true });
@@ -117,18 +169,25 @@ describe("explicit owned runtime configuration", () => {
         OPENBOT_ORGANIZATION_AUTH_URL: undefined,
         OPENBOT_SINGLE_USER: "true",
       }),
-    ).toThrow("verified sign-in");
+    ).toThrow("verified organization sign-in");
   });
   test("membership policy must be explicit and absolute", () => {
     expect(() =>
-      loadOwnedConfig({ ...environment, SCOUT_QUEUE_BINDINGS_FILE: undefined }),
-    ).toThrow("SCOUT_QUEUE_BINDINGS_FILE");
+      loadOwnedConfig({ ...environment, SCOUT_MEMBERSHIPS_FILE: undefined }),
+    ).toThrow("SCOUT_MEMBERSHIPS_FILE");
     expect(() =>
       loadOwnedConfig({
         ...environment,
-        SCOUT_QUEUE_BINDINGS_FILE: "relative-policy.json",
+        SCOUT_MEMBERSHIPS_FILE: "relative-policy.json",
       }),
-    ).toThrow("absolute path");
+    ).toThrow("absolute protected file path");
+    expect(() =>
+      loadOwnedConfig({
+        ...environment,
+        SCOUT_MEMBERSHIPS_FILE: undefined,
+        SCOUT_QUEUE_BINDINGS_FILE: join(tmpdir(), "legacy-queue.json"),
+      }),
+    ).toThrow("SCOUT_MEMBERSHIPS_FILE");
   });
   test("incidental legacy vendor secrets do not enter the owned runtime contract", () => {
     const config = loadOwnedConfig({

@@ -10,7 +10,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { eq, inArray, sql } from "drizzle-orm";
 import {
   type ChannelActivityEvent,
@@ -28,7 +28,7 @@ import {
 } from "../src/db/schema";
 import { scoutResourceScopes } from "../src/db/schema/scout-scope";
 import { createPageStore } from "../src/openduet/pages";
-import { parseScoutBinding } from "../src/scout/binding";
+import { parseScoutMembership } from "../src/scout/membership";
 import { createOwnedApplication } from "../src/scout/owned/application";
 import { createTenantScope } from "../src/scout/owned/scope";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
@@ -55,24 +55,15 @@ const policy = () => ({
     tenantId,
     revision,
     active,
-    draftAnalysis: true,
     expiresAt: "2099-01-01T00:00:00Z",
   })),
-  bindings: [alice, bob].map((userId, index) => ({
+  memberships: [alice, bob].map((userId, index) => ({
     userId,
     tenantId: index ? "tenant-b" : aliceTenant,
+    revision,
     policyRevision: revision,
     active: true,
     expiresAt: "2099-01-01T00:00:00Z",
-    command: [process.execPath, "-m", "scout_queue.mcp_server"],
-    cwd: resolve("."),
-    environment: {
-      SCOUT_ODOO_URL: "https://synthetic-odoo.fixture.example",
-      SCOUT_ODOO_DB: "synthetic",
-      SCOUT_ODOO_UID: String(index + 1),
-      SCOUT_ODOO_COMPANY_IDS: "1",
-      SCOUT_ODOO_KEY_FILE: join(directory, "unused-key"),
-    },
   })),
 });
 const nativeRequest = (userId: string) =>
@@ -133,7 +124,7 @@ beforeAll(async () => {
       TENANT_PACKAGE_DIR: directory,
       OPENBOT_ORGANIZATION_AUTH_URL:
         "https://synthetic-identity.fixture.example",
-      SCOUT_QUEUE_BINDINGS_FILE: join(directory, "unused-bindings"),
+      SCOUT_MEMBERSHIPS_FILE: join(directory, "unused-bindings"),
       SCOUT_PLATFORM_OWNER_IDS: alice,
       OPENBOT_HOST: "127.0.0.1",
       OPENBOT_GENERATIVE_UI: "false",
@@ -161,7 +152,8 @@ beforeAll(async () => {
           },
         },
       },
-      binding: async (actor) => parseScoutBinding(policy(), actor),
+      membership: async (actor) =>
+        parseScoutMembership(policy(), actor, prefix),
     },
   );
 });
@@ -520,7 +512,7 @@ describe("actual owned app tenant and platform-owner boundaries", () => {
   test("an incorrect binding adapter cannot substitute another native subject", async () => {
     const scope = createTenantScope({
       deploymentId: prefix,
-      binding: async () => parseScoutBinding(policy(), { id: bob }),
+      binding: async () => parseScoutMembership(policy(), { id: bob }, prefix),
     });
     await expect(scope.resolve(alice)).rejects.toThrow("SCOUT_ACCESS_DENIED");
   });

@@ -35,7 +35,7 @@ import {
 } from "../src/db/schema";
 import { scoutResourceScopes } from "../src/db/schema/scout-scope";
 import { createTenantScope, type TenantScope } from "../src/scout/owned/scope";
-import { type ScoutBinding, ScoutError } from "../src/scout/types";
+import { ScoutError, type ScoutMembership } from "../src/scout/types";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
@@ -76,17 +76,7 @@ beforeEach(async () => {
         deploymentId,
         fingerprint: `${entry.tenantId}:${entry.revision}`,
         expiresAt: "2099-01-01T00:00:00.000Z",
-        command: ["synthetic", "-m", "scout_queue.mcp_server"],
-        cwd: "/synthetic",
-        environment: {
-          SCOUT_ODOO_URL: "https://fixture.invalid",
-          SCOUT_ODOO_DB: "synthetic",
-          SCOUT_ODOO_UID: "1",
-          SCOUT_ODOO_COMPANY_IDS: "1",
-          SCOUT_ODOO_KEY_FILE: "/synthetic/unused",
-        },
-        identity: { database: "synthetic", uid: 1, companyIds: [1] },
-      } satisfies ScoutBinding;
+      } satisfies ScoutMembership;
     },
   });
   profiles = createAgentProfileStore(database, undefined, undefined, scope);

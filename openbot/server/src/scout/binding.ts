@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { open } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
+import { readProtectedModelFile } from "./owned-model/policy";
 import { type ScoutActor, type ScoutBinding, ScoutError } from "./types";
 
 const name = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
@@ -129,6 +128,11 @@ export function parseScoutBinding(
         policyRevision: binding.policyRevision,
         origin: new URL(binding.environment.SCOUT_ODOO_URL).origin,
         identity,
+        command: binding.command,
+        cwd: binding.cwd,
+        keyFile: binding.environment.SCOUT_ODOO_KEY_FILE,
+        expiresAt: binding.expiresAt,
+        policy: tenantPolicy,
       }),
     )
     .digest("hex");
@@ -137,6 +141,12 @@ export function parseScoutBinding(
     deploymentId: config.deploymentId,
     fingerprint,
     identity,
+    expiresAt: new Date(
+      Math.min(
+        Date.parse(binding.expiresAt),
+        Date.parse(tenantPolicy.expiresAt),
+      ),
+    ).toISOString(),
   };
 }
 
@@ -145,22 +155,7 @@ export function createScoutBindingReader(path: string) {
     if (!isAbsolute(path)) throw new ScoutError("SCOUT_NOT_CONFIGURED", 503);
     let input: unknown;
     try {
-      const file = await open(
-        path,
-        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
-      );
-      try {
-        const stat = await file.stat();
-        if (
-          !stat.isFile() ||
-          stat.size > 65_536 ||
-          (process.platform !== "win32" && (stat.mode & 0o077) !== 0)
-        )
-          throw new Error("invalid protected configuration");
-        input = JSON.parse(await file.readFile("utf8"));
-      } finally {
-        await file.close();
-      }
+      input = JSON.parse(await readProtectedModelFile(path));
     } catch {
       throw new ScoutError("SCOUT_NOT_CONFIGURED", 503);
     }
