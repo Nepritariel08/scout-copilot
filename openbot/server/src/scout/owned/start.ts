@@ -6,6 +6,10 @@ import { createDemonstrationStore } from "../../demonstrations/store";
 import { startHttpServer } from "../../http-server";
 import { createOwnedApplication } from "./application";
 
+// Keep the one-process pilot below its 24-connection role cap; LISTEN owns a
+// separate max: 1 client and is counted independently.
+const ownedApplicationDatabasePoolMax = 8;
+
 type OwnedStartupDependencies = {
   loadOwnedConfig: typeof loadOwnedConfig;
   createDatabase: typeof createDatabase;
@@ -31,7 +35,9 @@ export async function startOwnedScout(
     ...overrides,
   };
   const config = deps.loadOwnedConfig();
-  const database = deps.createDatabase(config.databaseUrl);
+  const database = deps.createDatabase(config.databaseUrl, {
+    max: ownedApplicationDatabasePoolMax,
+  });
   const cleanup: (() => unknown | Promise<unknown>)[] = [];
   let stopping: Promise<void> | undefined;
   let signalsRegistered = false;
