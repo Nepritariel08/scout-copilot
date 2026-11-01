@@ -99,6 +99,9 @@ const API: readonly Route[] = [
   route("GET", /^\/api\/scout\/threads\/[^/]+\/(?:messages|events)$/),
   route("POST", /^\/api\/scout\/threads\/[^/]+\/stop$/),
   route("GET", /^\/api\/scout\/model\/[^/]+\/receipts$/),
+  // User-owned Odoo context enrollment, explicit model-release consent and revoke.
+  route("POST DELETE", /^\/api\/scout\/odoo\/context-grants$/),
+  route("POST", /^\/api\/scout\/odoo\/context-grants\/release$/),
 
   // Public MIT runner routes adapted in history/endpoint.ts. The installed SDK matcher also
   // accepts arbitrary prefixes and many auxiliary routes; none are admitted by these anchored paths.

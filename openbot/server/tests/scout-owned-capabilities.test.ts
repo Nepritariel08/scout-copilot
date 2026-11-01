@@ -68,6 +68,9 @@ describe("owned private-pilot HTTP capability admission", () => {
       ["GET", "/api/scout/threads/thread_123/events"],
       ["POST", "/api/scout/threads/thread_123/stop"],
       ["GET", "/api/scout/model/thread_123/receipts"],
+      ["POST", "/api/scout/odoo/context-grants"],
+      ["POST", "/api/scout/odoo/context-grants/release"],
+      ["DELETE", "/api/scout/odoo/context-grants"],
       ...[
         "status",
         "audit-events",
@@ -210,6 +213,13 @@ describe("owned private-pilot HTTP capability admission", () => {
         expect(ownedApiAllowed(path, method)).toBe(false);
     expect(ownedApiAllowed("/api/agents/test-connection", "POST")).toBe(false);
     expect(ownedApiAllowed("/api/channels/morning-brief", "POST")).toBe(false);
+    for (const [path, method] of [
+      ["/api/scout/odoo/context-grants", "GET"],
+      ["/api/scout/odoo/context-grants", "PUT"],
+      ["/api/scout/odoo/context-grants/release", "DELETE"],
+      ["/api/scout/odoo/context-grants/release/extra", "POST"],
+    ])
+      expect(ownedApiAllowed(path!, method!)).toBe(false);
   });
 
   test("preserves installed login, session, desktop/mobile and owner-managed SSO protocol routes", () => {

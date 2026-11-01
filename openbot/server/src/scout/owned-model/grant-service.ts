@@ -2,11 +2,11 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { createAuditStore, recordAuditEvent } from "../../audit";
 import { createCredentialStore, encryptSecret } from "../../credentials";
 import type { Database } from "../../db/client";
+import { credentials } from "../../db/schema/core";
 import {
   scoutContextReleaseGrants,
   scoutOdooRecordAccessGrants,
 } from "../../db/schema/scout-record-context";
-import { credentials } from "../../db/schema/core";
 import {
   ODOO_JSON2_CREDENTIAL_PROVIDER,
   odooJson2CredentialKeyId,

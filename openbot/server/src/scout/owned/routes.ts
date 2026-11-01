@@ -8,8 +8,8 @@ import { createHistoryRuntimeHandler } from "../history/endpoint";
 import { HistoryError } from "../history/protocol";
 import { createHistoryRoutes, historyErrorStatuses } from "../history/routes";
 import type { createHistoryEngine } from "../history/runner";
-import type { ModelGrant } from "../owned-model/policy";
 import type { OdooGrantBinding } from "../owned-model/grant-service";
+import type { ModelGrant } from "../owned-model/policy";
 import type {
   ProjectTaskContextPrincipal,
   ProjectTaskContextProvider,

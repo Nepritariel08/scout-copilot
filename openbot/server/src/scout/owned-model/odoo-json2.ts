@@ -240,7 +240,7 @@ async function boundedJson(
  * the identity derived from the API key, then performs the exact search_read as
  * that same user with the grant's allowed-company context so Odoo ACLs, record
  * rules and field permissions remain active. UID 1 is denied as a defense in
- * depth; grant provisioning must still qualify all users as nonadmin.
+ * depth; grant provisioning must also require an internal Odoo user.
  */
 export function createOdooJson2ProjectTaskReader(
   options: OdooJson2ProjectTaskReaderOptions,
@@ -288,12 +288,20 @@ export function createOdooJson2ProjectTaskReader(
     return boundedJson(response, maxResponseBytes);
   };
 
-  const assertCurrentUserIsNotAdministrator = async (
+  const assertCurrentUserIsInternalNonAdministrator = async (
     apiKey: string,
     uid: number,
   ) => {
-    // Unknown values, missing methods, and failed checks must never be treated
-    // as evidence that an Odoo user is safe to release context for.
+    // Negative admin checks alone admit portal users. Require positive
+    // internal-user membership, then fail closed on unknown or admin results.
+    const isInternalUser = await post(
+      "res.users",
+      "has_group",
+      apiKey,
+      { ids: [uid], group_ext_id: "base.group_user" },
+      maximumContextBytes,
+    );
+    if (isInternalUser !== true) return denied();
     for (const groupExtId of ["base.group_system", "base.group_erp_manager"]) {
       const isAdministrator = await post(
         "res.users",
@@ -335,7 +343,7 @@ export function createOdooJson2ProjectTaskReader(
     )
       return denied();
 
-    await assertCurrentUserIsNotAdministrator(key, uid);
+    await assertCurrentUserIsInternalNonAdministrator(key, uid);
     const rows = await post(
       "project.project",
       "search_read",
@@ -348,7 +356,7 @@ export function createOdooJson2ProjectTaskReader(
       },
       maximumProjectScopeBytes,
     );
-    await assertCurrentUserIsNotAdministrator(key, uid);
+    await assertCurrentUserIsInternalNonAdministrator(key, uid);
     if (
       !Array.isArray(rows) ||
       rows.length === 0 ||
@@ -416,7 +424,7 @@ export function createOdooJson2ProjectTaskReader(
       )
         return denied();
 
-      await assertCurrentUserIsNotAdministrator(
+      await assertCurrentUserIsInternalNonAdministrator(
         apiKey,
         request.sourceIdentity.uid,
       );
@@ -442,7 +450,7 @@ export function createOdooJson2ProjectTaskReader(
       // Check again after Odoo returns the task. This catches a privilege
       // promotion that overlaps the read instead of trusting the grant's
       // earlier nonadmin qualification until it expires.
-      await assertCurrentUserIsNotAdministrator(
+      await assertCurrentUserIsInternalNonAdministrator(
         apiKey,
         request.sourceIdentity.uid,
       );
@@ -470,8 +478,7 @@ function configuredCompanyIds(value: number[]): number[] {
     value.length < 1 ||
     value.length > 100 ||
     value.some(
-      (id) =>
-        !Number.isSafeInteger(id) || id < 1 || id > 2_147_483_647,
+      (id) => !Number.isSafeInteger(id) || id < 1 || id > 2_147_483_647,
     ) ||
     new Set(value).size !== value.length
   )

@@ -10,8 +10,8 @@ import {
   scoutOdooRecordAccessGrants,
 } from "../src/db/schema/scout-record-context";
 import { createOwnedOdooProjectTaskContext } from "../src/scout/owned-model/context-source";
-import { createOdooJson2CredentialResolver } from "../src/scout/owned-model/odoo-credentials";
 import { createOwnedOdooGrantService } from "../src/scout/owned-model/grant-service";
+import { createOdooJson2CredentialResolver } from "../src/scout/owned-model/odoo-credentials";
 import type { ProjectTaskReadRequest } from "../src/scout/owned-model/record-context";
 import { createProjectTaskContextStore } from "../src/scout/owned-model/record-context-store";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
@@ -350,7 +350,8 @@ describe("owned Odoo grant persistence and credential resolution", () => {
         let result: unknown;
         if (url.pathname === "/json/2/res.users/context_get")
           result = { uid: 101 };
-        else if (url.pathname === "/json/2/res.users/has_group") result = false;
+        else if (url.pathname === "/json/2/res.users/has_group")
+          result = body.group_ext_id === "base.group_user";
         else if (url.pathname === "/json/2/project.task/search_read")
           result = [
             {
@@ -413,11 +414,13 @@ describe("owned Odoo grant persistence and credential resolution", () => {
       "/json/2/res.users/context_get",
       "/json/2/res.users/has_group",
       "/json/2/res.users/has_group",
+      "/json/2/res.users/has_group",
       "/json/2/project.task/search_read",
       "/json/2/res.users/has_group",
       "/json/2/res.users/has_group",
+      "/json/2/res.users/has_group",
     ]);
-    expect(calls[3]?.body).toEqual({
+    expect(calls[4]?.body).toEqual({
       context: { allowed_company_ids: [1] },
       domain: [
         ["id", "=", 77],
