@@ -915,6 +915,13 @@ describe("owned composition through the actual Scout app", () => {
     async () => {
       if (!configuredOdooConfig)
         throw new Error("Linux source fixture was not configured");
+      // This composition deliberately uses the production membership reader rather than
+      // the mutable reader seam on ownedWithGrants. Supply its actual protected policy.
+      await writeFile(
+        configuredOdooConfig.scoutMembershipsFile,
+        JSON.stringify(policy()),
+        { mode: 0o600 },
+      );
       for (const removeMapping of [false, true]) {
         odooMapActive = false;
         await writeOdooPolicy();

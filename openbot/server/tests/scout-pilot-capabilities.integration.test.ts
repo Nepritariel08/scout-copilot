@@ -438,7 +438,7 @@ describe("actual owned pilot capability boundary", () => {
       deploymentId: prefix,
       globalMaxConcurrent: 1,
       globalMaxCallsPerDay: 10,
-      memberships: [
+      bindings: [
         {
           userId: owner,
           tenantId: "tenant-a",

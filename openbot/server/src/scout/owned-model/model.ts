@@ -1,6 +1,7 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import type { PlanLanguageModel } from "../../agents/plan-model";
-import { historyDigest } from "../history/protocol";
+import { HistoryError, historyDigest } from "../history/protocol";
+import { ScoutError } from "../types";
 import {
   type ModelGrant,
   ModelPolicyError,
@@ -13,10 +14,15 @@ type Options = Parameters<PlanLanguageModel["doStream"]>[0];
 type Result = Awaited<ReturnType<PlanLanguageModel["doStream"]>>;
 type Part = Result["stream"] extends ReadableStream<infer T> ? T : never;
 type Generated = Awaited<ReturnType<PlanLanguageModel["doGenerate"]>>;
-const safeError = (error: unknown) =>
-  error instanceof ModelPolicyError
-    ? error
-    : new ModelPolicyError("MODEL_UNAVAILABLE");
+const safeError = (error: unknown) => {
+  if (error instanceof ModelPolicyError) return error;
+  if (
+    (error instanceof HistoryError && error.code === "HISTORY_ACCESS_DENIED") ||
+    (error instanceof ScoutError && error.code === "SCOUT_ACCESS_DENIED")
+  )
+    return new ModelPolicyError("MODEL_ACCESS_DENIED");
+  return new ModelPolicyError("MODEL_UNAVAILABLE");
+};
 
 function messagesFor(options: Options, trustedContext?: string) {
   if (
