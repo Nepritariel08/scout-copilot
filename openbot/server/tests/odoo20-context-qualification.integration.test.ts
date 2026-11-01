@@ -163,7 +163,7 @@ describe.skipIf(!configured)(
         version?: unknown;
         version_info?: unknown[];
       };
-      expect(version.version).toBe("20.0");
+      expect(version.version).toBe("20.0-20261015");
       expect(Array.isArray(version.version_info)).toBe(true);
       expect(version.version_info?.[0]).toBe(20);
       expect(version.version_info?.[1]).toBe(0);

@@ -31,7 +31,7 @@ and the [official Odoo image tag](https://hub.docker.com/layers/library/odoo/20.
 The API contract is the [Odoo 20 External API reference](https://www.odoo.com/documentation/20.0/developer/reference/external_api.html),
 including `res.users/context_get` without caller-supplied IDs.
 The pinned image's `GET /web/version` contract returns `version_info` and `version`;
-the qualification requires `version` to equal `20.0` and the first two
+the qualification requires `version` to equal the pinned build `20.0-20261015` and the first two
 `version_info` entries to be `20, 0`. This follows the [official Odoo 20 route
 implementation](https://github.com/odoo/odoo/blob/20.0/addons/rpc/controllers/__init__.py),
 not the legacy XML-RPC `server_version` field.
