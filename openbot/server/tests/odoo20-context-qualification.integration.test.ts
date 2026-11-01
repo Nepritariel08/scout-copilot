@@ -1,8 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { readFile, writeFile } from "node:fs/promises";
-import { createOdooJson2ProjectTaskReader } from "../src/scout/owned-model/odoo-json2";
+import {
+  createOdooJson2ProjectTaskReader,
+  createOdooJson2ReadTransport,
+} from "../src/scout/owned-model/odoo-json2";
 import { createOdooJson2CustomerTaskReader } from "../src/scout/owned-model/odoo-json2-customer";
 import type { ProjectTaskReadRequest } from "../src/scout/owned-model/record-context";
+import {
+  customerClassificationMatches,
+  customerClassificationReport,
+  customerGroupExpectations,
+} from "./fixtures/odoo20-customer-classification";
 
 type Fixture = {
   database: string;
@@ -22,6 +30,7 @@ type Fixture = {
     number
   >;
   collaborators: Record<"portalA" | "portalB", number>;
+  customerClassification: Record<"portalA" | "portalB", unknown>;
 };
 
 type Credentials = Record<
@@ -322,6 +331,34 @@ describe.skipIf(!configured)(
       // Positive customer access uses the separate portal adapter. The original
       // employee reader above still rejects the same keys before source reads.
       for (const portal of ["portalA", "portalB"] as const) {
+        const seedReport = customerClassificationReport(
+          portal,
+          "seed",
+          fixture.customerClassification[portal],
+        );
+        console.log(JSON.stringify(seedReport));
+        expect(customerClassificationMatches(seedReport)).toBe(true);
+        const post = createOdooJson2ReadTransport({
+          baseUrl,
+          database: fixture.database,
+          fetch: transport,
+        });
+        const currentGroups: Record<string, unknown> = {};
+        for (const [group] of customerGroupExpectations)
+          currentGroups[group] = await post(
+            "res.users",
+            "has_group",
+            credentials[portal],
+            { ids: [fixture.users[portal]], group_ext_id: group },
+            1024,
+          );
+        const rpcReport = customerClassificationReport(
+          portal,
+          "json2",
+          currentGroups,
+        );
+        console.log(JSON.stringify(rpcReport));
+        expect(customerClassificationMatches(rpcReport)).toBe(true);
         expect(
           await customerReader.verifyUserProjectScope(
             credentials[portal],

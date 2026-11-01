@@ -66,3 +66,28 @@ synthetic Odoo 20 Community release and observes the listed Odoo ACL, group,
 company, customer task-slice and record-state behaviors. It does not validate complete customer access,
 production credentials, live directory memberships, model-egress policy, or
 deployment readiness.
+
+## Customer-classification failure diagnosis
+
+Run `41343229565`, job `124957500719`, failed at the customer reader's strict
+group comparison after 24 assertions. The employee metadata/project/task and
+portal-refusal checks had executed, but no positive customer qualification was
+established. Those logs did not identify the mismatching group or its value;
+the failure therefore does not establish a fixture or protocol root cause.
+
+The qualification now reads the seeded customers' effective groups after a
+flush/cache invalidation, then independently reads the same four groups through
+their own bearer identities before the positive customer stage. Each report is
+limited to fixed synthetic customer/phase labels, the four known group IDs,
+expected booleans and actual booleans (or null for malformed/missing values).
+No API key, token, password, raw response, user/contact or business record is
+logged. Redaction and exact expectations have focused pure tests. A mismatch
+still fails; no production UID, portal, internal/admin or ACL check was relaxed.
+
+Odoo 20's [own-user group check](https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/res_users.py)
+uses effective group membership, and its user-type groups are disjoint. Its
+[portal wizard](https://github.com/odoo/odoo/blob/20.0/addons/portal/wizard/portal_wizard.py)
+uses the portal template and explicit portal/public group management. This
+source inspection does not identify which actual pinned-image result differed;
+the next exact-source isolated CI readback is required before selecting a fix
+or claiming customer qualification.
