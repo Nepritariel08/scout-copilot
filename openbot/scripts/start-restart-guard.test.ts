@@ -375,6 +375,20 @@ fi
 }
 
 describe("start.sh server restart guard", () => {
+  test("owned mode refuses the routines launcher before secret or process mutation", async () => {
+    const result = await runStartWithStaleServerProbe(400, {
+      settings: { SCOUT_RUNTIME_MODE: "owned", COMPUTER_TOKEN: "" },
+    });
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("production-entry.ts");
+    expect(result.savedEnvironment).toMatch(/^COMPUTER_TOKEN=$/m);
+    expect(result.signalLog).toBe("");
+    expect(result.dockerLog).toBe("");
+    expect(result.curlLog).toBe("");
+    expect(result.serverLaunch).toBe("");
+    expect(result.workerLaunch).toBe("");
+  });
+
   function expectServerRestart(signalLog: string) {
     expect(signalLog).toBe("91000001\n91000002\n");
   }

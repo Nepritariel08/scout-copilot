@@ -1,4 +1,12 @@
-import { and, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
+import {
+  and,
+  eq,
+  isNotNull,
+  isNull,
+  or,
+  type SQLWrapper,
+  sql,
+} from "drizzle-orm";
 import type { CredentialStore } from "../credentials";
 import type { Database } from "../db/client";
 import {
@@ -7,6 +15,13 @@ import {
   agents,
   deploymentPackages,
 } from "../db/schema";
+import { teamBotPublications } from "../db/schema/team-bots";
+import type { TenantPrincipal, TenantScope } from "../scout/owned/scope";
+import {
+  assignedCondition,
+  assignedToActor,
+  teamBotAccess,
+} from "../team-bots/access";
 import {
   authFromConfiguration,
   retireReplacedKey,
@@ -17,12 +32,6 @@ import {
   mintCallbackToken,
   sameToken,
 } from "./callback-token";
-import {
-  assignedCondition,
-  assignedToActor,
-  teamBotAccess,
-} from "../team-bots/access";
-import { teamBotPublications } from "../db/schema/team-bots";
 import { canManageAgent } from "./profile-policy";
 import type {
   AgentActor,
@@ -32,6 +41,19 @@ import type {
 
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 type DatabaseExecutor = Pick<Database, "select"> | Pick<Transaction, "select">;
+type ScopedActor = { scope: TenantScope; principal: TenantPrincipal };
+
+function scopeFilter(
+  scoped: ScopedActor | undefined,
+  mode: "read" | "write" = "read",
+  id: SQLWrapper = agents.id,
+) {
+  return scoped?.scope.predicate(scoped.principal, "agent", id, mode);
+}
+
+async function assertCurrent(scoped: ScopedActor | undefined) {
+  await scoped?.scope.assertCurrent(scoped.principal);
+}
 
 /** Something that can read profiles: the pool, or a caller's open transaction. */
 export type ProfileReadExecutor = DatabaseExecutor;
@@ -140,6 +162,7 @@ const joinedProjection = {
   deletedAt: agentProfiles.deletedAt,
   /* The hash, only so a surface can say whether one exists. It never leaves this module. */
   callbackTokenHash: agentProfiles.callbackTokenHash,
+  type: agents.type,
   configuration: agents.configuration,
 };
 
@@ -193,6 +216,8 @@ function mapProfile(
     assignedToMe: Boolean(row.assignedToMe),
     deletedAt: row.deletedAt,
     endpoint: endpointOf(row.configuration),
+    nativeBuiltIn:
+      row.type === "built_in" && systemPromptOf(row.configuration) !== null,
     // Whether a key is set, never which. The form needs to show "a key is set" so a person does not
     // wipe one by saving an unrelated edit; showing the value would put a secret in a screenshot.
     hasAuth: authFromConfiguration(row.configuration) !== null,
@@ -313,27 +338,39 @@ async function findAccessibleProfile(
   executor: DatabaseExecutor,
   actor: AgentActor,
   id: string,
+  scoped?: ScopedActor,
+  mode: "read" | "write" = "read",
 ): Promise<AgentProfile | null> {
   const [row] = await joinedProfiles(executor, actor).where(
     and(
       eq(agents.id, id),
       isNull(agentProfiles.deletedAt),
       accessFilter(actor),
+      scopeFilter(scoped, mode),
     ),
   );
   return row ? mapProfile(row) : null;
 }
 
-async function lockProfileMutationRows(executor: DatabaseExecutor, id: string) {
+async function lockProfileMutationRows(
+  executor: DatabaseExecutor,
+  id: string,
+  scoped?: ScopedActor,
+) {
   await executor
     .select({ id: agents.id })
     .from(agents)
-    .where(eq(agents.id, id))
+    .where(and(eq(agents.id, id), scopeFilter(scoped, "write")))
     .for("update");
   await executor
     .select({ agentId: agentProfiles.agentId })
     .from(agentProfiles)
-    .where(eq(agentProfiles.agentId, id))
+    .where(
+      and(
+        eq(agentProfiles.agentId, id),
+        scopeFilter(scoped, "write", agentProfiles.agentId),
+      ),
+    )
     .for("update");
 }
 
@@ -342,11 +379,20 @@ async function lockProfileMutationRows(executor: DatabaseExecutor, id: string) {
  * until this transaction ends. `lockProfileMutationRows` takes the exclusive counterpart, so a
  * deletion racing a reference blocks here instead of committing underneath it.
  */
-async function lockProfileReadRow(executor: DatabaseExecutor, id: string) {
+async function lockProfileReadRow(
+  executor: DatabaseExecutor,
+  id: string,
+  scoped?: ScopedActor,
+) {
   await executor
     .select({ agentId: agentProfiles.agentId })
     .from(agentProfiles)
-    .where(eq(agentProfiles.agentId, id))
+    .where(
+      and(
+        eq(agentProfiles.agentId, id),
+        scopeFilter(scoped, "read", agentProfiles.agentId),
+      ),
+    )
     .for("share");
 }
 
@@ -407,35 +453,54 @@ export function createAgentProfileStore(
    * agent with a key then simply cannot be created, which is better than storing it in the clear.
    */
   vault?: { store: CredentialStore; encryptionKey: string },
+  scope?: TenantScope,
 ): AgentProfileStore {
   const managedConfiguration = managedAgentAgUiUrl
     ? { endpoint: managedAgentAgUiUrl.toString() }
     : undefined;
 
+  async function scopedActor(
+    actor: AgentActor,
+  ): Promise<ScopedActor | undefined> {
+    return scope
+      ? { scope, principal: await scope.resolve(actor.id) }
+      : undefined;
+  }
+
   return {
     async list(actor, hidden = false) {
+      const scoped = await scopedActor(actor);
       const rows = await joinedProfiles(database, actor).where(
         and(
           isNull(agentProfiles.deletedAt),
           accessFilter(actor),
+          scopeFilter(scoped),
           hidden
             ? isNotNull(agentPreferences.hiddenAt)
             : isNull(agentPreferences.hiddenAt),
         ),
       );
+      await assertCurrent(scoped);
       return rows.map(mapProfile);
     },
 
-    get(actor, id) {
-      return findAccessibleProfile(database, actor, id);
+    async get(actor, id) {
+      const scoped = await scopedActor(actor);
+      const profile = await findAccessibleProfile(database, actor, id, scoped);
+      await assertCurrent(scoped);
+      return profile;
     },
 
     async getWithin(executor, actor, id) {
-      await lockProfileReadRow(executor, id);
-      return findAccessibleProfile(executor, actor, id);
+      const scoped = await scopedActor(actor);
+      await lockProfileReadRow(executor, id, scoped);
+      const profile = await findAccessibleProfile(executor, actor, id, scoped);
+      await assertCurrent(scoped);
+      return profile;
     },
 
-    create(actor, input) {
+    async create(actor, input) {
+      const scoped = await scopedActor(actor);
       return database.transaction(async (transaction) => {
         const id = newAgentId();
         const endpoint = input.endpoint
@@ -502,17 +567,32 @@ export function createAgentProfileStore(
           visibility: input.visibility,
         });
 
-        const profile = await findAccessibleProfile(transaction, actor, id);
+        if (scoped)
+          await scoped.scope.stamp(transaction, scoped.principal, "agent", id);
+        const profile = await findAccessibleProfile(
+          transaction,
+          actor,
+          id,
+          scoped,
+        );
         if (!profile) throw new AgentNotFoundError(id);
+        await assertCurrent(scoped);
         return profile;
       });
     },
 
-    update(actor, id, input) {
+    async update(actor, id, input) {
+      const scoped = await scopedActor(actor);
       return database.transaction(
         async (transaction) => {
-          await lockProfileMutationRows(transaction, id);
-          const profile = await findAccessibleProfile(transaction, actor, id);
+          await lockProfileMutationRows(transaction, id, scoped);
+          const profile = await findAccessibleProfile(
+            transaction,
+            actor,
+            id,
+            scoped,
+            "write",
+          );
           if (!profile) throw new AgentNotFoundError(id);
           requireManageable(actor, profile);
 
@@ -529,7 +609,7 @@ export function createAgentProfileStore(
           const [row] = await transaction
             .select({ configuration: agents.configuration, type: agents.type })
             .from(agents)
-            .where(eq(agents.id, id))
+            .where(and(eq(agents.id, id), scopeFilter(scoped, "write")))
             .limit(1);
           const previous = (row?.configuration ?? {}) as Record<
             string,
@@ -592,7 +672,7 @@ export function createAgentProfileStore(
           await transaction
             .update(agents)
             .set({ name: input.name, configuration, updatedAt })
-            .where(eq(agents.id, id));
+            .where(and(eq(agents.id, id), scopeFilter(scoped, "write")));
           await transaction
             .update(agentProfiles)
             .set({
@@ -601,19 +681,38 @@ export function createAgentProfileStore(
               visibility: input.visibility,
               updatedAt,
             })
-            .where(eq(agentProfiles.agentId, id));
+            .where(
+              and(
+                eq(agentProfiles.agentId, id),
+                scopeFilter(scoped, "write", agentProfiles.agentId),
+              ),
+            );
 
-          const updated = await findAccessibleProfile(transaction, actor, id);
+          const updated = await findAccessibleProfile(
+            transaction,
+            actor,
+            id,
+            scoped,
+            "write",
+          );
           if (!updated) throw new AgentNotFoundError(id);
+          await assertCurrent(scoped);
           return updated;
         },
         { isolationLevel: "read committed" },
       );
     },
 
-    duplicate(actor, id) {
+    async duplicate(actor, id) {
+      const scoped = await scopedActor(actor);
       return database.transaction(async (transaction) => {
-        const source = await findAccessibleProfile(transaction, actor, id);
+        if (scoped) await lockProfileReadRow(transaction, id, scoped);
+        const source = await findAccessibleProfile(
+          transaction,
+          actor,
+          id,
+          scoped,
+        );
         if (!source) throw new AgentNotFoundError(id);
 
         /*
@@ -628,7 +727,7 @@ export function createAgentProfileStore(
         const [stored] = await transaction
           .select({ type: agents.type, configuration: agents.configuration })
           .from(agents)
-          .where(eq(agents.id, id))
+          .where(and(eq(agents.id, id), scopeFilter(scoped)))
           .limit(1);
         if (!stored) throw new AgentNotFoundError(id);
 
@@ -654,20 +753,36 @@ export function createAgentProfileStore(
           avatarSeed: source.avatarSeed,
           visibility: "private",
         });
+        if (scoped)
+          await scoped.scope.stamp(
+            transaction,
+            scoped.principal,
+            "agent",
+            duplicateId,
+          );
 
         const duplicate = await findAccessibleProfile(
           transaction,
           actor,
           duplicateId,
+          scoped,
         );
         if (!duplicate) throw new AgentNotFoundError(duplicateId);
+        await assertCurrent(scoped);
         return duplicate;
       });
     },
 
-    setHidden(actor, id, hidden) {
+    async setHidden(actor, id, hidden) {
+      const scoped = await scopedActor(actor);
       return database.transaction(async (transaction) => {
-        const profile = await findAccessibleProfile(transaction, actor, id);
+        if (scoped) await lockProfileReadRow(transaction, id, scoped);
+        const profile = await findAccessibleProfile(
+          transaction,
+          actor,
+          id,
+          scoped,
+        );
         if (!profile) throw new AgentNotFoundError(id);
         // An administrator put this Team Bot in this person's sidebar; it stays there.
         if (hidden) {
@@ -695,6 +810,7 @@ export function createAgentProfileStore(
             target: [agentPreferences.userId, agentPreferences.agentId],
             set: { hiddenAt: hidden ? new Date() : null },
           });
+        await assertCurrent(scoped);
       });
     },
 
@@ -704,9 +820,16 @@ export function createAgentProfileStore(
      * two tabs, pinning at once meet on the (user, agent) primary key, so the second write updates
      * the row the first one made instead of failing.
      */
-    setPinned(actor, id, pinned) {
+    async setPinned(actor, id, pinned) {
+      const scoped = await scopedActor(actor);
       return database.transaction(async (transaction) => {
-        const profile = await findAccessibleProfile(transaction, actor, id);
+        if (scoped) await lockProfileReadRow(transaction, id, scoped);
+        const profile = await findAccessibleProfile(
+          transaction,
+          actor,
+          id,
+          scoped,
+        );
         if (!profile) throw new AgentNotFoundError(id);
 
         await transaction
@@ -720,14 +843,22 @@ export function createAgentProfileStore(
             target: [agentPreferences.userId, agentPreferences.agentId],
             set: { pinnedAt: pinned ? new Date() : null },
           });
+        await assertCurrent(scoped);
       });
     },
 
-    softDelete(actor, id) {
+    async softDelete(actor, id) {
+      const scoped = await scopedActor(actor);
       return database.transaction(
         async (transaction) => {
-          await lockProfileMutationRows(transaction, id);
-          const profile = await findAccessibleProfile(transaction, actor, id);
+          await lockProfileMutationRows(transaction, id, scoped);
+          const profile = await findAccessibleProfile(
+            transaction,
+            actor,
+            id,
+            scoped,
+            "write",
+          );
           if (!profile) throw new AgentNotFoundError(id);
           requireManageable(actor, profile);
 
@@ -735,7 +866,12 @@ export function createAgentProfileStore(
           await transaction
             .update(agentProfiles)
             .set({ deletedAt, updatedAt: deletedAt })
-            .where(eq(agentProfiles.agentId, id));
+            .where(
+              and(
+                eq(agentProfiles.agentId, id),
+                scopeFilter(scoped, "write", agentProfiles.agentId),
+              ),
+            );
 
           /*
            * And its key stops working.
@@ -749,7 +885,7 @@ export function createAgentProfileStore(
             const [row] = await transaction
               .select({ configuration: agents.configuration })
               .from(agents)
-              .where(eq(agents.id, id))
+              .where(and(eq(agents.id, id), scopeFilter(scoped, "write")))
               .limit(1);
             await retireReplacedKey(
               vault.store,
@@ -761,16 +897,24 @@ export function createAgentProfileStore(
               transaction,
             );
           }
+          await assertCurrent(scoped);
         },
         { isolationLevel: "read committed" },
       );
     },
 
-    issueCallbackToken(actor, id) {
+    async issueCallbackToken(actor, id) {
+      const scoped = await scopedActor(actor);
       return database.transaction(
         async (transaction) => {
-          await lockProfileMutationRows(transaction, id);
-          const profile = await findAccessibleProfile(transaction, actor, id);
+          await lockProfileMutationRows(transaction, id, scoped);
+          const profile = await findAccessibleProfile(
+            transaction,
+            actor,
+            id,
+            scoped,
+            "write",
+          );
           if (!profile) throw new AgentNotFoundError(id);
           /*
            * Whoever may change the agent may credential it.
@@ -789,20 +933,33 @@ export function createAgentProfileStore(
               callbackTokenIssuedAt: issuedAt,
               updatedAt: issuedAt,
             })
-            .where(eq(agentProfiles.agentId, id));
+            .where(
+              and(
+                eq(agentProfiles.agentId, id),
+                scopeFilter(scoped, "write", agentProfiles.agentId),
+              ),
+            );
 
           // The only time it is readable. Nothing here writes it to a log.
+          await assertCurrent(scoped);
           return token;
         },
         { isolationLevel: "read committed" },
       );
     },
 
-    revokeCallbackToken(actor, id) {
+    async revokeCallbackToken(actor, id) {
+      const scoped = await scopedActor(actor);
       return database.transaction(
         async (transaction) => {
-          await lockProfileMutationRows(transaction, id);
-          const profile = await findAccessibleProfile(transaction, actor, id);
+          await lockProfileMutationRows(transaction, id, scoped);
+          const profile = await findAccessibleProfile(
+            transaction,
+            actor,
+            id,
+            scoped,
+            "write",
+          );
           if (!profile) throw new AgentNotFoundError(id);
           requireManageable(actor, profile);
 
@@ -814,13 +971,22 @@ export function createAgentProfileStore(
               callbackTokenIssuedAt: null,
               updatedAt: now,
             })
-            .where(eq(agentProfiles.agentId, id));
+            .where(
+              and(
+                eq(agentProfiles.agentId, id),
+                scopeFilter(scoped, "write", agentProfiles.agentId),
+              ),
+            );
+          await assertCurrent(scoped);
         },
         { isolationLevel: "read committed" },
       );
     },
 
     agentForCallbackToken(hash) {
+      // A bearer hash alone is not a verified native tenant/service assertion. Owned mode has no
+      // callback authority until its named-service adapter is qualified.
+      if (scope) return Promise.resolve(null);
       return findByTokenHash(database, hash);
     },
   };

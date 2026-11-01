@@ -70,6 +70,8 @@ export type QueuedMessage = {
    * Bot was ready still applies when the message eventually runs.
    */
   attachments: Attachment[];
+  /** One message in the queued turn may carry its one-shot task selector. */
+  odooTaskId?: string;
 };
 
 export type QueueAction =
@@ -167,6 +169,8 @@ export type QueueTransition = {
    * paths that can produce a run answer this list from the same rule.
    */
   restoreIfRunFails: readonly QueuedMessage[];
+  /** A selected task was withheld because merged messages did not share one exact context. */
+  omittedOdooTaskContext?: true;
 };
 
 /**
@@ -219,6 +223,9 @@ export function reduceQueue(
               text: action.draft.text,
               commandIds: [...action.draft.commandIds],
               attachments: [...action.draft.attachments],
+              ...(action.draft.odooTaskId
+                ? { odooTaskId: action.draft.odooTaskId }
+                : {}),
             },
           ],
           action.draft.agentId,
@@ -240,6 +247,9 @@ export function reduceQueue(
           run: joined.draft,
           droppedAttachments: joined.dropped,
           restoreIfRunFails: carrying(queue, joined.draft.attachments),
+          ...(joined.omittedOdooTaskContext
+            ? { omittedOdooTaskContext: true as const }
+            : {}),
         };
       }
       /*
@@ -282,6 +292,9 @@ export function reduceQueue(
             text: action.draft.text,
             commandIds: [...action.draft.commandIds],
             attachments: [...action.draft.attachments],
+            ...(action.draft.odooTaskId
+              ? { odooTaskId: action.draft.odooTaskId }
+              : {}),
           },
         ],
         run: null,
@@ -328,6 +341,9 @@ export function reduceQueue(
         queue: [],
         run: joined.draft,
         droppedAttachments: joined.dropped,
+        ...(joined.omittedOdooTaskContext
+          ? { omittedOdooTaskContext: true as const }
+          : {}),
         /*
          * ALL OF THEM. Every message in this drain was parked, which means the composer let go of
          * its words and its attachments at the time, and the queue has just emptied itself to build
@@ -412,6 +428,7 @@ function carrying(
 type Joined = {
   draft: ComposerDraft;
   dropped: Attachment[];
+  omittedOdooTaskContext: boolean;
 };
 
 /**
@@ -466,6 +483,13 @@ function joinQueued(
     .map((message) => message.text)
     .filter((line) => line.trim().length > 0)
     .join("\n");
+  const taskIds = queue.map((message) => message.odooTaskId);
+  const selectedTaskId = taskIds[0];
+  const canKeepOdooTaskContext =
+    selectedTaskId !== undefined &&
+    taskIds.every((taskId) => taskId === selectedTaskId);
+  const omittedOdooTaskContext =
+    taskIds.some((taskId) => taskId !== undefined) && !canKeepOdooTaskContext;
 
   return {
     draft: {
@@ -476,7 +500,9 @@ function joinQueued(
       commandIds: [...new Set(queue.flatMap((message) => message.commandIds))],
       isEmpty: text.length === 0,
       attachments,
+      ...(canKeepOdooTaskContext ? { odooTaskId: selectedTaskId } : {}),
     },
     dropped,
+    omittedOdooTaskContext,
   };
 }

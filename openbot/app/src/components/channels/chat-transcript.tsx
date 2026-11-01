@@ -344,10 +344,12 @@ function describeParked(
 function Queued({
   attachments,
   text,
+  odooTaskId,
   onRemove,
 }: {
   attachments: readonly Attachment[];
   text: string;
+  odooTaskId?: string;
   onRemove?: (() => void) | undefined;
 }) {
   /*
@@ -388,6 +390,9 @@ function Queued({
            * to queue something is not being interrupted by the news that it is queued.
            */}
           <span role="status">Queued</span>
+          {odooTaskId ? (
+            <span>Uses Odoo project task #{odooTaskId}</span>
+          ) : null}
           {onRemove ? (
             <button
               /*
@@ -2151,6 +2156,7 @@ export function ChatTranscript({
               {(folded ? EMPTY_QUEUE : queued).map((message) => (
                 <Queued
                   attachments={message.attachments}
+                  odooTaskId={message.odooTaskId}
                   key={message.id}
                   onRemove={
                     onRemoveQueued

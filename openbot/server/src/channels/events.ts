@@ -57,7 +57,7 @@ type Send = (payload: string) => void;
 
 export type ChannelEventHub = {
   /** Attach a connection for a person. Returns the detach. */
-  register(userId: string, send: Send): () => void;
+  register(userId: string, send: Send, request?: Request): () => void;
   /** Fan one event out to this instance's own connections. */
   deliver(event: ChannelActivityEvent): void;
   /** Tell every connection to refetch. Everybody, because the lost events named their own members. */
@@ -65,23 +65,59 @@ export type ChannelEventHub = {
   connectionCount(userId: string): number;
 };
 
-export function createChannelEventHub(): ChannelEventHub {
+/** Capture authorization at connection registration, then revalidate before every disclosure. */
+export type ChannelEventAuthorization = (
+  userId: string,
+  request?: Request,
+) => Promise<
+  (event: ChannelActivityEvent | ChannelResyncEvent) => Promise<boolean>
+>;
+
+export function createChannelEventHub(
+  authorize?: ChannelEventAuthorization,
+): ChannelEventHub {
   const connections = new Map<string, Set<Send>>();
 
   return {
-    register(userId, send) {
+    register(userId, send, request) {
       const existing = connections.get(userId) ?? new Set<Send>();
-      existing.add(send);
-      connections.set(userId, existing);
-
-      return () => {
+      let detached = false;
+      let pending = 0;
+      let delivery = Promise.resolve();
+      const authorized = authorize?.(userId, request);
+      const detach = () => {
+        detached = true;
         const remaining = connections.get(userId);
-        if (!remaining) return;
-        remaining.delete(send);
-        // Dropped entirely rather than left empty, so a long-lived process does not accumulate a
-        // set per person who ever connected.
-        if (remaining.size === 0) connections.delete(userId);
+        remaining?.delete(guarded);
+        if (remaining?.size === 0) connections.delete(userId);
       };
+      const guarded: Send = authorized
+        ? (payload) => {
+            if (detached) return;
+            // Bound one slow/revoked socket rather than building an unbounded authorization queue.
+            if (++pending > 32) {
+              detach();
+              return;
+            }
+            delivery = delivery
+              .then(async () => {
+                if (detached) return;
+                const canSend = await authorized;
+                if (!(await canSend(JSON.parse(payload)))) return;
+                if (!detached) send(payload);
+              })
+              .catch(detach)
+              .finally(() => {
+                pending--;
+              });
+          }
+        : send;
+      existing.add(guarded);
+      connections.set(userId, existing);
+      // Handle a rejected initial binding even when no event ever arrives.
+      void authorized?.catch(detach);
+
+      return detach;
     },
 
     deliver(event) {
@@ -147,18 +183,23 @@ export async function startChannelActivityListener(
     hub.resyncAll();
   };
 
-  await connection.listen(
-    CHANNEL_ACTIVITY_TOPIC,
-    (payload) => {
-      try {
-        hub.deliver(JSON.parse(payload) as ChannelActivityEvent);
-      } catch {
-        // A payload we cannot read is not a reason to tear down the subscription: the roster query
-        // is still correct, and the next refetch shows whatever this event would have.
-      }
-    },
-    resync,
-  );
+  try {
+    await connection.listen(
+      CHANNEL_ACTIVITY_TOPIC,
+      (payload) => {
+        try {
+          hub.deliver(JSON.parse(payload) as ChannelActivityEvent);
+        } catch {
+          // A payload we cannot read is not a reason to tear down the subscription: the roster query
+          // is still correct, and the next refetch shows whatever this event would have.
+        }
+      },
+      resync,
+    );
+  } catch (error) {
+    await connection.end().catch(() => {});
+    throw error;
+  }
 
   return {
     stop: async () => {

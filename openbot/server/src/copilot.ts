@@ -29,6 +29,7 @@ import {
   CoworkerUnavailableError,
 } from "./agents/agent-resolver";
 import {
+  type PlanLanguageModel,
   PlanModel,
   type PlanModelConfig,
   planModelForEnvironment,
@@ -195,6 +196,8 @@ export type RuntimeModel = {
   provider: "openai" | "anthropic";
   defaultModel: string;
   plan?: PlanModelConfig;
+  /** Trusted request-bound model port, including owned deployment admission and policy. */
+  languageModel?: PlanLanguageModel;
 };
 
 /** Optional desktop environment values may be present but blank; SDKs treat them as URLs. */
@@ -401,7 +404,7 @@ export function builtInAgentConfiguration(
   planModel?: PlanModel,
   learnedSkills?: LearnedSkillInvocation,
 ): BuiltInAgentConfiguration {
-  if (!apiKey && !planModel) {
+  if (!apiKey && !planModel && !model.languageModel) {
     return {
       type: "custom",
       // biome-ignore lint/correctness/useYield: this agent must fail when iteration starts.
@@ -433,10 +436,14 @@ export function builtInAgentConfiguration(
     model:
       allTools.length > 0
         ? endingTurns(
-            planModel ?? `${model.provider}/${model.defaultModel}`,
+            model.languageModel ??
+              planModel ??
+              `${model.provider}/${model.defaultModel}`,
             apiKey ?? undefined,
           )
-        : (planModel ?? `${model.provider}/${model.defaultModel}`),
+        : (model.languageModel ??
+          planModel ??
+          `${model.provider}/${model.defaultModel}`),
     /*
      * The package's role, then the person's own standing instructions, then what this Bot actually
      * holds, then the computer.
@@ -468,7 +475,9 @@ export function builtInAgentConfiguration(
       ...(computerGuidance ? [computerGuidance] : []),
       ...(learnedSkills?.catalog ? [learnedSkills.catalog] : []),
     ].join("\n\n"),
-    ...(planModel ? {} : { apiKey: apiKey ?? undefined }),
+    ...(planModel || model.languageModel
+      ? {}
+      : { apiKey: apiKey ?? undefined }),
     /*
      * A run stops after one step unless told otherwise, which for a Bot with tools means it calls
      * one and never speaks: the tool executes, the result arrives, and the run ends before the model

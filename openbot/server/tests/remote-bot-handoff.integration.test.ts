@@ -78,7 +78,7 @@ const store = createPluginStore({
 
 const desk = createHandoffDesk({
   queue: createWorkQueue(database),
-  profiles: createAgentProfileStore(database),
+  profiles: createAgentProfileStore(database, undefined),
   actorFor: async (id: string) => ({ id, role: "user" as const }),
   mayAddress: async (fromBotId, toBotId) =>
     (

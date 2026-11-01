@@ -1,8 +1,8 @@
+import { MAX_IMAGE_BYTES } from "@openbot/shared/attachments";
 import type { Hono as HonoApp, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { serveStatic } from "hono/bun";
-import { MAX_IMAGE_BYTES } from "@openbot/shared/attachments";
 import { enterpriseControls } from "./admin/controls";
 import { createEnterpriseGate } from "./admin/gate";
 import { createEnterpriseAdminRoutes } from "./admin/routes";
@@ -25,10 +25,10 @@ import type { ApprovalService } from "./approvals/service";
 import {
   type AuditEventType,
   type AuditInitiator,
-  auditEventsToCsv,
   AuditQueryError,
   type AuditReader,
   type AuditStore,
+  auditEventsToCsv,
   auditQueryFromUrl,
   DEPLOYMENT_INITIATOR,
   readAuditExportRows,
@@ -45,6 +45,7 @@ import {
 import type { IdentityProviderStore } from "./auth/identity-provider-store";
 import { desktopAuthPage } from "./auth/native-browser";
 import { createSameOriginGuard } from "./auth/same-origin";
+import { scoutAuth0CallbackAlias } from "./auth/scout-auth0-callback";
 import {
   createAttachmentRoutes,
   createChannelAttachmentRoutes,
@@ -63,7 +64,7 @@ import type { ComputerGateway } from "./computer/gateway";
 import type { PageFrameStore } from "./computer/page-frames";
 import type { PolicyStore } from "./computer/policy-store";
 import { createComputerRoutes } from "./computer/routes";
-import { configuredAuthProviders, type DeploymentConfig } from "./config";
+import { type AnyDeploymentConfig, configuredAuthProviders } from "./config";
 import {
   type CredentialAdminService,
   type CredentialInput,
@@ -93,23 +94,6 @@ import {
 import type { MemoryIngestion } from "./memory/ingestion";
 import { createMemoryRoutes } from "./memory/routes";
 import type { MemoryStore } from "./memory/store";
-import { parsePageLimit } from "./paging";
-import { createPasswordRoutes, createSignInRoutes } from "./passwords/routes";
-import type { SignInService } from "./passwords/service";
-import type { OnboardingStore } from "./people/onboarding";
-import { MAX_PAGE, type PeopleStore } from "./people/store";
-import type { AccountModeSwitch } from "./plugins/account-mode";
-import type { ComposioBroker } from "./plugins/broker";
-import type { BrokerProvider } from "./plugins/access";
-import { createPluginRoutes } from "./plugins/routes";
-import { createSharedUseRoutes } from "./plugins/shared-use-routes";
-import type { SharedUseStore } from "./plugins/shared-use-store";
-import {
-  isDeploymentFault,
-  PluginRefusedError,
-  type PluginStore,
-} from "./plugins/store";
-import { REFUSAL_MARKER, vendorAnswer } from "./plugins/tools";
 import {
   createDuetChannelRoutes,
   type DuetChannelStore,
@@ -122,6 +106,23 @@ import {
   type TaskIntake,
   type TaskStore,
 } from "./openduet/task-store";
+import { parsePageLimit } from "./paging";
+import { createPasswordRoutes, createSignInRoutes } from "./passwords/routes";
+import type { SignInService } from "./passwords/service";
+import type { OnboardingStore } from "./people/onboarding";
+import { MAX_PAGE, type PeopleStore } from "./people/store";
+import type { BrokerProvider } from "./plugins/access";
+import type { AccountModeSwitch } from "./plugins/account-mode";
+import type { ComposioBroker } from "./plugins/broker";
+import { createPluginRoutes } from "./plugins/routes";
+import { createSharedUseRoutes } from "./plugins/shared-use-routes";
+import type { SharedUseStore } from "./plugins/shared-use-store";
+import {
+  isDeploymentFault,
+  PluginRefusedError,
+  type PluginStore,
+} from "./plugins/store";
+import { REFUSAL_MARKER, vendorAnswer } from "./plugins/tools";
 import type { ProactiveEngine } from "./proactive/engine";
 import { createProactiveRoutes } from "./proactive/routes";
 import type { ProactiveStore } from "./proactive/store";
@@ -140,6 +141,10 @@ import type { RoutineRunner } from "./routines/runner";
 import type { IntentRouter } from "./routing/classify";
 import { createRoutingRoutes } from "./routing/routes";
 import { createCoworkerRoutingService } from "./routing/service";
+import { ownedApiAllowed, ownedAuthAllowed } from "./scout/owned/capabilities";
+import type { TenantScope } from "./scout/owned/scope";
+import { createScoutRoutes } from "./scout/routes";
+import type { ScoutService } from "./scout/service";
 import type { SelfHostBanner } from "./self-host-banner";
 import { createTeamBotRoutes } from "./team-bots/routes";
 import type { TeamBots } from "./team-bots/team-bots";
@@ -232,7 +237,7 @@ async function recordPersonEvent(
 }
 
 export function createApp(
-  config: DeploymentConfig,
+  config: AnyDeploymentConfig,
   auth?: AuthService,
   roleRepository?: RoleRepository,
   auditReader?: AuditReader,
@@ -434,6 +439,13 @@ export function createApp(
     };
     memory?: { store: MemoryStore; ingestion: MemoryIngestion };
     proactive?: { store: ProactiveStore; engine: ProactiveEngine };
+    scout?: ScoutService;
+    scoutOwned?: {
+      requireTenant: MiddlewareHandler<{ Variables: AppVariables }>;
+      delegatedDraftsEnabled?: boolean;
+      scope?: TenantScope;
+      requirePlatformAdmin?: (request: Request) => Promise<void>;
+    };
     responsibilities?: {
       store: ResponsibilityStore;
       engine: ResponsibilityEngine;
@@ -487,6 +499,39 @@ export function createApp(
    * route registered ahead of a middleware in Hono never passes through it.
    */
   app.use("*", createSameOriginGuard(config));
+  if (config.runtime.mode === "owned") {
+    app.use("*", async (context, next) => {
+      const path = new URL(context.req.url).pathname;
+      const namespace = path.replace(/\/+/g, "/").split("/")[1] ?? "";
+      // Hono decodes static route segments. Admit raw paths before even public handlers can match.
+      if (namespace.includes("%"))
+        return context.json({ code: "SCOUT_CAPABILITY_UNAVAILABLE" }, 503);
+      const authPath = path === "/api/auth" || path.startsWith("/api/auth/");
+      if (
+        namespace.toLowerCase() === "api" &&
+        !(authPath
+          ? ownedAuthAllowed(path, context.req.method)
+          : ownedApiAllowed(path, context.req.method, {
+              delegatedDrafts: coworker?.scoutOwned?.delegatedDraftsEnabled,
+            }))
+      )
+        return context.json(
+          {
+            code: authPath
+              ? "SCOUT_IDENTITY_ROUTE_UNAVAILABLE"
+              : /^\/api\/(?:audio|voice)(?:\/|$)/.test(path)
+                ? "MODEL_ROUTE_UNAVAILABLE"
+                : path === "/api/agents/test-connection"
+                  ? "SCOUT_REMOTE_ROUTE_UNAVAILABLE"
+                  : "SCOUT_CAPABILITY_UNAVAILABLE",
+          },
+          503,
+        );
+      await next();
+    });
+  }
+  if (config.runtime.mode === "owned" && config.auth?.auth0)
+    app.use("*", scoutAuth0CallbackAlias(auth));
   mountDesktopConnectionFailure(app, desktopHostToken);
   mountProviderOAuthProxy(app, modelProviderProxy);
 
@@ -506,6 +551,13 @@ export function createApp(
     context.json({
       mode: config.runtime.mode,
       durableHistory: config.runtime.durableHistory,
+      serverTurns: config.runtime.mode === "intelligence",
+      ...(config.runtime.mode === "owned"
+        ? {
+            delegatedDrafts:
+              coworker?.scoutOwned?.delegatedDraftsEnabled === true,
+          }
+        : {}),
       /*
        * Whether a Bot may answer with an interface it wrote itself.
        *
@@ -531,8 +583,9 @@ export function createApp(
        * a local trial, and an operator cannot forget to set it.
        */
       localEvaluation: config.singleUser,
-      transcription: Boolean(config.transcription),
-      voice: Boolean(config.voice),
+      transcription:
+        config.runtime.mode !== "owned" && Boolean(config.transcription),
+      voice: config.runtime.mode !== "owned" && Boolean(config.voice),
       /*
        * Which identity providers this deployment can sign somebody in with.
        *
@@ -573,6 +626,13 @@ export function createApp(
     "/api/auth/sso/update-provider",
     "/api/auth/sso/delete-provider",
   ]);
+  const OWNED_IDENTITY_MANAGEMENT = new Set([
+    ...ADMIN_ONLY_AUTH_ROUTES,
+    "/api/auth/sso/providers",
+    "/api/auth/sso/get-provider",
+    "/api/auth/sso/request-domain-verification",
+    "/api/auth/sso/verify-domain",
+  ]);
 
   const AUTH_ROUTE_EVENTS: Record<string, AuditEventType | undefined> = {
     "/api/auth/sso/register": "identity_provider.registered",
@@ -580,6 +640,20 @@ export function createApp(
   };
 
   app.on(["GET", "POST"], "/api/auth/*", async (context) => {
+    if (config.runtime.mode === "owned") {
+      const rawPath = new URL(context.req.url).pathname;
+      if (!ownedAuthAllowed(rawPath, context.req.method))
+        return context.json({ code: "SCOUT_IDENTITY_ROUTE_UNAVAILABLE" }, 503);
+      if (OWNED_IDENTITY_MANAGEMENT.has(rawPath)) {
+        try {
+          if (!coworker?.scoutOwned?.requirePlatformAdmin)
+            throw new Error("unconfigured owner");
+          await coworker.scoutOwned.requirePlatformAdmin(context.req.raw);
+        } catch {
+          return context.json({ code: "SCOUT_ACCESS_DENIED" }, 403);
+        }
+      }
+    }
     if (
       context.req.method === "GET" &&
       new URL(context.req.url).pathname === "/api/auth/desktop" &&
@@ -597,7 +671,10 @@ export function createApp(
       );
     }
 
-    if (ADMIN_ONLY_AUTH_ROUTES.has(new URL(context.req.url).pathname)) {
+    if (
+      config.runtime.mode !== "owned" &&
+      ADMIN_ONLY_AUTH_ROUTES.has(new URL(context.req.url).pathname)
+    ) {
       const session = await auth.api.getSession({
         headers: context.req.raw.headers,
         // Fresh, not the cookie cache: a role changed a moment ago has to apply to this request.
@@ -664,21 +741,38 @@ export function createApp(
     : auth && roleRepository
       ? createRequireUser(auth, roleRepository)
       : authenticationUnavailable;
+  if (config.runtime.mode === "owned") {
+    if (!coworker?.scoutOwned)
+      throw new Error("Owned runtime requires its native tenant guard.");
+    app.use("/api/*", coworker.scoutOwned.requireTenant);
+    // Auxiliary model routes need their own owned context/usage port before activation.
+    app.all("/api/audio/*", (context) =>
+      context.json({ code: "MODEL_ROUTE_UNAVAILABLE" }, 503),
+    );
+    app.all("/api/voice/*", (context) =>
+      context.json({ code: "MODEL_ROUTE_UNAVAILABLE" }, 503),
+    );
+    app.post("/api/agents/test-connection", (context) =>
+      context.json({ code: "SCOUT_REMOTE_ROUTE_UNAVAILABLE" }, 503),
+    );
+  }
   // Enterprise controls: capability switches and the model allowlist in front of the routes they
   // govern, the admin screen's API, and the SCIM verbs the GET/POST auth handler above does not take.
   app.use("/api/*", createEnterpriseGate(requireUser));
   app.route("/api/admin/enterprise", createEnterpriseAdminRoutes(requireUser));
   app.on(["PUT", "PATCH", "DELETE"], "/api/auth/scim/*", (context) =>
-    auth
-      ? auth.handler(context.req.raw)
-      : context.json({ error: "No identity provider is configured." }, 503),
+    config.runtime.mode === "owned"
+      ? context.json({ code: "SCOUT_IDENTITY_ROUTE_UNAVAILABLE" }, 503)
+      : auth
+        ? auth.handler(context.req.raw)
+        : context.json({ error: "No identity provider is configured." }, 503),
   );
 
   app.route(
     "/api/audio",
     createDictationRoutes(
       requireUser,
-      config.transcription
+      config.runtime.mode !== "owned" && config.transcription
         ? createTranscriptionProvider(config.transcription)
         : undefined,
     ),
@@ -687,7 +781,9 @@ export function createApp(
     "/api/voice",
     createVoiceRoutes(
       requireUser,
-      config.voice ? createVoiceProvider(config.voice) : undefined,
+      config.runtime.mode !== "owned" && config.voice
+        ? createVoiceProvider(config.voice)
+        : undefined,
       channelStore,
       agentProfileStore,
       voiceSessions,
@@ -1486,9 +1582,9 @@ export function createApp(
               canHandOn: (agentId) => pluginStore.agentCanHandOn(agentId),
             }
           : undefined,
-        // Whether "built-in" is a kind of coworker this deployment can actually make: the create
-        // path falls back to the managed Bot's endpoint, so without one it can only refuse.
-        config.managedAgent?.endpoint !== undefined,
+        // Owned mode creates native built-in Bots; the licensed composition uses its managed Bot.
+        coworker?.scoutOwned !== undefined ||
+          config.managedAgent?.endpoint !== undefined,
         // The managed Bot's address, so a coworker created without an endpoint — which creation
         // stores as running at this address — can be told apart from one a person hosts.
         config.managedAgent?.endpoint?.toString(),
@@ -1503,6 +1599,9 @@ export function createApp(
                 config.managedAgent.alsoRun,
               ].filter((url): url is URL => url !== undefined),
             }
+          : undefined,
+        coworker?.scoutOwned
+          ? { remoteAvailable: false, ownedNativeBuiltIn: true }
           : undefined,
       ),
     );
@@ -1553,6 +1652,7 @@ export function createApp(
         auditStore,
         coworker?.proactive?.engine.startFirstDay,
         coworker?.proactive?.engine.startMorningBrief,
+        config.runtime.mode === "intelligence",
       ),
     );
   }
@@ -1609,13 +1709,21 @@ export function createApp(
     );
     channelAttachments.route(
       "/",
-      createChannelAttachmentRoutes(attachmentDatabase, requireUser),
+      createChannelAttachmentRoutes(
+        attachmentDatabase,
+        requireUser,
+        coworker?.scoutOwned?.scope,
+      ),
     );
     app.route("/api/channels", channelAttachments);
 
     app.route(
       "/api/attachments",
-      createAttachmentRoutes(attachmentDatabase, requireUser),
+      createAttachmentRoutes(
+        attachmentDatabase,
+        requireUser,
+        coworker?.scoutOwned?.scope,
+      ),
     );
   }
 
@@ -1690,6 +1798,11 @@ export function createApp(
       createPasswordRoutes(coworker.passwords, requireUser),
     );
   }
+  if (coworker?.scout)
+    app.route(
+      "/api/scout/tasks",
+      createScoutRoutes(coworker.scout, requireUser),
+    );
   if (coworker?.proactive)
     app.route(
       "/api/proactive",
@@ -1994,7 +2107,7 @@ export function createApp(
     );
   }
 
-  if (threadIdentity) {
+  if (threadIdentity && config.runtime.mode === "intelligence") {
     app.route(
       "/api/threads",
       createThreadRoutes(

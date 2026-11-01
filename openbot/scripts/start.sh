@@ -46,6 +46,20 @@ setting() {
   printf '%s' "${value:-$fallback}"
 }
 
+# This development launcher owns computer containers and a routines worker. Owned Scout
+# has a separate, explicit composition and reuses DSH for delegated work. Refuse before
+# rotating secrets or starting Docker/processes rather than starting a second executor.
+SCOUT_RUNTIME_MODE="$(setting SCOUT_RUNTIME_MODE intelligence)"
+if [ "$SCOUT_RUNTIME_MODE" = "owned" ]; then
+  printf '%s\n' 'Owned Scout uses the API production entry with its provisioned PostgreSQL database.' >&2
+  printf '%s\n' 'Run from openbot/server: bun --env-file=../.env src/production-entry.ts; run the app separately. See scout/OWNED-RUNTIME.md.' >&2
+  exit 2
+fi
+if [ "$SCOUT_RUNTIME_MODE" != "intelligence" ]; then
+  printf '%s\n' 'SCOUT_RUNTIME_MODE must be intelligence or owned.' >&2
+  exit 2
+fi
+
 APP_PORT="$(setting APP_PORT 3010)"
 SERVER_PORT="$(setting SERVER_PORT 3001)"
 COMPUTER_PORT="$(setting COMPUTER_PORT 4100)"

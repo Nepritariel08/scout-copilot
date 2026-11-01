@@ -17,6 +17,7 @@ import {
 } from "react";
 import { attachmentModality } from "@/components/channels/chat-messages";
 import { toAgentOptions } from "@/components/channels/composer";
+import type { ComposerDraft } from "@/components/channels/composer/draft";
 import { ConversationView } from "@/components/channels/conversation-view";
 import {
   seedMessage,
@@ -26,6 +27,8 @@ import {
 import { VoiceCallWidget } from "@/components/channels/voice-call-widget";
 import { HandoffResumeNotice } from "@/components/computer/handoff-resume-notice";
 import { Topic } from "@/components/duet/kit";
+import { ScoutDrafts } from "@/components/scout/drafts";
+import { ScoutOdooContext } from "@/components/scout/odoo-context";
 import { agentListQueryOptions } from "@/lib/agents/queries";
 import { type ApprovalInboxData, approvalInboxOptions } from "@/lib/approvals";
 import { attachmentUrl } from "@/lib/channels/attachments";
@@ -72,7 +75,9 @@ import { afterMs } from "@/lib/copilot/join-thread";
 import { repairUnansweredToolCalls } from "@/lib/copilot/repair-history";
 import { stoppedReason } from "@/lib/copilot/stopped-turn";
 import { readThreadMessages } from "@/lib/copilot/thread-messages";
+import { appConfig } from "@/lib/generated/application-config";
 import { useSkillCommands } from "@/lib/plugins/skill-commands";
+import { withOdooTaskSelection } from "@/lib/scout-odoo";
 import {
   askChannelAgent,
   messageText,
@@ -402,6 +407,32 @@ export function ChannelChat({
   onSubmitted?: () => void;
 }) {
   const taskBusy = task?.busy ?? false;
+  const [selectedOdooTaskId, setSelectedOdooTaskId] = useState<string | null>(
+    null,
+  );
+  const [contextOdooTaskId, setContextOdooTaskId] = useState<string | null>(
+    null,
+  );
+  const selectedOdooTaskIdRef = useRef<string | null>(null);
+  const captureOdooTaskSelection = useCallback(
+    (draft: ComposerDraft): ComposerDraft => {
+      if (
+        appConfig.brand.tenantId !== "scout" ||
+        task?.send ||
+        selectedOdooTaskIdRef.current === null
+      )
+        return draft;
+      const odooTaskId = selectedOdooTaskIdRef.current;
+      selectedOdooTaskIdRef.current = null;
+      setSelectedOdooTaskId(null);
+      return { ...draft, odooTaskId };
+    },
+    [task?.send],
+  );
+  const selectOdooTask = useCallback((taskId: string | null) => {
+    selectedOdooTaskIdRef.current = taskId;
+    setSelectedOdooTaskId(taskId);
+  }, []);
   // A retry may fall back to the server queue. Keep its preview separate from real history so
   // it cannot hide the accepted Queued row or overwrite the reply once the server records it.
   const [taskPreviews, setTaskPreviews] = useState<Message[]>([]);
@@ -1016,6 +1047,7 @@ export function ChannelChat({
     skillInstructions: string[],
     attachments: Attachment[],
     skipIf?: () => boolean,
+    odooTaskId?: string,
   ) => {
     // Wait briefly for the runtime agent instance before adding the message.
     if (!isReadyRef.current) {
@@ -1220,8 +1252,14 @@ export function ChannelChat({
     });
     setRunsInFlight((count) => count + 1);
     try {
-      await withVoiceContext(copilotkit, target.agentId, voiceHistory, () =>
-        copilotkit.runAgent({ agent: target }),
+      await withOdooTaskSelection(
+        copilotkit,
+        target.agentId,
+        odooTaskId ?? null,
+        () =>
+          withVoiceContext(copilotkit, target.agentId, voiceHistory, () =>
+            copilotkit.runAgent({ agent: target }),
+          ),
       );
     } finally {
       startWatch.unsubscribe();
@@ -1312,7 +1350,10 @@ export function ChannelChat({
     text: string,
     skillInstructions: string[] = [],
     attachments: Attachment[] = [],
-    { skipIf }: { skipIf?: () => boolean } = {},
+    {
+      skipIf,
+      odooTaskId,
+    }: { skipIf?: () => boolean; odooTaskId?: string } = {},
   ) => {
     const trimmed = text.trim();
     // A pasted screenshot with no caption is still a message to send: `canSendDraft` already
@@ -1340,7 +1381,13 @@ export function ChannelChat({
       runId: busyOwner,
     });
     try {
-      return await deliver(trimmed, skillInstructions, attachments, skipIf);
+      return await deliver(
+        trimmed,
+        skillInstructions,
+        attachments,
+        skipIf,
+        odooTaskId,
+      );
     } finally {
       turnsRef.current -= 1;
       setTurnsInFlight(turnsRef.current);
@@ -1665,6 +1712,20 @@ export function ChannelChat({
             }
             taskRunning={agent.isRunning || runsInFlight > 0}
           />
+          {appConfig.brand.tenantId === "scout" && channel.active ? (
+            <ScoutDrafts channelId={channel.id} />
+          ) : null}
+          {appConfig.brand.tenantId === "scout" &&
+          channel.active &&
+          !task?.send ? (
+            <ScoutOdooContext
+              agentId={runtimeAgentId}
+              selectedTaskId={selectedOdooTaskId}
+              contextTaskId={contextOdooTaskId}
+              onSelectTaskId={selectOdooTask}
+              busy={agent.isRunning || turnsInFlight > 0 || following}
+            />
+          ) : null}
           <ConversationView
             approvals={presenceInbox.data?.requests}
             folded={folded}
@@ -1689,6 +1750,7 @@ export function ChannelChat({
             agents={toAgentOptions(agentProfiles, channel.agentIds)}
             // Failed-task retries carry words only; ordinary durable replies retain composer features.
             channelId={task?.send && !task.durable ? undefined : channel.id}
+            prepareDraft={captureOdooTaskSelection}
             /*
              * THE TURN, not the run. `say` waits for the runtime agent and the join before a run starts,
              * and `agent.isRunning` alone leaves that gap unmarked — which is the one moment the
@@ -1817,7 +1879,14 @@ export function ChannelChat({
                   Boolean(instruction),
                 );
 
-              await say(draft.text, skillInstructions, draft.attachments);
+              if (draft.odooTaskId) setContextOdooTaskId(draft.odooTaskId);
+              try {
+                await say(draft.text, skillInstructions, draft.attachments, {
+                  odooTaskId: draft.odooTaskId,
+                });
+              } finally {
+                if (draft.odooTaskId) setContextOdooTaskId(null);
+              }
             }}
             /**
              * Stop through the core so the abort signal reaches frontend tools; `say` repairs any

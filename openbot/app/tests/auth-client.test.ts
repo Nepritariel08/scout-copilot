@@ -24,7 +24,7 @@ import {
  * deployment can gain one without the app being rebuilt.
  */
 describe("signInWith", () => {
-  test.each(["google", "microsoft", "okta"] as const)(
+  test.each(["google", "microsoft", "okta", "auth0"] as const)(
     "starts %s through the same call",
     async (provider) => {
       const asked: string[] = [];
@@ -186,5 +186,6 @@ describe("providerName", () => {
     expect(providerName("google")).toBe("Google");
     expect(providerName("microsoft")).toBe("Microsoft");
     expect(providerName("okta")).toBe("Okta");
+    expect(providerName("auth0")).toBe("Auth0");
   });
 });

@@ -190,7 +190,14 @@ def test_an_anthropic_key_uses_the_official_endpoint_when_compose_sets_a_blank_u
 
     async def respond(transport, request):
         body = json.loads(request.content)
-        seen.append((str(request.url), request.headers.get("x-api-key"), body["model"]))
+        auth = {
+            name: request.headers[name]
+            for name in ("x-api-key", "authorization")
+            if name in request.headers
+        }
+        seen.append(
+            (str(request.url), auth, request.headers.get("anthropic-version"), body["model"])
+        )
         return httpx2.Response(
             200,
             request=request,
@@ -224,7 +231,17 @@ def test_an_anthropic_key_uses_the_official_endpoint_when_compose_sets_a_blank_u
         "/", json=RUN, headers={"x-openbot-agent-token": TOKEN}
     )
 
-    assert seen == [("https://api.anthropic.com/v1/messages", "test-key", "claude-sonnet-4-5")]
+    # Both documented SDK wire contracts must carry exactly the selected key.
+    assert seen in (
+        [(
+            "https://api.anthropic.com/v1/messages",
+            {"x-api-key": "test-key"}, "2023-06-01", "claude-sonnet-4-5",
+        )],
+        [(
+            "https://api.anthropic.com/v1/messages",
+            {"authorization": "Bearer test-key"}, "2026-10-21", "claude-sonnet-4-5",
+        )],
+    )
     assert response.status_code == 200
     assert '"RUN_FINISHED"' in response.text
     assert '"RUN_ERROR"' not in response.text

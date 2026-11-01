@@ -508,6 +508,63 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run build
 
+  # Retain the actual Scout web build and exact tracked source for isolated host staging.
+  # The ordinary build above still qualifies the default upstream profile. This additional
+  # candidate is built from the PR head, not GitHub's synthetic merge commit, and grants no
+  # deployment authority. Operators must also check the terminal whole-run result.
+  scout-pilot-artifact:
+    name: Scout pilot artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SCOUT_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      TENANT_PACKAGE_DIR: ../examples/scout
+      SCOUT_MODEL: fixture-model
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.SCOUT_SOURCE_SHA }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile
+      - name: Build the Scout profile without identity or model credentials
+        run: bun --no-env-file run build
+      - name: Package and verify the exact source and prebuilt web assets
+        run: |
+          set -euo pipefail
+          bun --no-env-file scripts/scout-pilot-artifact.ts package \
+            --expected-source "$SCOUT_SOURCE_SHA" --output "$RUNNER_TEMP/scout-pilot-artifact"
+          bun --no-env-file scripts/scout-pilot-artifact.ts verify \
+            --directory "$RUNNER_TEMP/scout-pilot-artifact" --expected-source "$SCOUT_SOURCE_SHA"
+      - name: Retain the verified candidate for seven days
+        id: scout-artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scout-pilot-${{ env.SCOUT_SOURCE_SHA }}
+          path: ${{ runner.temp }}/scout-pilot-artifact/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Record independent candidate digests
+        env:
+          ARTIFACT_ID: ${{ steps.scout-artifact.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.scout-artifact.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          test -n "$ARTIFACT_ID"
+          test -n "$ARTIFACT_DIGEST"
+          manifest_digest=$(sha256sum "$RUNNER_TEMP/scout-pilot-artifact/manifest.json" | cut -d ' ' -f 1)
+          printf 'Scout candidate source=%s artifact_id=%s artifact_sha256=%s manifest_sha256=%s\n' \
+            "$SCOUT_SOURCE_SHA" "$ARTIFACT_ID" "$ARTIFACT_DIGEST" "$manifest_digest"
+          {
+            printf '### Scout pilot candidate\n\n'
+            printf 'Source commit: `%s`\n\nArtifact ID: `%s`\n\n' "$SCOUT_SOURCE_SHA" "$ARTIFACT_ID"
+            printf 'Artifact SHA256: `%s`\n\nManifest SHA256: `%s`\n\n' "$ARTIFACT_DIGEST" "$manifest_digest"
+            printf 'Preparation only. Require this exact head and terminal whole-run CI success before staging.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # Migration files and the schema they were generated from, checked against each other. A snapshot
   # that has drifted from the schema produces a migration nobody wrote, applied to somebody's
   # database on their next deploy. Neither command needs a running database, only the config.
@@ -730,7 +787,7 @@ jobs:
     name: verify
     runs-on: ubuntu-latest
     if: always()
-    needs: [static, deployables, mobile, computer-browser, chart, test, startup, python-harness, build, migrations, image, component-dockerfiles]
+    needs: [static, deployables, mobile, computer-browser, chart, test, startup, python-harness, build, scout-pilot-artifact, migrations, image, component-dockerfiles]
     # Nothing is checked out here, so the workflow's default `openbot` folder does not exist.
     defaults:
       run:
@@ -739,8 +796,13 @@ jobs:
       - name: Require every check
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
+          SCOUT_ARTIFACT_RESULT: ${{ needs.scout-pilot-artifact.result }}
         run: |
           set -euo pipefail
+          if [ "$SCOUT_ARTIFACT_RESULT" != success ]; then
+            echo "::error::The Scout pilot artifact must succeed; a skipped artifact is not qualified."
+            exit 1
+          fi
           echo "$RESULTS"
           for result in $RESULTS; do
             case "$result" in

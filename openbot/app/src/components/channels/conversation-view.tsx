@@ -56,6 +56,7 @@ export function ConversationView({
   queueWhileBusy = false,
   restoring = false,
   onSubmit,
+  prepareDraft,
   onStop,
   voiceCall,
   inShell = false,
@@ -123,6 +124,8 @@ export function ConversationView({
   /** History has been asked for and has not arrived. Drawn as placeholder rows; see `ChatTranscript`. */
   restoring?: boolean;
   onSubmit: (draft: ComposerDraft) => void | Promise<void>;
+  /** Adds tab-local one-shot context before a draft is run or parked in the queue. */
+  prepareDraft?: (draft: ComposerDraft) => ComposerDraft;
   /** Stop the Bot mid-answer; forwarded to turn the send button into a stop button. */
   onStop?: () => void;
   voiceCall?: { active: boolean; supported: boolean; onStart(): void };
@@ -152,6 +155,7 @@ export function ConversationView({
    */
   const [queued, setQueued] = useState<readonly QueuedMessage[]>([]);
   const queuedRef = useRef<readonly QueuedMessage[]>(queued);
+  const [queueNotice, setQueueNotice] = useState<string | null>(null);
 
   /*
    * In the shell the composer floats over the conversation, frosted, rather than below it, so the
@@ -260,6 +264,13 @@ export function ConversationView({
     const next = reduceQueue(queuedRef.current, action);
     queuedRef.current = next.queue;
     setQueued(next.queue);
+    if (next.run) {
+      setQueueNotice(
+        next.omittedOdooTaskContext
+          ? "Odoo task context was withheld because queued messages are sent as one combined request. Send the task-selected message by itself to include its task summary."
+          : null,
+      );
+    }
     // Only on an actual drop, so a settle or a remove that let go of nothing does not hand the
     // composer a fresh empty array it has no reason to react to.
     if (next.droppedAttachments.length > 0) {
@@ -382,9 +393,10 @@ export function ConversationView({
    */
   const submit = useCallback(
     (draft: ComposerDraft, whileBusy: boolean) => {
+      const preparedDraft = prepareDraft ? prepareDraft(draft) : draft;
       const next = apply({
         busy: whileBusy,
-        draft,
+        draft: preparedDraft,
         id: newId(),
         type: "submit",
       });
@@ -430,7 +442,7 @@ export function ConversationView({
       }
       return started;
     },
-    [apply, restoreFailedRun],
+    [apply, prepareDraft, restoreFailedRun],
   );
 
   /**
@@ -638,6 +650,11 @@ export function ConversationView({
         {queuedNotice && queued.length > 0 ? (
           <p className="pb-2 text-sm text-muted-foreground" role="status">
             {queuedNotice}
+          </p>
+        ) : null}
+        {queueNotice ? (
+          <p className="pb-2 text-sm text-muted-foreground" role="status">
+            {queueNotice}
           </p>
         ) : null}
         {notice}

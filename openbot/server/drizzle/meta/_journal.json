@@ -477,6 +477,48 @@
       "when": 1793034639890,
       "tag": "0067_morning_brief_on",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1793486207225,
+      "tag": "0068_scout_queue_requester",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1793493053542,
+      "tag": "0069_scout_history",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1793503109600,
+      "tag": "0070_scout_model_calls",
+      "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1793504573342,
+      "tag": "0071_scout_tenant_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1793521754141,
+      "tag": "0072_happy_scorpion",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1793539086289,
+      "tag": "0073_accounts_issuer_identity",
+      "breakpoints": true
     }
   ]
 }

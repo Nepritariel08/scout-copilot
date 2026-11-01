@@ -1,8 +1,11 @@
 /**
- * What the runtime can do. There is exactly one answer because CopilotKit Intelligence is required
- * for durable threads and memory. Configuration the product cannot function without belongs at the
- * boot boundary.
+ * Explicit runtime contracts: the default licensed Intelligence composition and Scout's owned
+ * PostgreSQL/public-SDK composition. Validate each at boot; neither may silently fall back to
+ * anonymous or transient storage.
  */
+
+import { networkInterfaces } from "node:os";
+import { isAbsolute } from "node:path";
 import {
   isLearningContainerId,
   type LearningTarget,
@@ -13,7 +16,6 @@ import {
   listenHosts,
 } from "@openbot/shared/listen-host";
 import { listenPort } from "@openbot/shared/listen-port";
-import { networkInterfaces } from "node:os";
 import { singleUserEnabled } from "./auth/dev-actor";
 import { normalizeDomain } from "./auth/email-domain";
 import { organizationAuthority } from "./auth/organization";
@@ -27,11 +29,15 @@ import type { BrokerProvider } from "./plugins/access";
 import { type VoiceConfig, voiceConfig } from "./voice/config";
 import { type WebBotAuth, webBotAuthFromEnv } from "./web-bot-auth";
 
-export type RuntimeCapabilities = {
+export type IntelligenceRuntimeCapabilities = {
   mode: "intelligence";
   durableHistory: true;
   intelligence: IntelligenceSettings;
 };
+export type OwnedRuntimeCapabilities = { mode: "owned"; durableHistory: true };
+export type RuntimeCapabilities =
+  | IntelligenceRuntimeCapabilities
+  | OwnedRuntimeCapabilities;
 
 /**
  * The Intelligence contract. Three values are required; see runtimeCapabilities.
@@ -94,10 +100,19 @@ export type ComputerConfig =
  * has Google or Entra or Okta and is not going to acquire another, so the shape here is a set of
  * optional providers rather than one required one, and the deployment turns on whichever it has.
  */
-export type AuthProviderId = "google" | "microsoft" | "okta";
+export type AuthProviderId = "google" | "microsoft" | "okta" | "auth0";
 
 /** An OAuth client, as every provider here needs one. */
 export type OAuthClient = { clientId: string; clientSecret: string };
+
+/** Protected native OIDC registration; user/account enrollment is operator-only. */
+export type ScoutAuth0Config = OAuthClient & {
+  issuer: string;
+  redirectURI: string;
+};
+
+/** Closed, single-resource-tenant Entra registration for owned Scout. */
+export type ScoutEntraConfig = OAuthClient & { tenantId: string };
 
 export type GithubAppConfig = {
   clientId: string;
@@ -125,6 +140,7 @@ export type AuthConfig = {
   microsoft?: OAuthClient & { tenantId: string };
   /** Okta is an OIDC provider rather than a named one, so it is identified by its issuer. */
   okta?: OAuthClient & { issuer: string };
+  auth0?: ScoutAuth0Config;
 };
 
 /**
@@ -142,6 +158,7 @@ export function configuredAuthProviders(
   if (auth.google) providers.push("google");
   if (auth.microsoft) providers.push("microsoft");
   if (auth.okta) providers.push("okta");
+  if (auth.auth0) providers.push("auth0");
   return providers;
 }
 
@@ -177,7 +194,9 @@ export type HandoffCaps = {
   maxPerRun: number;
 };
 
-export type DeploymentConfig = {
+export type DeploymentConfig<
+  Runtime extends RuntimeCapabilities = IntelligenceRuntimeCapabilities,
+> = {
   /** Optional environment default. A saved Admin setting takes precedence. */
   learning?: LearningTarget;
   /**
@@ -312,7 +331,9 @@ export type DeploymentConfig = {
    */
   appUrl: string | undefined;
   tenantPackageDirectory: string;
-  runtime: RuntimeCapabilities;
+  /** Optional protected native-user/requester bindings; verified sign-in is mandatory. */
+  scoutQueueBindingsFile?: string;
+  runtime: Runtime;
   /**
    * How long a Bot's stream may say nothing before this deployment ends the turn, in milliseconds.
    *
@@ -728,7 +749,7 @@ function managedAgentConfig(
 
 function oauthClient(
   environment: Environment,
-  provider: "GOOGLE" | "MICROSOFT" | "OKTA",
+  provider: "GOOGLE" | "MICROSOFT" | "OKTA" | "AUTH0",
 ): OAuthClient | undefined {
   const clientId = optional(environment, `${provider}_OAUTH_CLIENT_ID`);
   const clientSecret = optional(environment, `${provider}_OAUTH_CLIENT_SECRET`);
@@ -809,11 +830,27 @@ function authConfig(
 ): AuthConfig | undefined {
   const microsoft = microsoftAuth(environment);
   const okta = oktaAuth(environment);
+  const auth0 = scoutAuth0Config(environment);
+
+  if (environment.SCOUT_RUNTIME_MODE?.trim() === "owned" && microsoft) {
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        microsoft.tenantId,
+      )
+    )
+      throw new Error(
+        "Owned Scout Entra sign-in requires MICROSOFT_OAUTH_TENANT_ID to be the exact resource-tenant GUID; common, organizations and consumers are not admitted.",
+      );
+    if (google || okta || auth0)
+      throw new Error(
+        "Owned Scout Entra sign-in must be the only configured social provider; remove Google, Okta or Auth0 from this owned identity route.",
+      );
+  }
 
   const secret = optional(environment, "BETTER_AUTH_SECRET");
   const baseUrl = url(environment, "BETTER_AUTH_URL");
 
-  if (!google && !microsoft && !okta) {
+  if (!google && !microsoft && !okta && !auth0) {
     if (secret || baseUrl) {
       throw new Error(
         "BETTER_AUTH_SECRET or BETTER_AUTH_URL is set but no identity provider is. Configure GOOGLE_OAUTH_*, MICROSOFT_OAUTH_* or OKTA_OAUTH_*, or unset both",
@@ -830,6 +867,10 @@ function authConfig(
   if (!baseUrl) {
     throw new Error("Sign-in requires BETTER_AUTH_URL");
   }
+  if (auth0 && new URL(baseUrl).origin !== new URL(auth0.redirectURI).origin)
+    throw new Error(
+      "AUTH0_OAUTH_REDIRECT_URI must share BETTER_AUTH_URL's origin.",
+    );
 
   /*
    * Somebody has to be an administrator, and only this says who.
@@ -927,7 +968,48 @@ function authConfig(
     ...(google ? { google } : {}),
     ...(microsoft ? { microsoft } : {}),
     ...(okta ? { okta } : {}),
+    ...(auth0 ? { auth0 } : {}),
   };
+}
+
+/** The initial Auth0 adapter is qualified only in Scout's explicit owned composition. */
+function scoutAuth0Config(
+  environment: Environment,
+): ScoutAuth0Config | undefined {
+  const client = oauthClient(environment, "AUTH0");
+  const issuer = optional(environment, "AUTH0_OAUTH_ISSUER");
+  const redirectURI = optional(environment, "AUTH0_OAUTH_REDIRECT_URI");
+  if (!client && !issuer && !redirectURI) return undefined;
+  if (environment.SCOUT_RUNTIME_MODE?.trim() !== "owned")
+    throw new Error(
+      "Auth0 sign-in currently requires SCOUT_RUNTIME_MODE=owned.",
+    );
+  if (!client || !issuer || !redirectURI)
+    throw new Error(
+      "Auth0 sign-in requires AUTH0_OAUTH_CLIENT_ID, AUTH0_OAUTH_CLIENT_SECRET, AUTH0_OAUTH_ISSUER and AUTH0_OAUTH_REDIRECT_URI together.",
+    );
+  let authority: URL;
+  let callback: URL;
+  try {
+    authority = new URL(issuer);
+    callback = new URL(redirectURI);
+  } catch {
+    throw new Error("Auth0 issuer and callback must be canonical HTTPS URLs.");
+  }
+  if (
+    authority.protocol !== "https:" ||
+    authority.username ||
+    authority.password ||
+    issuer !== `${authority.origin}/` ||
+    callback.protocol !== "https:" ||
+    callback.username ||
+    callback.password ||
+    redirectURI !== `${callback.origin}/oauth2/callback`
+  )
+    throw new Error(
+      "Auth0 issuer must be a canonical HTTPS origin ending in /; callback must be its application's canonical HTTPS /oauth2/callback URL.",
+    );
+  return { ...client, issuer, redirectURI };
 }
 
 /**
@@ -988,7 +1070,9 @@ function oktaAuth(
  * for a token the platform had stopped handing out. It is still read and still forwarded when a
  * deployment sets one, which is what a self-hosted Intelligence with its own licence needs.
  */
-function runtimeCapabilities(environment: Environment): RuntimeCapabilities {
+function runtimeCapabilities(
+  environment: Environment,
+): IntelligenceRuntimeCapabilities {
   const settings = {
     apiUrl: url(environment, "INTELLIGENCE_API_URL"),
     gatewayWsUrl: url(environment, "INTELLIGENCE_GATEWAY_WS_URL"),
@@ -1358,6 +1442,114 @@ export function loadConfig(
   /** This machine's network interfaces, for {@link listenAddresses}. A test passes its own. */
   interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
 ): DeploymentConfig {
+  return readDeploymentConfig(environment, interfaces, () =>
+    runtimeCapabilities(environment),
+  );
+}
+
+export type AnyDeploymentConfig = DeploymentConfig<RuntimeCapabilities>;
+export type OwnedDeploymentConfig =
+  DeploymentConfig<OwnedRuntimeCapabilities> & {
+    scoutModelPolicyFile?: string;
+    /** Optional protected fixed-source settings for the read-only Odoo context adapter. */
+    scoutOdooContextSourceFile?: string;
+    scoutPlatformOwnerIds: readonly string[];
+    scoutDelegatedDraftsEnabled: boolean;
+  };
+
+/** An explicit public-SDK composition; never supplies fabricated Intelligence credentials. */
+export function loadOwnedConfig(
+  environment: Environment = process.env,
+  interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
+): OwnedDeploymentConfig {
+  if (environment.SCOUT_RUNTIME_MODE?.trim() !== "owned")
+    throw new Error("Owned runtime requires SCOUT_RUNTIME_MODE=owned.");
+  const config = readDeploymentConfig(
+    {
+      ...environment,
+      // These auxiliary providers do not yet pass the owned context/budget port.
+      TRANSCRIPTION_PROVIDER: undefined,
+      TRANSCRIPTION_BASE_URL: undefined,
+      TRANSCRIPTION_MODEL: undefined,
+      TRANSCRIPTION_API_KEY: undefined,
+      VOICE_PROVIDER: undefined,
+      VOICE_MODEL: undefined,
+      VOICE_API_KEY: undefined,
+      VOICE_NAME: undefined,
+    },
+    interfaces,
+    () => ({ mode: "owned", durableHistory: true }) as const,
+  );
+  if (config.singleUser || (!config.auth && !config.organizationAuthUrl))
+    throw new Error(
+      "Owned Scout requires verified organization sign-in; single-user mode is refused.",
+    );
+  if (config.auth?.microsoft && config.organizationAuthUrl)
+    throw new Error(
+      "Owned Scout Entra sign-in must be the only identity route; unset OPENBOT_ORGANIZATION_AUTH_URL.",
+    );
+  if (!config.scoutQueueBindingsFile)
+    throw new Error(
+      "Owned Scout requires SCOUT_QUEUE_BINDINGS_FILE for current tenant/requester policy.",
+    );
+  const scoutModelPolicyFile = optional(environment, "SCOUT_MODEL_POLICY_FILE");
+  if (scoutModelPolicyFile && !isAbsolute(scoutModelPolicyFile))
+    throw new Error(
+      "SCOUT_MODEL_POLICY_FILE must be an absolute protected file path.",
+    );
+  const scoutOdooContextSourceFile = optional(
+    environment,
+    "SCOUT_ODOO_CONTEXT_SOURCE_FILE",
+  );
+  if (scoutOdooContextSourceFile && !isAbsolute(scoutOdooContextSourceFile))
+    throw new Error(
+      "SCOUT_ODOO_CONTEXT_SOURCE_FILE must be an absolute protected file path.",
+    );
+  const scoutPlatformOwnerIds = (
+    optional(environment, "SCOUT_PLATFORM_OWNER_IDS") ?? ""
+  )
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  if (
+    scoutPlatformOwnerIds.length > 100 ||
+    new Set(scoutPlatformOwnerIds).size !== scoutPlatformOwnerIds.length ||
+    scoutPlatformOwnerIds.some(
+      (id) =>
+        id.length > 200 ||
+        Array.from(id).some(
+          (c) => c.charCodeAt(0) <= 32 || c.charCodeAt(0) === 127,
+        ),
+    )
+  )
+    throw new Error(
+      "SCOUT_PLATFORM_OWNER_IDS must contain unique exact native subject IDs.",
+    );
+  const delegatedDrafts = optional(
+    environment,
+    "SCOUT_DELEGATED_DRAFTS_ENABLED",
+  );
+  if (delegatedDrafts && !["true", "false", "1", "0"].includes(delegatedDrafts))
+    throw new Error(
+      "SCOUT_DELEGATED_DRAFTS_ENABLED must be true, false, 1 or 0.",
+    );
+  return {
+    ...config,
+    learningAutoAssign: false,
+    selfHostBanner: false,
+    ...(scoutModelPolicyFile ? { scoutModelPolicyFile } : {}),
+    ...(scoutOdooContextSourceFile ? { scoutOdooContextSourceFile } : {}),
+    scoutPlatformOwnerIds,
+    scoutDelegatedDraftsEnabled:
+      delegatedDrafts === "true" || delegatedDrafts === "1",
+  };
+}
+
+function readDeploymentConfig<Runtime extends RuntimeCapabilities>(
+  environment: Environment,
+  interfaces: ReturnType<typeof networkInterfaces>,
+  resolveRuntime: () => Runtime,
+): DeploymentConfig<Runtime> {
   const google = oauthClient(environment, "GOOGLE");
   const auth = authConfig(environment, google);
   const organizationAuthValue = optional(
@@ -1409,7 +1601,7 @@ export function loadConfig(
     )?.replace(/\/+$/, ""),
     tenantPackageDirectory:
       optional(environment, "TENANT_PACKAGE_DIR") ?? "../examples/openduet",
-    runtime: runtimeCapabilities(environment),
+    runtime: resolveRuntime(),
     learning: learningDefault(environment),
     learningAutoAssign: learningAutoAssignEnabled(environment),
     ...learningSetupCredential(environment),
@@ -1444,8 +1636,20 @@ export function loadConfig(
     ...(workerSharedSecret ? { workerSharedSecret } : {}),
   };
   // After everything above, so its refusals keep the order they were always raised in.
+  const scoutQueueBindingsFile = optional(
+    environment,
+    "SCOUT_QUEUE_BINDINGS_FILE",
+  );
+  if (
+    scoutQueueBindingsFile &&
+    (!isAbsolute(scoutQueueBindingsFile) || loaded.singleUser)
+  )
+    throw new Error(
+      "SCOUT_QUEUE_BINDINGS_FILE requires an absolute path and verified sign-in; single-user mode is refused.",
+    );
   return {
     ...loaded,
+    ...(scoutQueueBindingsFile ? { scoutQueueBindingsFile } : {}),
     listen: listenAddresses(environment, loaded.singleUser, interfaces),
     appOrigins: appOriginsFrom(environment),
   };

@@ -309,13 +309,17 @@ export function createAgentRoutes(
    * the picked harness answering 401 to everything.
    */
   managedRun?: { token: string; endpoints: readonly (string | URL)[] },
+  /** Presentation capabilities of this composition, never endpoint or inference grants. */
+  options: { remoteAvailable?: boolean; ownedNativeBuiltIn?: boolean } = {},
 ) {
   /** The dto with the one fact only this closure knows: whether the coworker runs on our own Bot. */
   const dto = (actor: AgentActor, agent: AgentProfile) => ({
     ...agentDto(actor, agent),
     // A string comparison on purpose: two absent values must not read as "runs on our Bot".
     builtIn:
-      typeof agent.endpoint === "string" && agent.endpoint === managedEndpoint,
+      (options.ownedNativeBuiltIn === true && agent.nativeBuiltIn === true) ||
+      (typeof agent.endpoint === "string" &&
+        agent.endpoint === managedEndpoint),
   });
   const routes = new Hono<{ Variables: AppVariables }>();
 
@@ -401,7 +405,14 @@ export function createAgentRoutes(
    * the parameterised route on purpose, so "capabilities" can never be read as an agent id.
    */
   routes.get("/capabilities", requireUser, (context) =>
-    context.json({ capabilities: { builtInAvailable } }),
+    context.json({
+      capabilities: {
+        builtInAvailable,
+        ...(options.remoteAvailable === undefined
+          ? {}
+          : { remoteAvailable: options.remoteAvailable }),
+      },
+    }),
   );
 
   routes.get("/:agentId", requireUser, async (context) => {

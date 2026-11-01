@@ -1,0 +1,174 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-01T04:59:39.416Z",
+  "branch": "scout/auth0-native-20261101",
+  "base": "8bc81e029a2f1f0f6bf96256a0d33333035e1dc9",
+  "mergedSourceHeadBeforeTestTypeRepair": "535287741b9361be03cc3ebe8e13739085c4725e",
+  "runtime": {
+    "bun": "1.4.3",
+    "betterAuth": "1.7.1",
+    "platform": "Windows",
+    "mode": "owned",
+    "companyLoginTested": false,
+    "sharedAccessEnabled": false
+  },
+  "fixture": {
+    "container": "scout-copilot-model-01a19336",
+    "id": "124bf8031b460569e768300b5a7870e3d6a51901a195d3262b2880a42926cb9a",
+    "image": "pgvector/pgvector@sha256:2547711f871f5d4c02b2dfc7ff86f3eddc438d00a23854cd449513f4ef1af79b",
+    "postgresVersion": "18.6",
+    "loopbackPort": 25434,
+    "memoryMiB": 512,
+    "cpus": 1,
+    "pids": 128,
+    "tmpfsMiB": 512,
+    "fullPlatformMigrationsApplied": true,
+    "migrationsThrough": "0071_scout_tenant_scope",
+    "identityProvider": "Process-owned loopback HTTP discovery/authorization/token/JWKS; synthetic RS256 keys and one-use codes, no network mocks or external issuer requests",
+    "finalStatus": "exited",
+    "exitCode": 0,
+    "oomKilled": false,
+    "boundedWslHelperExited": 0,
+    "cleanupNote": "Initial helper17116 exited0 after stopped readback. Same pinned fixture restarted under bounded helper73927 for final test-type repairs/aggregate, fresh full migrations reapplied, stopped exit0/OOMfalse; helper73927 natural exit0 verified before publication."
+  },
+  "passed": {
+    "nativeOidcFlow": {
+      "tests": 26,
+      "assertions": 682,
+      "includesActualCreateApp": true
+    },
+    "coreConfigurationAndAccountSuites": {
+      "tests": 165,
+      "initialRunAssertionsBeforeBoundedFix": 305,
+      "files": 5
+    },
+    "uiContract": {
+      "tests": 17,
+      "assertions": 21,
+      "files": 2
+    },
+    "overlapNote": "The221-case aggregate predates the stronger absent-Auth0 assertion. All157 configuration cases then passed after that correction, and the unchanged original Linux assertion-shape gate passed10cases. Counts overlap; no post-correction221-case aggregate claimed. Fresh exact-head CI is separate.",
+    "finalMergedTestProjectBaseline": {
+      "existingDiagnostics": 234,
+      "newDiagnostics": 0,
+      "removedDiagnostics": 0,
+      "windowsPathsNormalized": true,
+      "includesProductionServerSource": true
+    },
+    "productionTypechecks": {
+      "server": "Passed before final public-option/profile-projection correction; final test-project check covers current production server source with no new diagnostics",
+      "app": "Passed using ignored generated Scout profile before disjoint PR6 UI merge; PR6 app production types separately passed",
+      "currentExactHeadCi": "Separate PR/readback; not established by this receipt"
+    },
+    "scopedBiomeFiles": 14,
+    "dependencyChanges": false,
+    "schemaChanges": false,
+    "aggregateBeforeAssertionGateRepair": {
+      "tests": 221,
+      "files": 9,
+      "assertions": 1836,
+      "failed": 0,
+      "includesInheritedPilotCapabilitiesCases": 13
+    },
+    "postAssertionGateRepair": {
+      "configuration": {
+        "passed": 157,
+        "files": 3,
+        "assertions": 250
+      },
+      "originalLinuxAssertionShapeGate": {
+        "passed": 10,
+        "files": 1,
+        "assertions": 25
+      },
+      "runtimeCodeChanged": false,
+      "scannerOrAllowlistChanged": false,
+      "scopedBiome": true
+    }
+  },
+  "qualification": {
+    "nativeCodeStateCookiePkceS256Nonce": true,
+    "exactLegacyRedirectAtAuthorizationAndTokenPost": true,
+    "nativeSignatureIssuerAudienceExpiryAndNonceRefusals": true,
+    "missingIdTokenCannotUseUserinfoFallback": true,
+    "freshVerifiedEmailRequiredDespiteLocallyVerifiedUser": true,
+    "freshVerifiedClaimAdmitsPreprovisionedLocalUnverifiedUser": true,
+    "exactIssuerSubjectNativeUserMappingOnly": true,
+    "unknownSameEmailSubjectAndClosedSignupRefused": true,
+    "noImplicitAccountLinkOrDirectSubmittedToken": true,
+    "accountRevocationBeforeCallbackAndBeforeNativeSessionRefused": true,
+    "nativeRevocationAndConsumedCallbackReplayRefused": true,
+    "signedGroupsRolesPreferencesCannotCreateNativeGrants": true,
+    "legacyAliasPreservesNativeQueryCookiesSetCookieAndRedirect": true,
+    "actualOwnedAppAliasAndPublicAuth0Projection": true,
+    "rawEncodedNamespaceAndAliasMethodVariantsRefused": true,
+    "licensedOrNoAuth0LegacyAliasUnchanged": true,
+    "enterpriseOauthPolicyAndNativeOwnerTenantBoundariesRetained": true,
+    "independentSourceReview": "No concrete bypass found in locked hook/state/signature order or renewed profile-refresh correction; review is not live acceptance"
+  },
+  "corrections": [
+    "First app TSC found45 missing ignored generated application-config module diagnostics. Ran existing generator with explicit Scout tenant package and synthetic fixture-model using --no-env-file; app TSC then passed. No tracked dependency/config artifact change.",
+    "Actual native first-login regression initially24pass/1fail: lockedBetterAuth1.7.1 persisted fresh email verification but left its in-memory user stale before its existing verification gate. Owned Auth0 overrideUserInfo:true refreshes only explicitly projected identity/display fields after signed claim+exact account admission. requireEmailVerification and fresh signed email_verified===true remain mandatory; final26flow cases pass including forged signed groups/roles/preferences.",
+    "Final test-project TSC exposed6 new test typing diagnostics. Corrected native hook wrapper to its actual one-argument signature, literal true type and explicit unknown cast for intentionally malformed untrusted state; added no baseline debt. Current234diagnostics exactly match inherited baseline. Final221-case aggregate passed afterward.",
+    "Full CI10380pass/75skip/1failed quality gate caught an optional-chained toBeUndefined fixture. Require native auth explicitly, then assert Auth0 absent. Windows scanner's POSIX-path assumptions caused10local failures; unchanged Linux scanner on Windows-mounted storage hit2existing5s timeouts. Changed execution surface to a native Linux exact-Git snapshot, not the scanner/allowlist/timeout:10pass/25asserts in3.10s. Updated config157pass/250asserts; no runtime change."
+  ],
+  "infrastructure": {
+    "target": "Existing8GB/4vCPU Community Linode; no resize",
+    "hostMutationPerformed": false,
+    "deviceMutationPerformed": false,
+    "providerRegistrationChanged": false,
+    "nativeProvisioningSqlExecuted": false,
+    "ownerEmailAndSubjectVerified": false,
+    "sharedInvitations": false,
+    "physicalPcOff": "Deferred and unarmed"
+  },
+  "limitations": [
+    "Existing Auth0 issuer/callback configuration and public discovery are reuse candidates. Client allowlist/grants/connections/auth method/asymmetric signing/protected secret and exact owner subject remain live prerequisites.",
+    "Real Scout HTTPS/owner login, native tenant/owner/requester provisioning and bounded WI75 host claim remain pending. No Linode installation or live Auth0 session acceptance.",
+    "No real provider key/spend, Odoo business write/delegation or device installation. Conversation data stays infrastructure-owned; external identity hosting and approved OpenRouter context releases remain separate.",
+    "Provider-account removal prevents new mapped login; issued native sessions require separate native revocation/current tenant denial. Auth0 global logout is unqualified.",
+    "Delegated drafts defaultfalse; source provenance, business-record/tool/approval/shared-history/customer adapters and actual MatePad model/executor acceptance remain required before shared access."
+  ],
+  "sourceHashNormalization": "UTF-8 text with CRLF normalized to LF; excludes this receipt; final exact source head recorded in PR and primary checkpoint",
+  "sourceHashes": {
+    "openbot/app/src/components/auth/provider-logo.tsx": "0171833bfa45f1f10c14f727bae2b2e944f3f512940b1b2beac27cfc21fbe839",
+    "openbot/app/src/lib/auth/client.ts": "26f1022be4ed2335c782db703b2520f1b0a0ee93ee9c5d9381794a38c484b468",
+    "openbot/app/src/lib/auth/queries.ts": "c1d725eb4430974136d83fa05ba318afd60eb9d762038086520fdc5e279f35c9",
+    "openbot/app/src/routes/_authed/admin/people.tsx": "907f41bff237567e1c589396041042c17082e8ff02e80bca52e589bbdb8a62ef",
+    "openbot/app/tests/auth-client.test.ts": "5dd7301d1752abe35d6468e2d796ad0229a072be002bc6d7fa3427d02113abaf",
+    "openbot/server/src/app.ts": "013b9cb7c920fa48129e18902fb4ae820ead318e07f625f0c200611a2c703520",
+    "openbot/server/src/auth/index.ts": "a585d989d2f01f4d48510ccd649a379d97e08ac522346c66eef5ece25326fe3f",
+    "openbot/server/src/auth/scout-auth0-callback.ts": "15df38a769339e5fbc059117a5982e8c82c382db13c932c40f1f6ba3dfcd7d15",
+    "openbot/server/src/auth/scout-auth0.ts": "9b6cb3cfda91245382c466c9f057c414353cbd271171f108f5f4291384ef43a6",
+    "openbot/server/src/config.ts": "d51aca521491fbc6396d6c5f72cb250dc4b28352ba336a8f8a3df0f79e455f68",
+    "openbot/server/tests/scout-auth0-accounts.test.ts": "1122ade25a8afc5072865acb258e1f5be42495e1cb6869795a970f8de35609e2",
+    "openbot/server/tests/scout-auth0-config.test.ts": "8169ae24031232c0853f423e5b115cf63d2ca8731d0d3132e063b3e830249a29",
+    "openbot/server/tests/scout-auth0-flow.integration.test.ts": "770d6f007fe21d4dd6b8855c4ca2721bdbccad2add80ac68e675e222e8b41f25",
+    "openbot/server/tests/scout-auth0.test.ts": "dc650d0446a82162d27cb5e7ddbc23cfe2d4e6bb2cebefae2222187d1f9e80d0",
+    "scout/OWNED-AUTH0.md": "b8224d7ddc4f32851b6cd423d3ec8d66f785d1b7c2a48bb34d12b4f17bf67847",
+    "scout/OWNED-RUNTIME.md": "74dd6f198b466c5d5caada504c45c798218c9030be6efacc6a75a8e4b70dd8f3",
+    "scout/PRIVATE-PILOT-DEPLOYMENT.md": "d932e037c03a237d5117f1af9373bdd8bff87990aee197be68cb946d61d62281",
+    "scout/owned.env.example": "5d8aceb9108445c85f54b672cd3ab71d60a002d13848d3bdaad12ead926a4e9b"
+  },
+  "sourceHeadBeforeReceiptCommit": "67ae28006ec700ee4504a21b8f0a7eddde7df031",
+  "previousCi": [
+    {
+      "head": "8198434ff1961b15c1a0a768e7915f2f449fcf97",
+      "run": 41274538864,
+      "testJobConclusion": "failure",
+      "passed": 10380,
+      "skipped": 75,
+      "failed": 1,
+      "assertions": 39671,
+      "files": 843,
+      "reason": "Existing assertion-shape scanner correctly refused optional chaining under toBeUndefined; runtime/auth flow tests passed. Strengthened fixture to require configured Google auth before checking Auth0 absent. No scanner or allowlist exception added."
+    }
+  ],
+  "qualificationToolchains": {
+    "windowsBun": "1.4.3",
+    "linuxBun": "1.4.3",
+    "linuxArchiveSha256": "3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18",
+    "nativeLinuxSnapshotHead": "67ae28006ec700ee4504a21b8f0a7eddde7df031",
+    "nativeLinuxSnapshot": "Git archive of tracked server/tests and app/tests under local Ubuntu /tmp; original unchanged scanner ran with its existing5s timeout"
+  }
+}

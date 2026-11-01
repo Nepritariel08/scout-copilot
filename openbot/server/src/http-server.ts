@@ -8,7 +8,7 @@ import { appOrigins, crossSiteRefusal } from "./auth/same-origin";
 import { websocket as channelSocket } from "./channels/socket";
 import type { ComputerGateway } from "./computer/gateway";
 import { streamPathBotId } from "./computer/stream-path";
-import type { DeploymentConfig } from "./config";
+import type { AnyDeploymentConfig } from "./config";
 import type { DemonstrationRecorder } from "./demonstrations/recording";
 import type { DemonstrationStore } from "./demonstrations/store";
 
@@ -49,7 +49,7 @@ type SocketData = StreamData | ChannelSocket["data"];
  */
 export function startHttpServer(deps: {
   port: number;
-  config: DeploymentConfig;
+  config: AnyDeploymentConfig;
   resolveRequestActor: (
     request: Request,
   ) => Promise<{ id: string; name: string; role: OpenBotRole }>;
@@ -307,7 +307,10 @@ export function startHttpServer(deps: {
       );
       listening.push(listenAddress(host, port));
     } catch (error) {
-      if (required) throw error;
+      if (required) {
+        for (const server of servers) server.stop(true);
+        throw error;
+      }
       console.warn(
         `Not listening on ${listenAddress(host, port)}: ${error instanceof Error ? error.message : String(error)}`,
       );

@@ -42,6 +42,11 @@ export default defineConfig({
     "./src/db/schema/shared-use.ts",
     "./src/db/schema/identity.ts",
     "./src/db/schema/openduet.ts",
+    "./src/db/schema/scout.ts",
+    "./src/db/schema/scout-history.ts",
+    "./src/db/schema/scout-model.ts",
+    "./src/db/schema/scout-record-context.ts",
+    "./src/db/schema/scout-scope.ts",
   ],
   out: "./drizzle",
   dbCredentials: {

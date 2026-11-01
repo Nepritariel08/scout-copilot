@@ -32,7 +32,6 @@ import type { AgentActor, AgentProfile } from "../agents/profile-types";
 import { type AuditStore, recordAuditEvent } from "../audit";
 import type { AppVariables } from "../auth/guards";
 import type { Database } from "../db/client";
-import { parsePageLimit } from "../paging";
 import {
   agentProfiles,
   channelAgents,
@@ -43,15 +42,17 @@ import {
   openduetTasks,
   workItems,
 } from "../db/schema";
+import { parsePageLimit } from "../paging";
+import { replyEnding } from "../proactive/engine";
+import type { TenantPrincipal, TenantScope } from "../scout/owned/scope";
+import { WORK_OFFERED_TOPIC } from "../work/queue";
 import type { ChannelActivityEvent, ChannelEventHub } from "./events";
+import { FIRST_DAY_KIND } from "./first-day";
+import { briefDate, MORNING_BRIEF_KIND } from "./morning-brief";
 import {
   announceChannelActivity,
   MAX_CHANNEL_EVENT_TEXT_BYTES,
 } from "./notifications";
-import { replyEnding } from "../proactive/engine";
-import { WORK_OFFERED_TOPIC } from "../work/queue";
-import { FIRST_DAY_KIND } from "./first-day";
-import { briefDate, MORNING_BRIEF_KIND } from "./morning-brief";
 import { upgradeWebSocket } from "./socket";
 import { oneLine } from "./text";
 import type { ThreadIdentity } from "./thread-identity";
@@ -390,7 +391,63 @@ export function createChannelStore(
   database: Database,
   profileStore: AgentProfileStore,
   threadIdentity: ThreadIdentity,
+  provisionThread?: (
+    transaction: ChannelTransaction,
+    input: {
+      actor: AgentActor;
+      channelId: string;
+      threadId: string;
+      agentIds: string[];
+    },
+  ) => Promise<void>,
+  scope?: TenantScope,
 ): ChannelStore {
+  const principalFor = (actor: AgentActor) => scope?.resolve(actor.id);
+  const current = async (principal: TenantPrincipal | undefined) => {
+    if (scope && principal) await scope.assertCurrent(principal);
+  };
+  const scoped = (
+    principal: TenantPrincipal | undefined,
+    mode: "read" | "write" = "read",
+  ) =>
+    scope && principal
+      ? and(
+          scope.predicate(principal, "channel", channels.id, mode),
+          // A damaged relationship must not expose a foreign agent through an otherwise scoped channel.
+          sql`not exists (select 1 from ${channelAgents} where ${channelAgents.channelId} = ${channels.id} and not (${scope.predicate(principal, "agent", channelAgents.agentId)}))`,
+        )
+      : undefined;
+
+  /** A group removal must finish either before this check or after the entire write commits. */
+  async function lockMembership(
+    transaction: ChannelTransaction,
+    actor: AgentActor,
+    channelId: string,
+  ) {
+    const [membership] = await transaction
+      .select({ channelId: channelMemberships.channelId })
+      .from(channelMemberships)
+      .where(
+        and(
+          eq(channelMemberships.channelId, channelId),
+          eq(channelMemberships.userId, actor.id),
+        ),
+      )
+      .for("share");
+    if (!membership) throw new ChannelNotFoundError(channelId);
+  }
+  const membershipFor = (transaction: ChannelTransaction, actor: AgentActor) =>
+    exists(
+      transaction
+        .select({ one: sql`1` })
+        .from(channelMemberships)
+        .where(
+          and(
+            eq(channelMemberships.channelId, channels.id),
+            eq(channelMemberships.userId, actor.id),
+          ),
+        ),
+    );
   /**
    * Making a channel, on a transaction the caller already holds.
    *
@@ -404,7 +461,9 @@ export function createChannelStore(
     transaction: ChannelTransaction,
     actor: AgentActor,
     agentIds: string[],
+    selectedPrincipal?: TenantPrincipal,
   ): Promise<AgentChannel> => {
+    const principal = selectedPrincipal ?? (await principalFor(actor));
     // Validated on this transaction, not through `profileStore.get`: the read has to share
     // the connection this transaction already holds, and has to hold the profile so an agent
     // cannot be deleted between passing the check and being linked to the new channel.
@@ -413,6 +472,18 @@ export function createChannelStore(
     // opposite orders would otherwise be able to deadlock against each other.
     const profilesById = new Map<string, AgentProfile>();
     for (const agentId of [...agentIds].sort()) {
+      if (scope && principal) {
+        const [visible] = await transaction
+          .select({ id: agentProfiles.agentId })
+          .from(agentProfiles)
+          .where(
+            and(
+              eq(agentProfiles.agentId, agentId),
+              scope.predicate(principal, "agent", agentProfiles.agentId),
+            ),
+          );
+        if (!visible) throw new AgentNotFoundError(agentId);
+      }
       const profile = await profileStore.getWithin(transaction, actor, agentId);
       if (!profile) throw new AgentNotFoundError(agentId);
       profilesById.set(agentId, profile);
@@ -449,10 +520,28 @@ export function createChannelStore(
       threadId,
     });
 
+    // Owned mode persists the same server-minted thread on this transaction, before it is visible.
+    await provisionThread?.(transaction, {
+      actor,
+      channelId: id,
+      threadId,
+      agentIds,
+    });
+    if (scope && principal)
+      await scope.stamp(transaction, principal, "channel", id);
+    await current(principal);
+
     return { id, name, agentIds, threadId, active: true, lastMessageAt: null };
   };
 
-  async function announceBusy(channelId: string, busy: boolean, runId: string) {
+  async function announceBusy(
+    channelId: string,
+    busy: boolean,
+    runId: string,
+    actor?: AgentActor,
+  ) {
+    const principal = actor ? await principalFor(actor) : undefined;
+    if (scope && !principal) throw new ChannelNotFoundError(channelId);
     await database.transaction(async (transaction) => {
       // Row locking orders the claim mutation and its notification across all replicas.
       const [row] = await transaction
@@ -461,7 +550,26 @@ export function createChannelStore(
           now: BUSY_NOW,
         })
         .from(channels)
-        .where(eq(channels.id, channelId))
+        .where(
+          and(
+            eq(channels.id, channelId),
+            isNull(channels.deletedAt),
+            scoped(principal, "write"),
+            actor
+              ? exists(
+                  transaction
+                    .select({ one: sql`1` })
+                    .from(channelMemberships)
+                    .where(
+                      and(
+                        eq(channelMemberships.channelId, channels.id),
+                        eq(channelMemberships.userId, actor.id),
+                      ),
+                    ),
+                )
+              : undefined,
+          ),
+        )
         .for("update");
       if (!row) return;
       const at = row.now;
@@ -472,6 +580,7 @@ export function createChannelStore(
       if (busy) claims = { ...claims, [runId]: at + 15 * 60_000 };
       else delete claims[runId];
       await writeBusyClaims(transaction, channelId, claims);
+      await current(principal);
     });
   }
 
@@ -485,6 +594,7 @@ export function createChannelStore(
     },
 
     async direct(actor, agentId) {
+      const principal = await principalFor(actor);
       const found = await database.transaction(
         async (transaction) => {
           /*
@@ -529,6 +639,7 @@ export function createChannelStore(
             .where(
               and(
                 isNull(channels.deletedAt),
+                scoped(principal),
                 sql`(select count(*) from ${channelAgents} where ${channelAgents.channelId} = ${channels.id}) = 1`,
                 /*
                  * Not a task's. A task works in a conversation of its own with the same Bot, and it
@@ -544,9 +655,10 @@ export function createChannelStore(
             .orderBy(...ROSTER_ORDER)
             .limit(1);
 
+          await current(principal);
           return existing
             ? existing.id
-            : await makeChannel(transaction, actor, [agentId]);
+            : await makeChannel(transaction, actor, [agentId], principal);
         },
         { isolationLevel: "read committed" },
       );
@@ -559,8 +671,10 @@ export function createChannelStore(
     },
 
     async firstDay(actor, agentId, greeting, date) {
+      const principal = await principalFor(actor);
       const channel = await store.direct(actor, agentId);
       const claimed = await database.transaction(async (transaction) => {
+        await lockMembership(transaction, actor, channel.id);
         const [claim] = await transaction
           .update(channels)
           .set({
@@ -572,6 +686,8 @@ export function createChannelStore(
           .where(
             and(
               eq(channels.id, channel.id),
+              scoped(principal, "write"),
+              membershipFor(transaction, actor),
               isNull(channels.deletedAt),
               isNull(channels.firstDayStartedAt),
               isNull(channels.lastMessageAt),
@@ -596,6 +712,7 @@ export function createChannelStore(
             sql`select pg_notify(${WORK_OFFERED_TOPIC}, ${FIRST_DAY_KIND})`,
           );
         }
+        await current(principal);
         return Boolean(claim);
       });
       // Deletion may commit after direct() returns. Claim only a live row, then reselect
@@ -607,10 +724,12 @@ export function createChannelStore(
     },
 
     async morningBrief(actor, agentId, date, brief) {
+      const principal = await principalFor(actor);
       // The same conversation the first day greets into and a hop answers in: the person's one
       // conversation with this Bot alone, which is the one Chat shows.
       const channel = await store.direct(actor, agentId);
       const claimed = await database.transaction(async (transaction) => {
+        await lockMembership(transaction, actor, channel.id);
         /*
          * ONE ROW UPDATE IS THE WHOLE CLAIM. Two tabs, or a phone and a laptop, opening Chat in the
          * same second both get here. PostgreSQL makes the second update wait on the first one's row
@@ -629,6 +748,8 @@ export function createChannelStore(
           .where(
             and(
               eq(channels.id, channel.id),
+              scoped(principal, "write"),
+              membershipFor(transaction, actor),
               isNull(channels.deletedAt),
               /*
                * Nothing said here yet means the first day has not happened, or is happening now:
@@ -674,6 +795,7 @@ export function createChannelStore(
             sql`select pg_notify(${WORK_OFFERED_TOPIC}, ${MORNING_BRIEF_KIND})`,
           );
         }
+        await current(principal);
         return Boolean(claim);
       });
       // As `firstDay`: a conversation deleted after `direct` chose it is chosen again.
@@ -684,6 +806,7 @@ export function createChannelStore(
     },
 
     async get(actor, channelId) {
+      const principal = await principalFor(actor);
       const rows = await database
         .select({
           id: channels.id,
@@ -713,10 +836,17 @@ export function createChannelStore(
           agentProfiles,
           eq(agentProfiles.agentId, channelAgents.agentId),
         )
-        .where(and(eq(channels.id, channelId), isNull(channels.deletedAt)))
+        .where(
+          and(
+            eq(channels.id, channelId),
+            isNull(channels.deletedAt),
+            scoped(principal),
+          ),
+        )
         .orderBy(asc(channelAgents.agentId));
 
       const first = rows[0];
+      await current(principal);
       if (!first) return null;
 
       return {
@@ -730,6 +860,7 @@ export function createChannelStore(
     },
 
     async list(actor, query = {}) {
+      const principal = await principalFor(actor);
       const limit = Math.min(
         Math.max(query.limit ?? DEFAULT_CHANNEL_PAGE, 1),
         MAX_CHANNEL_PAGE,
@@ -766,6 +897,7 @@ export function createChannelStore(
         .where(
           and(
             isNull(channels.deletedAt),
+            scoped(principal),
             // One row comparison over the whole sort key, which only reads as "everything after the
             // cursor" because every part of that key descends. See ROSTER_ORDER.
             cursor
@@ -788,7 +920,10 @@ export function createChannelStore(
             })
           : null;
 
-      if (wanted.length === 0) return { channels: [], nextCursor: null };
+      if (wanted.length === 0) {
+        await current(principal);
+        return { channels: [], nextCursor: null };
+      }
 
       const rows = await database
         .select({
@@ -838,6 +973,7 @@ export function createChannelStore(
             // on two snapshots, so a delete that commits between them would otherwise hand back a
             // channel this person can no longer see.
             isNull(channels.deletedAt),
+            scoped(principal),
           ),
         )
         // The same order the page was chosen in, since the rows below are read in order.
@@ -871,10 +1007,12 @@ export function createChannelStore(
           openduetChannel: row.openduetChannel,
         });
       }
+      await current(principal);
       return { channels: [...summaries.values()], nextCursor };
     },
 
     async setPinned(actor, channelId, pinned) {
+      const principal = await principalFor(actor);
       await database.transaction(
         async (transaction) => {
           const updated = await transaction
@@ -895,6 +1033,7 @@ export function createChannelStore(
                       and(
                         eq(channels.id, channelId),
                         isNull(channels.deletedAt),
+                        scoped(principal, "write"),
                       ),
                     ),
                 ),
@@ -921,45 +1060,55 @@ export function createChannelStore(
             pinned,
           };
           await announceChannelActivity(transaction, event);
+          await current(principal);
         },
         { isolationLevel: "read committed" },
       );
     },
 
     async markRead(actor, channelId) {
-      const updated = await database
-        .update(channelMemberships)
-        .set({
-          /*
-           * The later of this clock and the channel's own last-message stamp. last_message_at is
-           * written from the reporting browser's clock and is not bounded; a marker stamped
-           * plainly "now" by a server running behind it would leave the row reading as unseen for
-           * every member, re-lighting the dot on each refetch until wall clock catches up.
-           */
-          lastReadAt: sql`greatest(now(), coalesce((select ${channels.lastMessageAt} from ${channels} where ${channels.id} = ${channelMemberships.channelId}), now()))`,
-        })
-        .where(
-          and(
-            eq(channelMemberships.channelId, channelId),
-            eq(channelMemberships.userId, actor.id),
-            // A deleted channel is not there to read. The same guard `setPinned` carries, for the
-            // same reason: the row is gone from every roster, so nothing about it is markable.
-            exists(
-              database
-                .select({ one: sql`1` })
-                .from(channels)
-                .where(
-                  and(eq(channels.id, channelId), isNull(channels.deletedAt)),
-                ),
+      const principal = await principalFor(actor);
+      await database.transaction(async (transaction) => {
+        const updated = await transaction
+          .update(channelMemberships)
+          .set({
+            /*
+             * The later of this clock and the channel's own last-message stamp. last_message_at is
+             * written from the reporting browser's clock and is not bounded; a marker stamped
+             * plainly "now" by a server running behind it would leave the row reading as unseen for
+             * every member, re-lighting the dot on each refetch until wall clock catches up.
+             */
+            lastReadAt: sql`greatest(now(), coalesce((select ${channels.lastMessageAt} from ${channels} where ${channels.id} = ${channelMemberships.channelId}), now()))`,
+          })
+          .where(
+            and(
+              eq(channelMemberships.channelId, channelId),
+              eq(channelMemberships.userId, actor.id),
+              // A deleted channel is not there to read. The same guard `setPinned` carries, for the
+              // same reason: the row is gone from every roster, so nothing about it is markable.
+              exists(
+                transaction
+                  .select({ one: sql`1` })
+                  .from(channels)
+                  .where(
+                    and(
+                      eq(channels.id, channelId),
+                      isNull(channels.deletedAt),
+                      scoped(principal, "write"),
+                    ),
+                  ),
+              ),
             ),
-          ),
-        )
-        .returning({ channelId: channelMemberships.channelId });
-      // Not a member, or no such channel: the same answer either way, matching setPinned.
-      if (updated.length === 0) throw new ChannelNotFoundError(channelId);
+          )
+          .returning({ channelId: channelMemberships.channelId });
+        // Not a member, or no such channel: the same answer either way, matching setPinned.
+        if (updated.length === 0) throw new ChannelNotFoundError(channelId);
+        await current(principal);
+      });
     },
 
     async softDelete(actor, channelId) {
+      const principal = await principalFor(actor);
       return await database.transaction(
         async (transaction) => {
           const [row] = await transaction
@@ -972,25 +1121,36 @@ export function createChannelStore(
                 eq(channelMemberships.userId, actor.id),
               ),
             )
-            .where(eq(channels.id, channelId));
+            .where(and(eq(channels.id, channelId), scoped(principal, "write")));
           // Not a member, or no such channel: the same answer either way.
           if (!row) throw new ChannelNotFoundError(channelId);
           // Package channels are configuration; the sync that wrote them owns them.
           if (row.packageId !== null) {
             throw new ChannelPackageOwnedError(channelId);
           }
+          await lockMembership(transaction, actor, channelId);
           // The guard on deletedAt is what makes a repeat call a no-op rather than a new stamp.
           const stamped = await transaction
             .update(channels)
             .set({ deletedAt: new Date(), updatedAt: new Date() })
-            .where(and(eq(channels.id, channelId), isNull(channels.deletedAt)))
+            .where(
+              and(
+                eq(channels.id, channelId),
+                isNull(channels.deletedAt),
+                scoped(principal, "write"),
+                membershipFor(transaction, actor),
+              ),
+            )
             .returning({ id: channels.id });
           /*
            * And the rest of the no-op: a repeat changed nothing, so nothing is announced. Without
            * this, every repeat told every member again, and the route wrote another
            * `channel.deleted` row to an append-only trail for a deletion that had not happened.
            */
-          if (stamped.length === 0) return false;
+          if (stamped.length === 0) {
+            await current(principal);
+            return false;
+          }
 
           // Read on this transaction, so the members told are the ones the channel had when it was
           // hidden. Soft leaves the membership rows in place, so this reads the same list a repeat
@@ -1017,13 +1177,15 @@ export function createChannelStore(
             deleted: true,
           };
           await announceChannelActivity(transaction, event);
+          await current(principal);
           return true;
         },
         { isolationLevel: "read committed" },
       );
     },
 
-    recordActivity(actor, channelId, activity, source) {
+    async recordActivity(actor, channelId, activity, source) {
+      const principal = await principalFor(actor);
       return database.transaction(
         async (transaction) => {
           const [membership] = await transaction
@@ -1044,11 +1206,13 @@ export function createChannelStore(
               and(
                 eq(channelMemberships.channelId, channelId),
                 eq(channelMemberships.userId, actor.id),
+                scoped(principal, "write"),
               ),
             );
           // Not a member, no such channel, or a deleted one: the same answer every way, so belonging
           // to a channel is not something an outsider can probe for.
           if (!membership) throw new ChannelNotFoundError(channelId);
+          await lockMembership(transaction, actor, channelId);
 
           if (activity.agentId !== null) {
             const [linked] = await transaction
@@ -1082,6 +1246,9 @@ export function createChannelStore(
             .where(
               and(
                 eq(channels.id, channelId),
+                scoped(principal, "write"),
+                membershipFor(transaction, actor),
+                isNull(channels.deletedAt),
                 or(
                   isNull(channels.lastMessageAt),
                   lt(channels.lastMessageAt, activity.at),
@@ -1101,7 +1268,10 @@ export function createChannelStore(
             )
             .returning({ id: channels.id });
           // Nothing changed, so there is nothing to announce: a stale report is not news.
-          if (applied.length === 0) return;
+          if (applied.length === 0) {
+            await current(principal);
+            return;
+          }
 
           const members = await transaction
             .select({ userId: channelMemberships.userId })
@@ -1119,6 +1289,7 @@ export function createChannelStore(
             lastMessageAgentId: activity.agentId,
           };
           await announceChannelActivity(transaction, event);
+          await current(principal);
         },
         { isolationLevel: "read committed" },
       );
@@ -1126,11 +1297,18 @@ export function createChannelStore(
 
     async signalBusy(threadId, busy, runId = "server") {
       const [mapped] = await database
-        .select({ channelId: intelligenceChannelMappings.channelId })
+        .select({
+          channelId: intelligenceChannelMappings.channelId,
+          userId: intelligenceChannelMappings.userId,
+        })
         .from(intelligenceChannelMappings)
         .where(eq(intelligenceChannelMappings.threadId, threadId))
         .limit(1);
-      if (mapped) await announceBusy(mapped.channelId, busy, runId);
+      if (mapped)
+        await announceBusy(mapped.channelId, busy, runId, {
+          id: mapped.userId,
+          role: "user",
+        });
     },
 
     async signalChannelBusy(
@@ -1141,7 +1319,7 @@ export function createChannelStore(
     ) {
       const channel = await store.get(actor, channelId);
       if (!channel) throw new ChannelNotFoundError(channelId);
-      await announceBusy(channelId, busy, runId);
+      await announceBusy(channelId, busy, runId, actor);
     },
   };
   return store;
@@ -1284,6 +1462,7 @@ export function createChannelRoutes(
   startFirstDay?: () => void,
   /** Runs a morning brief this replica just queued now, rather than at the next sweep. */
   startMorningBrief?: () => void,
+  automaticTurns = true,
 ) {
   const routes = new Hono<{ Variables: AppVariables }>();
 
@@ -1347,7 +1526,11 @@ export function createChannelRoutes(
         let detach = () => {};
         return {
           onOpen: (_event, ws) => {
-            detach = events.register(userId, (payload) => ws.send(payload));
+            detach = events.register(
+              userId,
+              (payload) => ws.send(payload),
+              context.req.raw,
+            );
           },
           onClose: () => detach(),
           onError: () => detach(),
@@ -1409,6 +1592,25 @@ export function createChannelRoutes(
     const which = firstDayChoice(body.greeting);
     if (which === null)
       return context.json({ error: "A first-day greeting is required." }, 400);
+    if (!automaticTurns) {
+      if (which !== undefined)
+        return context.json(
+          { error: "Automatic greetings are unavailable in this deployment." },
+          409,
+        );
+      try {
+        return context.json({
+          start: {
+            channel: channelDto(
+              await store.direct(context.var.actor, body.agentId),
+            ),
+            claimed: false,
+          },
+        });
+      } catch (error) {
+        return mapStoreError(context, error);
+      }
+    }
     /*
      * The person's local date, which the first day takes as its brief, within a day of the server's
      * as the brief's own date is (`briefDate`). A date further out is a wrong clock, and taken it
@@ -1448,6 +1650,11 @@ export function createChannelRoutes(
    * browser to do, because the server runs the turn and the conversation picks up the reply.
    */
   routes.post("/morning-brief", requireUser, async (context) => {
+    if (!automaticTurns)
+      return context.json(
+        { error: "Automatic briefs are unavailable in this deployment." },
+        409,
+      );
     const body = await context.req.json().catch(() => null);
     if (typeof body?.agentId !== "string" || !body.agentId.trim())
       return context.json({ error: "A Bot is required." }, 400);

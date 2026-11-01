@@ -76,15 +76,27 @@ export const agentKeys = {
 export type AgentCapabilities = {
   /** Whether a coworker can run on the deployment's own Bot, with no endpoint of its own. */
   builtInAvailable: boolean;
+  /** Whether this composition offers connecting an externally hosted coworker. */
+  remoteAvailable: boolean;
 };
 
 export function agentCapabilitiesQueryOptions() {
   return queryOptions({
     queryKey: agentKeys.capabilities(),
-    queryFn: (): Promise<AgentCapabilities> =>
-      client("/api/agents/capabilities", "capabilities", {
+    queryFn: async (): Promise<AgentCapabilities> => {
+      const capabilities = await client<
+        Omit<AgentCapabilities, "remoteAvailable"> & {
+          remoteAvailable?: boolean;
+        }
+      >("/api/agents/capabilities", "capabilities", {
         fallback: "Could not load what this deployment supports",
-      }),
+      });
+      return {
+        ...capabilities,
+        // The unchanged licensed server predates this field and offers remote coworkers.
+        remoteAvailable: capabilities.remoteAvailable !== false,
+      };
+    },
     // Deployment configuration, not data: it cannot change without the server restarting.
     staleTime: Number.POSITIVE_INFINITY,
   });

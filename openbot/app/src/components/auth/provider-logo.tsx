@@ -1,3 +1,4 @@
+import { IconShieldCheck } from "@tabler/icons-react";
 import type { AuthProviderId } from "@/lib/auth/queries";
 
 /**
@@ -19,6 +20,8 @@ import type { AuthProviderId } from "@/lib/auth/queries";
 export function ProviderLogo({ provider }: { provider: AuthProviderId }) {
   if (provider === "google") return <GoogleMark />;
   if (provider === "microsoft") return <MicrosoftMark />;
+  if (provider === "auth0")
+    return <IconShieldCheck aria-hidden="true" className="size-[18px]" />;
   return <OktaMark />;
 }
 

@@ -148,6 +148,12 @@ export const accounts = pgTable(
     updatedAt: updatedAt(),
   },
   (table) => [
+    uniqueIndex("accounts_issuer_account_idx").on(
+      table.issuer,
+      table.accountId,
+    ),
+    // Keep the pre-issuer key through mixed-version deploys: old replicas omit issuer,
+    // and PostgreSQL's NULL uniqueness semantics would otherwise admit duplicate accounts.
     uniqueIndex("accounts_provider_account_idx").on(
       table.providerId,
       table.accountId,

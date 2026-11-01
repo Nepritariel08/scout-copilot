@@ -9,6 +9,9 @@ import { client } from "@/lib/client";
  * deployment secret stay on the server. See server/src/app.ts.
  */
 export type DeploymentCapabilities = {
+  mode?: "owned" | "intelligence";
+  serverTurns?: boolean;
+  delegatedDrafts?: boolean;
   /**
    * Whether a Bot may answer with an interface it wrote itself.
    *
@@ -65,6 +68,9 @@ export function deploymentCapabilitiesQueryOptions() {
           fallback: "This deployment's capabilities could not be loaded.",
         })
       ).json()) as {
+        mode?: string;
+        serverTurns?: boolean;
+        delegatedDrafts?: boolean;
         generativeUi?: boolean;
         selfHostBanner?: boolean;
         localEvaluation?: boolean;
@@ -73,6 +79,17 @@ export function deploymentCapabilitiesQueryOptions() {
       };
 
       return {
+        mode:
+          body.mode === "owned"
+            ? "owned"
+            : body.mode === "intelligence"
+              ? "intelligence"
+              : undefined,
+        serverTurns: body.serverTurns !== false,
+        delegatedDrafts:
+          body.mode === "owned"
+            ? body.delegatedDrafts === true
+            : body.delegatedDrafts !== false,
         generativeUi: body.generativeUi === true,
         selfHostBanner: body.selfHostBanner === true,
         localEvaluation: body.localEvaluation === true,
