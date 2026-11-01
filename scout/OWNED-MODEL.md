@@ -243,21 +243,37 @@ those pieces with the fixed JSON-2 reader when
 only `version`, `sourceInstanceId`, `baseUrl`, and `database`. The file rejects
 credentials, user IDs, project/company scope, URL paths and non-HTTPS remote
 origins. Per-user keys resolve only through the opaque grant reference and the
-encrypted vault row bound to the exact source instance and Odoo UID.
+encrypted vault row bound to the exact deployment, tenant, native user,
+identity-binding fingerprint, source instance, and Odoo UID. Credential metadata
+is checked against that same complete scope before decrypting. Reissuing the same
+Odoo UID in another tenant therefore creates a different vault key and cannot
+rotate or revoke the other tenant's credential.
 This file-backed source adapter is supported only on Linux and refuses to load
 elsewhere. Runtime checks for Windows ACLs and ancestor directories are not
 implemented, so protect the full path as described above. The source file
 selects the endpoint that receives Odoo credentials; do not enable this adapter
 on Windows or macOS.
 
-The grant store remains read-only: this change adds no grant issuance or
-revocation endpoint. Until an audited provisioning path exists and verified
-active grants are issued, selected-record context remains denied. The source
-configuration alone does not create or authorize a user, project, or provider
-release grant. The persistence integration tests previously applied the
-migrations and passed in CI run 41292114270 at commit
-`35f85726e88abfcc17d0d7d20804e7fa470ed4f6`; the new composition regression
-uses a synthetic database and mock Odoo transport, not a live service.
+The owned runtime now exposes authenticated, self-service grant controls:
+`POST /api/scout/odoo/context-grants` verifies a submitted key belongs to the
+server-bound nonadmin UID and stores it encrypted; `GET` returns only scoped
+grant/provider status; `POST /release` records explicit consent for the current
+server-selected provider and model-policy fingerprint; `DELETE /release`
+withdraws that consent; and `DELETE /context-grants` revokes the exact
+deployment/tenant/user/binding grant and local credential. The browser sends the
+key in one request and does not put it in query, React Query data, local storage,
+or session storage. Revoking in Scout does not revoke the upstream key in Odoo.
+Status verifies the scoped vault row is still live, but remains a server
+readback, not proof of current Odoo ACL or network availability. A browser may
+select only one numeric `project.task` ID for its next chat draft; queued drafts
+carry that selector only in tab memory, and the server rechecks grants, model
+consent, binding and Odoo visibility before each read. The persistence tests use
+synthetic data and mock Odoo transport, not a live service.
+
+These controls apply only to a staff member's own pre-bound internal Odoo
+identity. They do not enable customer access, shared customer conversations,
+general Odoo search, or arbitrary business actions. The source configuration
+alone does not create or authorize a user, project, or provider-release grant.
 
 Qualification remains a hard live gate. The stored `verified_nonadmin`
 attestation is provisioning evidence, not a live authorization decision. On

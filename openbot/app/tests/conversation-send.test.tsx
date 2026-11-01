@@ -73,6 +73,7 @@ function mount(
     pending?: boolean;
     queueWhileBusy?: boolean;
     disabled?: boolean;
+    prepareDraft?: (draft: ComposerDraft) => ComposerDraft;
   } = {},
 ) {
   const sent: ComposerDraft[] = [];
@@ -90,6 +91,7 @@ function mount(
           disabled={next.disabled ?? false}
           lead={<Probe into={into} />}
           messages={next.messages ?? ASKED}
+          prepareDraft={next.prepareDraft}
           onSubmit={(draft) => {
             sent.push(draft);
           }}
@@ -114,6 +116,29 @@ function mount(
     rerender: (next: typeof props) => view.rerender(tree(next)),
   };
 }
+
+test("a one-shot Odoo task selector stays with a queued draft until it runs", async () => {
+  const prepareDraft = (draft: ComposerDraft) => ({
+    ...draft,
+    odooTaskId: "77",
+  });
+  const chat = mount({
+    pending: true,
+    queueWhileBusy: true,
+    prepareDraft,
+  });
+  expect(chat.send("Check this task")).toBe(true);
+  await chat.view.findByText("Uses Odoo project task #77");
+  expect(chat.sent).toHaveLength(0);
+
+  chat.rerender({
+    pending: false,
+    queueWhileBusy: true,
+    prepareDraft,
+  });
+  await waitFor(() => expect(chat.sent[0]?.odooTaskId).toBe("77"));
+  expect(chat.sent[0]?.text).toBe("Check this task");
+});
 
 describe("the latest turn", () => {
   test("is the tool calls since the person last spoke", () => {

@@ -100,8 +100,14 @@ Before Scout startup or activation, the deployment record must additionally supp
 - The reviewed release SHA and Linux artifact, final migration journal and CI.
   This document's preparation branch is not itself an approved release.
 - The exact HTTPS private origin, DNS/TLS custody and ingress restriction to
-  the owner. `scout-pilot.example.invalid` below is deliberately unusable.
-  No DNS, certificate or public distribution is implied.
+  the owner. `scout.somethingsomewhere.ph` has prior Scout Console routing
+  history on this shared Linode; current HTTP redirects to HTTPS, but an
+  external Node/OpenSSL probe receives a fatal TLS `internal_error` alert and
+  the active certificate/application route could not be verified. Do not reuse
+  or cut it over for OpenDuet until its host owner verifies and releases the
+  current route. A separate subdomain needs its own DNS/TLS and ingress
+  readback. `scout-pilot.example.invalid` below is deliberately unusable. No
+  DNS, certificate or public distribution is implied.
 - The selected closed [owned Microsoft Entra adapter](OWNED-ENTRA.md), with
   exact resource tenant, application registration, preprovisioned identity and
   verified callback; or

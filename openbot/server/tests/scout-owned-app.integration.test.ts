@@ -313,6 +313,40 @@ describe("owned composition through the actual Scout app", () => {
     active = false;
     expect((await request("/api/agents")).status).toBe(403);
   });
+  test("Odoo context endpoints fail closed while the source and model route are unconfigured", async () => {
+    const secret = "synthetic-api-key-must-not-be-echoed";
+    const write = await request("/api/scout/odoo/context-grants", {
+      apiKey: secret,
+    });
+    expect(write.status).toBe(503);
+    const writeBody = await write.text();
+    expect(writeBody).toContain("MODEL_NOT_CONFIGURED");
+    expect(writeBody).not.toContain(secret);
+
+    const status = await request(
+      `/api/scout/odoo/context-grants?agentId=${encodeURIComponent(agentId)}`,
+    );
+    expect(status.status).toBe(503);
+    expect(await status.json()).toEqual({ code: "MODEL_NOT_CONFIGURED" });
+
+    for (const method of ["POST", "DELETE"] as const) {
+      const response = await owned.app.request(
+        "/api/scout/odoo/context-grants/release",
+        {
+          method,
+          headers: {
+            "content-type": "application/json",
+            "x-synthetic-session": alice,
+          },
+          body: JSON.stringify({ agentId, consent: true }),
+        },
+      );
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({
+        code: "MODEL_NOT_CONFIGURED",
+      });
+    }
+  });
   test("direct chat server mint persists native ownership and rejects injected identity", async () => {
     expect(
       (await request("/api/threads/mint", { agentId, userId: bob })).status,

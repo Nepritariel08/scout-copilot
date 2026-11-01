@@ -62,8 +62,10 @@ const header = [
 const DIAGNOSTIC = /^(\S[^(]*)\((\d+),\d+\): error (TS\d+): (.*)$/;
 
 function runTsc(): string {
+  // Bun's Windows spawn resolver requires the executable suffix; shell PATH lookup accepts both.
+  const bunx = process.platform === "win32" ? "bunx.exe" : "bunx";
   const result = Bun.spawnSync({
-    cmd: ["bunx", "tsc", "--noEmit", "--pretty", "false", "-p", project],
+    cmd: [bunx, "tsc", "--noEmit", "--pretty", "false", "-p", project],
     cwd: repoRoot,
     // The suite outgrew Node's default heap on GitHub's runners: tsc died with "heap out of
     // memory" on most pull requests, which reads as a type error nobody made.

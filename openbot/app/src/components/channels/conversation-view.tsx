@@ -56,6 +56,7 @@ export function ConversationView({
   queueWhileBusy = false,
   restoring = false,
   onSubmit,
+  prepareDraft,
   onStop,
   voiceCall,
   inShell = false,
@@ -123,6 +124,8 @@ export function ConversationView({
   /** History has been asked for and has not arrived. Drawn as placeholder rows; see `ChatTranscript`. */
   restoring?: boolean;
   onSubmit: (draft: ComposerDraft) => void | Promise<void>;
+  /** Adds tab-local one-shot context before a draft is run or parked in the queue. */
+  prepareDraft?: (draft: ComposerDraft) => ComposerDraft;
   /** Stop the Bot mid-answer; forwarded to turn the send button into a stop button. */
   onStop?: () => void;
   voiceCall?: { active: boolean; supported: boolean; onStart(): void };
@@ -382,9 +385,10 @@ export function ConversationView({
    */
   const submit = useCallback(
     (draft: ComposerDraft, whileBusy: boolean) => {
+      const preparedDraft = prepareDraft ? prepareDraft(draft) : draft;
       const next = apply({
         busy: whileBusy,
-        draft,
+        draft: preparedDraft,
         id: newId(),
         type: "submit",
       });
@@ -430,7 +434,7 @@ export function ConversationView({
       }
       return started;
     },
-    [apply, restoreFailedRun],
+    [apply, prepareDraft, restoreFailedRun],
   );
 
   /**

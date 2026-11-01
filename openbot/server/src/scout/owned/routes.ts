@@ -26,6 +26,9 @@ const releaseConsentInput = z.strictObject({
   agentId: z.string().trim().min(1).max(200),
   consent: z.literal(true),
 });
+const releaseRevokeInput = z.strictObject({
+  agentId: z.string().trim().min(1).max(200),
+});
 
 type OwnedOdooGrants = {
   source: { sourceInstanceId: string; baseUrl: string; database: string };
@@ -47,6 +50,16 @@ type OwnedOdooGrants = {
     provider: ProjectTaskContextProvider;
     modelPolicyFingerprint: string;
   }): Promise<unknown>;
+  revokeRelease(input: {
+    principal: ProjectTaskContextPrincipal;
+    provider: ProjectTaskContextProvider;
+    modelPolicyFingerprint: string;
+  }): Promise<unknown>;
+  status(
+    principal: ProjectTaskContextPrincipal,
+    provider: ProjectTaskContextProvider,
+    modelPolicyFingerprint: string,
+  ): Promise<unknown>;
   revokeAll(principal: ProjectTaskContextPrincipal): Promise<unknown>;
   readModelPolicy?(input: {
     userId: string;
@@ -241,6 +254,91 @@ export function createOwnedRuntimeRoutes(deps: {
       return context.json({ code: "SCOUT_ACCESS_DENIED" }, 403);
     return context.json(
       await deps.odooGrants.revokeAll(contextPrincipal(current)),
+    );
+  });
+  app.get("/api/scout/odoo/context-grants", async (context) => {
+    const depsGrants = deps.odooGrants;
+    if (!depsGrants?.readModelPolicy)
+      return context.json({ code: "MODEL_NOT_CONFIGURED" }, 503);
+    const url = new URL(context.req.url);
+    const agentIds = url.searchParams.getAll("agentId");
+    if (
+      agentIds.length !== 1 ||
+      [...url.searchParams.keys()].some((key) => key !== "agentId")
+    )
+      return context.json({ code: "MODEL_ACCESS_DENIED" }, 400);
+    const parsed = z.string().trim().min(1).max(200).safeParse(agentIds[0]);
+    if (!parsed.success)
+      return context.json({ code: "MODEL_ACCESS_DENIED" }, 400);
+    const before = await deps.authority.binding(context.req.raw);
+    if (!matchesFixedOdooSource(before, depsGrants.source))
+      return context.json({ code: "SCOUT_ACCESS_DENIED" }, 403);
+    const principal = contextPrincipal(before);
+    const history = deps.authority.forRequest(context.req.raw);
+    if (
+      !(await history.authorize(
+        principal,
+        { agentId: parsed.data, channelId: null },
+        "run",
+      ))
+    )
+      return context.json({ code: "MODEL_ACCESS_DENIED" }, 403);
+    const model = await depsGrants.readModelPolicy({
+      ...principal,
+      agentId: parsed.data,
+    });
+    const after = await deps.authority.binding(context.req.raw);
+    if (
+      !matchesFixedOdooSource(after, depsGrants.source) ||
+      !bindingUnchanged(before, after)
+    )
+      return context.json({ code: "SCOUT_ACCESS_DENIED" }, 403);
+    return context.json(
+      await depsGrants.status(
+        contextPrincipal(after),
+        model.route.provider,
+        model.fingerprint,
+      ),
+    );
+  });
+  app.delete("/api/scout/odoo/context-grants/release", async (context) => {
+    const depsGrants = deps.odooGrants;
+    if (!depsGrants?.readModelPolicy)
+      return context.json({ code: "MODEL_NOT_CONFIGURED" }, 503);
+    const parsed = releaseRevokeInput.safeParse(
+      await context.req.json().catch(() => null),
+    );
+    if (!parsed.success)
+      return context.json({ code: "MODEL_ACCESS_DENIED" }, 400);
+    const before = await deps.authority.binding(context.req.raw);
+    if (!matchesFixedOdooSource(before, depsGrants.source))
+      return context.json({ code: "SCOUT_ACCESS_DENIED" }, 403);
+    const principal = contextPrincipal(before);
+    const history = deps.authority.forRequest(context.req.raw);
+    if (
+      !(await history.authorize(
+        principal,
+        { agentId: parsed.data.agentId, channelId: null },
+        "run",
+      ))
+    )
+      return context.json({ code: "MODEL_ACCESS_DENIED" }, 403);
+    const model = await depsGrants.readModelPolicy({
+      ...principal,
+      agentId: parsed.data.agentId,
+    });
+    const after = await deps.authority.binding(context.req.raw);
+    if (
+      !matchesFixedOdooSource(after, depsGrants.source) ||
+      !bindingUnchanged(before, after)
+    )
+      return context.json({ code: "SCOUT_ACCESS_DENIED" }, 403);
+    return context.json(
+      await depsGrants.revokeRelease({
+        principal: contextPrincipal(after),
+        provider: model.route.provider,
+        modelPolicyFingerprint: model.fingerprint,
+      }),
     );
   });
   app.get("/api/scout/model/:threadId/receipts", async (context) => {

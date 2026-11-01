@@ -29,6 +29,8 @@ export type ComposerDraft = {
   commandIds: string[];
   isEmpty: boolean;
   attachments: Attachment[];
+  /** Optional one-shot Scout context selector, held only in this tab's draft queue. */
+  odooTaskId?: string;
 };
 
 export function toDraft(

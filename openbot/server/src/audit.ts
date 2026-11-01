@@ -63,6 +63,7 @@ export const auditEventTypes = [
   "credential.revoked",
   "scout.odoo_context_grant.issued",
   "scout.odoo_context_release.consent_recorded",
+  "scout.odoo_context_release.revoked",
   "scout.odoo_context_grant.revoked",
   /**
    * Which coworker an untagged message was routed to, and why.

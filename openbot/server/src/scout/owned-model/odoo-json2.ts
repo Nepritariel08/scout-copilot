@@ -24,6 +24,7 @@ export type OdooUserApiKeyResolver = {
   resolveForUid(
     uid: number,
     credentialRef: string,
+    principal: ProjectTaskReadRequest["principal"],
   ): Promise<OdooUserApiKey | null>;
 };
 
@@ -101,8 +102,14 @@ function projectIds(
   expectedInstanceId: string,
 ): number[] {
   if (!request || typeof request !== "object") return denied();
+  const principal = request.principal;
   const source = request.sourceIdentity;
   if (
+    !principal?.userId ||
+    principal.userId.length > 200 ||
+    !/^[A-Za-z0-9_-]{1,100}$/.test(principal.tenantId) ||
+    !/^[A-Za-z0-9_-]{1,100}$/.test(principal.deploymentId) ||
+    !/^[a-f0-9]{64}$/.test(principal.bindingFingerprint) ||
     !source ||
     typeof source !== "object" ||
     source.instanceId !== expectedInstanceId ||
@@ -401,6 +408,7 @@ export function createOdooJson2ProjectTaskReader(
           await options.credentials.resolveForUid(
             request.sourceIdentity.uid,
             request.sourceIdentity.credentialRef,
+            request.principal,
           ),
           request.sourceIdentity.uid,
         );

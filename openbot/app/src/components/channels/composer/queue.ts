@@ -70,6 +70,8 @@ export type QueuedMessage = {
    * Bot was ready still applies when the message eventually runs.
    */
   attachments: Attachment[];
+  /** One message in the queued turn may carry its one-shot task selector. */
+  odooTaskId?: string;
 };
 
 export type QueueAction =
@@ -219,6 +221,9 @@ export function reduceQueue(
               text: action.draft.text,
               commandIds: [...action.draft.commandIds],
               attachments: [...action.draft.attachments],
+              ...(action.draft.odooTaskId
+                ? { odooTaskId: action.draft.odooTaskId }
+                : {}),
             },
           ],
           action.draft.agentId,
@@ -282,6 +287,9 @@ export function reduceQueue(
             text: action.draft.text,
             commandIds: [...action.draft.commandIds],
             attachments: [...action.draft.attachments],
+            ...(action.draft.odooTaskId
+              ? { odooTaskId: action.draft.odooTaskId }
+              : {}),
           },
         ],
         run: null,
@@ -466,6 +474,13 @@ function joinQueued(
     .map((message) => message.text)
     .filter((line) => line.trim().length > 0)
     .join("\n");
+  const taskIds = [
+    ...new Set(
+      queue
+        .map((message) => message.odooTaskId)
+        .filter((value): value is string => value !== undefined),
+    ),
+  ];
 
   return {
     draft: {
@@ -476,6 +491,7 @@ function joinQueued(
       commandIds: [...new Set(queue.flatMap((message) => message.commandIds))],
       isEmpty: text.length === 0,
       attachments,
+      ...(taskIds.length === 1 ? { odooTaskId: taskIds[0] } : {}),
     },
     dropped,
   };

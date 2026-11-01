@@ -155,6 +155,7 @@ describe("owned read-only project.task context seam", () => {
     );
     expect(fake.requests).toHaveLength(1);
     expect(fake.requests[0]).toEqual({
+      principal,
       sourceIdentity: {
         instanceId: "odoo-test",
         uid: 401,

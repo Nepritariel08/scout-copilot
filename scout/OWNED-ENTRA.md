@@ -16,13 +16,21 @@ provider can authenticate them, while Scout receives the resource tenant's
 guest object. Entra's B2B directory object and authentication flow are described
 in Microsoft's [B2B collaboration guidance](https://learn.microsoft.com/en-us/entra/external-id/what-is-b2b).
 
-Register one confidential web application for the Scout origin. Its redirect
-URI is the Better Auth callback
-`https://scout.somethingsomewhere.ph/api/auth/callback/microsoft` (or the exact
-configured `BETTER_AUTH_URL` plus `/api/auth/callback/microsoft` for a different
-approved origin). Do not register a wildcard or use an incoming Host header to
-construct this value. The application must be single-tenant; its credentials
-must be delivered through protected deployment-secret custody.
+Register one confidential web application for the approved OpenDuet origin.
+The requested `scout.somethingsomewhere.ph` hostname is already associated in
+deployment history with the older authenticated Scout Console route through
+Caddy and an OAuth2 proxy. The current read-only check confirms it resolves to
+the shared Linode and redirects HTTP to HTTPS. A current Node/OpenSSL probe
+receives a fatal TLS `internal_error` alert; the Windows Schannel probe also
+fails inside the local security subsystem, so the active certificate and
+application route are not verified. Do not switch the root route or register a
+new callback on it until the current host owner verifies the route and releases
+or migrates that ingress. A separately approved subdomain can avoid that
+collision. Once the origin is approved, set the redirect URI to its exact Better Auth callback
+`<BETTER_AUTH_URL>/api/auth/callback/microsoft`. Do not register a wildcard or
+use an incoming Host header to construct this value. The application must be
+single-tenant; its credentials must be delivered through protected
+deployment-secret custody.
 
 The incomplete [owned environment overlay](owned.env.example) uses:
 
@@ -31,7 +39,7 @@ The incomplete [owned environment overlay](owned.env.example) uses:
 | `SCOUT_RUNTIME_MODE` | `owned`. |
 | `MICROSOFT_OAUTH_TENANT_ID` | Exact resource-tenant GUID; `common`, `organizations` and `consumers` are refused. |
 | `MICROSOFT_OAUTH_CLIENT_ID` / `MICROSOFT_OAUTH_CLIENT_SECRET` | Paired application values from protected custody; never place them in Git, chat, logs or fixtures. |
-| `BETTER_AUTH_URL` | Exact approved public Scout origin. |
+| `BETTER_AUTH_URL` | Exact owner-approved OpenDuet origin after resolving the existing Scout Console route. |
 | `BETTER_AUTH_SECRET` | Protected native session secret of at least 32 characters. Preserve it with the matching Scout database backup. |
 | `TRUSTED_ORIGINS` | Exact approved browser origin; no wildcard. |
 | `INITIAL_ADMIN_EMAILS` | Exact locally provisioned admin contact address. This is a role-seeding setting, not an identity key. |

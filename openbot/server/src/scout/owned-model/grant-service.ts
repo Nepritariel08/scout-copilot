@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { createAuditStore, recordAuditEvent } from "../../audit";
 import { createCredentialStore, encryptSecret } from "../../credentials";
 import type { Database } from "../../db/client";
@@ -50,7 +50,9 @@ function lockKey(
 ) {
   return JSON.stringify([
     principal.deploymentId,
+    principal.tenantId,
     principal.userId,
+    principal.bindingFingerprint,
     sourceInstanceId,
   ]);
 }
@@ -102,6 +104,117 @@ export function createOwnedOdooGrantService(
   }
 
   return {
+    async status(
+      principal: ProjectTaskContextPrincipal,
+      provider: "openrouter" | "local",
+      modelPolicyFingerprint: string,
+    ) {
+      validPrincipal(principal);
+      if (
+        !["openrouter", "local"].includes(provider) ||
+        !/^[a-f0-9]{64}$/.test(modelPolicyFingerprint)
+      )
+        throw new TypeError("Odoo grant status scope is invalid");
+      const [record] = await database
+        .select()
+        .from(scoutOdooRecordAccessGrants)
+        .where(
+          and(
+            eq(
+              scoutOdooRecordAccessGrants.deploymentId,
+              principal.deploymentId,
+            ),
+            eq(scoutOdooRecordAccessGrants.tenantId, principal.tenantId),
+            eq(scoutOdooRecordAccessGrants.nativeUserId, principal.userId),
+            eq(
+              scoutOdooRecordAccessGrants.bindingFingerprint,
+              principal.bindingFingerprint,
+            ),
+            eq(scoutOdooRecordAccessGrants.sourceInstanceId, sourceInstanceId),
+          ),
+        )
+        .orderBy(desc(scoutOdooRecordAccessGrants.revision))
+        .limit(1);
+      const [release] = await database
+        .select()
+        .from(scoutContextReleaseGrants)
+        .where(
+          and(
+            eq(scoutContextReleaseGrants.deploymentId, principal.deploymentId),
+            eq(scoutContextReleaseGrants.tenantId, principal.tenantId),
+            eq(scoutContextReleaseGrants.nativeUserId, principal.userId),
+            eq(
+              scoutContextReleaseGrants.bindingFingerprint,
+              principal.bindingFingerprint,
+            ),
+            eq(scoutContextReleaseGrants.sourceInstanceId, sourceInstanceId),
+            eq(scoutContextReleaseGrants.dataClass, dataClass),
+            eq(scoutContextReleaseGrants.provider, provider),
+            eq(
+              scoutContextReleaseGrants.modelPolicyFingerprint,
+              modelPolicyFingerprint,
+            ),
+          ),
+        )
+        .orderBy(desc(scoutContextReleaseGrants.revision))
+        .limit(1);
+      const [credential] = record
+        ? await database
+            .select({ id: credentials.id, metadata: credentials.metadata })
+            .from(credentials)
+            .where(
+              and(
+                eq(credentials.id, record.credentialRef),
+                eq(credentials.kind, "connector"),
+                eq(credentials.provider, ODOO_JSON2_CREDENTIAL_PROVIDER),
+                eq(
+                  credentials.keyId,
+                  odooJson2CredentialKeyId(
+                    sourceInstanceId,
+                    record.sourceUid,
+                    principal,
+                  ),
+                ),
+                isNull(credentials.revokedAt),
+              ),
+            )
+            .limit(1)
+        : [];
+      const credentialLive = Boolean(
+        credential &&
+          credential.metadata?.ownerNativeUserId === principal.userId &&
+          credential.metadata.ownerTenantId === principal.tenantId &&
+          credential.metadata.ownerDeploymentId === principal.deploymentId &&
+          credential.metadata.ownerBindingFingerprint ===
+            principal.bindingFingerprint &&
+          (await vault.isLive(credential.id)),
+      );
+      const now = Date.now();
+      return {
+        provider,
+        record: record
+          ? {
+              active:
+                record.active &&
+                credentialLive &&
+                record.expiresAt.getTime() > now &&
+                record.qualificationExpiresAt.getTime() > now,
+              revision: record.revision,
+              expiresAt: record.expiresAt.toISOString(),
+              projectCount: record.allowedProjectIds.length,
+            }
+          : null,
+        release: release
+          ? {
+              active: release.active && release.expiresAt.getTime() > now,
+              revision: release.revision,
+              expiresAt: release.expiresAt.toISOString(),
+              provider: release.provider,
+            }
+          : null,
+      };
+    },
+
     async issueRecord(input: {
       principal: ProjectTaskContextPrincipal;
       binding: OdooGrantBinding;
@@ -138,6 +251,7 @@ export function createOwnedOdooGrantService(
       const keyId = odooJson2CredentialKeyId(
         sourceInstanceId,
         input.binding.sourceUid,
+        input.principal,
       );
       const encryptedValue = await encryptSecret(encryptionKey, input.apiKey);
       const expiresAt = expiry(
@@ -161,6 +275,9 @@ export function createOwnedOdooGrantService(
           sourceInstanceId,
           uid: input.binding.sourceUid,
           ownerNativeUserId: input.principal.userId,
+          ownerTenantId: input.principal.tenantId,
+          ownerDeploymentId: input.principal.deploymentId,
+          ownerBindingFingerprint: input.principal.bindingFingerprint,
         };
         if (previousCredential) {
           const [stored] = await tx
@@ -170,7 +287,12 @@ export function createOwnedOdooGrantService(
             .limit(1);
           if (
             !stored?.metadata ||
-            stored.metadata.ownerNativeUserId !== input.principal.userId
+            stored.metadata.ownerNativeUserId !== input.principal.userId ||
+            stored.metadata.ownerTenantId !== input.principal.tenantId ||
+            stored.metadata.ownerDeploymentId !==
+              input.principal.deploymentId ||
+            stored.metadata.ownerBindingFingerprint !==
+              input.principal.bindingFingerprint
           )
             throw new Error("Odoo credential owner cannot be verified");
         }
@@ -334,6 +456,82 @@ export function createOwnedOdooGrantService(
       });
     },
 
+    async revokeRelease(input: {
+      principal: ProjectTaskContextPrincipal;
+      provider: "openrouter" | "local";
+      modelPolicyFingerprint: string;
+    }) {
+      validPrincipal(input.principal);
+      if (
+        !["openrouter", "local"].includes(input.provider) ||
+        !/^[a-f0-9]{64}$/.test(input.modelPolicyFingerprint)
+      )
+        throw new TypeError("Odoo release revoke scope is invalid");
+      return database.transaction(async (tx) => {
+        await lock(tx, input.principal);
+        const [latest] = await tx
+          .select()
+          .from(scoutContextReleaseGrants)
+          .where(
+            and(
+              eq(
+                scoutContextReleaseGrants.deploymentId,
+                input.principal.deploymentId,
+              ),
+              eq(scoutContextReleaseGrants.tenantId, input.principal.tenantId),
+              eq(
+                scoutContextReleaseGrants.nativeUserId,
+                input.principal.userId,
+              ),
+              eq(
+                scoutContextReleaseGrants.bindingFingerprint,
+                input.principal.bindingFingerprint,
+              ),
+              eq(scoutContextReleaseGrants.sourceInstanceId, sourceInstanceId),
+              eq(scoutContextReleaseGrants.dataClass, dataClass),
+              eq(scoutContextReleaseGrants.provider, input.provider),
+              eq(
+                scoutContextReleaseGrants.modelPolicyFingerprint,
+                input.modelPolicyFingerprint,
+              ),
+            ),
+          )
+          .orderBy(desc(scoutContextReleaseGrants.revision))
+          .limit(1);
+        if (!latest?.active) return { revoked: false };
+        const now = new Date();
+        await tx.insert(scoutContextReleaseGrants).values({
+          deploymentId: latest.deploymentId,
+          tenantId: latest.tenantId,
+          nativeUserId: latest.nativeUserId,
+          bindingFingerprint: latest.bindingFingerprint,
+          sourceInstanceId: latest.sourceInstanceId,
+          dataClass: latest.dataClass,
+          provider: latest.provider,
+          modelPolicyFingerprint: latest.modelPolicyFingerprint,
+          revision: latest.revision + 1,
+          active: false,
+          expiresAt: now,
+        });
+        await recordAuditEvent(
+          createAuditStore(tx as unknown as Database, { emitTaps: false }),
+          {
+            eventType: "scout.odoo_context_release.revoked",
+            targetType: "scout_context_release_grant",
+            actorUserId: input.principal.userId,
+            payload: {
+              sourceInstanceId,
+              dataClass,
+              provider: input.provider,
+              modelPolicyFingerprint: input.modelPolicyFingerprint,
+              revision: latest.revision + 1,
+            },
+          },
+        );
+        return { revoked: true, revision: latest.revision + 1 };
+      });
+    },
+
     async revokeAll(principal: ProjectTaskContextPrincipal) {
       validPrincipal(principal);
       return database.transaction(async (tx) => {
@@ -348,7 +546,12 @@ export function createOwnedOdooGrantService(
                 scoutOdooRecordAccessGrants.deploymentId,
                 principal.deploymentId,
               ),
+              eq(scoutOdooRecordAccessGrants.tenantId, principal.tenantId),
               eq(scoutOdooRecordAccessGrants.nativeUserId, principal.userId),
+              eq(
+                scoutOdooRecordAccessGrants.bindingFingerprint,
+                principal.bindingFingerprint,
+              ),
               eq(
                 scoutOdooRecordAccessGrants.sourceInstanceId,
                 sourceInstanceId,
@@ -394,7 +597,11 @@ export function createOwnedOdooGrantService(
                 eq(credentials.provider, ODOO_JSON2_CREDENTIAL_PROVIDER),
                 eq(
                   credentials.keyId,
-                  odooJson2CredentialKeyId(sourceInstanceId, row.sourceUid),
+                  odooJson2CredentialKeyId(
+                    sourceInstanceId,
+                    row.sourceUid,
+                    principal,
+                  ),
                 ),
               ),
             )
@@ -414,7 +621,12 @@ export function createOwnedOdooGrantService(
                 scoutContextReleaseGrants.deploymentId,
                 principal.deploymentId,
               ),
+              eq(scoutContextReleaseGrants.tenantId, principal.tenantId),
               eq(scoutContextReleaseGrants.nativeUserId, principal.userId),
+              eq(
+                scoutContextReleaseGrants.bindingFingerprint,
+                principal.bindingFingerprint,
+              ),
               eq(scoutContextReleaseGrants.sourceInstanceId, sourceInstanceId),
               eq(scoutContextReleaseGrants.dataClass, dataClass),
             ),

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { addAuditTap } from "../src/audit";
 import { encryptSecret } from "../src/credentials";
 import { createDatabase } from "../src/db/client";
@@ -11,7 +11,10 @@ import {
 } from "../src/db/schema/scout-record-context";
 import { createOwnedOdooProjectTaskContext } from "../src/scout/owned-model/context-source";
 import { createOwnedOdooGrantService } from "../src/scout/owned-model/grant-service";
-import { createOdooJson2CredentialResolver } from "../src/scout/owned-model/odoo-credentials";
+import {
+  createOdooJson2CredentialResolver,
+  odooJson2CredentialKeyId,
+} from "../src/scout/owned-model/odoo-credentials";
 import type { ProjectTaskReadRequest } from "../src/scout/owned-model/record-context";
 import { createProjectTaskContextStore } from "../src/scout/owned-model/record-context-store";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
@@ -45,8 +48,10 @@ async function insertCredential(input: {
   provider?: string;
   revokedAt?: Date | null;
   encryptedValue?: string;
+  owner?: typeof principal;
 }) {
   const id = input.id ?? randomUUID();
+  const owner = input.owner ?? principal;
   await database.insert(credentials).values({
     id,
     kind: input.kind ?? "connector",
@@ -54,8 +59,15 @@ async function insertCredential(input: {
     encryptedValue:
       input.encryptedValue ??
       (await encryptSecret(encryptionKey, `synthetic-odoo-key-${input.uid}`)),
-    keyId: `${sourceInstanceId}:uid:${input.uid}`,
-    metadata: {},
+    keyId: odooJson2CredentialKeyId(sourceInstanceId, input.uid, owner),
+    metadata: {
+      sourceInstanceId,
+      uid: input.uid,
+      ownerNativeUserId: owner.userId,
+      ownerTenantId: owner.tenantId,
+      ownerDeploymentId: owner.deploymentId,
+      ownerBindingFingerprint: owner.bindingFingerprint,
+    },
     revokedAt: input.revokedAt ?? null,
   });
   return id;
@@ -202,7 +214,7 @@ describe("owned Odoo grant persistence and credential resolution", () => {
         provisioningSourceId,
       );
       await expect(
-        resolver.resolveForUid(201, record!.credentialRef),
+        resolver.resolveForUid(201, record!.credentialRef, grantPrincipal),
       ).resolves.toEqual({ uid: 201, apiKey: "synthetic-new-api-key" });
 
       const consent = await service.consentRelease({
@@ -213,6 +225,13 @@ describe("owned Odoo grant persistence and credential resolution", () => {
         modelPolicyFingerprint,
       });
       expect(consent).toMatchObject({ revision: 1, provider: "openrouter" });
+      await expect(
+        service.status(grantPrincipal, "openrouter", modelPolicyFingerprint),
+      ).resolves.toMatchObject({
+        provider: "openrouter",
+        record: { active: true, revision: 1, projectCount: 2 },
+        release: { active: true, revision: 1, provider: "openrouter" },
+      });
       expect(await service.revokeAll(grantPrincipal)).toEqual({
         recordGrantRevoked: true,
         recordGrantsRevoked: 1,
@@ -237,7 +256,13 @@ describe("owned Odoo grant persistence and credential resolution", () => {
         .orderBy(desc(scoutContextReleaseGrants.revision));
       expect(releaseRevisions[0]).toMatchObject({ active: false, revision: 2 });
       await expect(
-        resolver.resolveForUid(201, record!.credentialRef),
+        service.status(grantPrincipal, "openrouter", modelPolicyFingerprint),
+      ).resolves.toMatchObject({
+        record: { active: false, revision: 2 },
+        release: { active: false, revision: 2 },
+      });
+      await expect(
+        resolver.resolveForUid(201, record!.credentialRef, grantPrincipal),
       ).resolves.toBeNull();
       expect(taps).toBe(0);
       const events = await database
@@ -258,6 +283,146 @@ describe("owned Odoo grant persistence and credential resolution", () => {
     } finally {
       removeTap();
     }
+  });
+
+  test("record revocation is isolated by tenant and binding when one Odoo UID is reused", async () => {
+    const sharedUserId = `${prefix}-shared-user`;
+    const tenantA = {
+      ...principal,
+      userId: sharedUserId,
+      tenantId: `${prefix}-tenant-a`,
+      bindingFingerprint: "d".repeat(64),
+    };
+    const tenantB = {
+      ...principal,
+      userId: sharedUserId,
+      tenantId: `${prefix}-tenant-b`,
+      bindingFingerprint: "e".repeat(64),
+    };
+    const scopedSourceId = `${sourceInstanceId}-${randomUUID()}`;
+    const service = createOwnedOdooGrantService(
+      database,
+      encryptionKey,
+      scopedSourceId,
+    );
+    await service.issueRecord({
+      principal: tenantA,
+      binding: {
+        sourceUid: 301,
+        companyIds: [1],
+        bindingExpiresAt: "2099-01-01T00:00:00.000Z",
+      },
+      apiKey: "tenant-a-odoo-key",
+      allowedProjectIds: [601],
+    });
+    await service.issueRecord({
+      principal: tenantB,
+      binding: {
+        sourceUid: 301,
+        companyIds: [1],
+        bindingExpiresAt: "2099-01-01T00:00:00.000Z",
+      },
+      apiKey: "tenant-b-odoo-key",
+      allowedProjectIds: [602],
+    });
+    const [recordA] = await database
+      .select()
+      .from(scoutOdooRecordAccessGrants)
+      .where(
+        and(
+          eq(scoutOdooRecordAccessGrants.tenantId, tenantA.tenantId),
+          eq(scoutOdooRecordAccessGrants.nativeUserId, sharedUserId),
+        ),
+      )
+      .orderBy(desc(scoutOdooRecordAccessGrants.revision))
+      .limit(1);
+    const [recordB] = await database
+      .select()
+      .from(scoutOdooRecordAccessGrants)
+      .where(
+        and(
+          eq(scoutOdooRecordAccessGrants.tenantId, tenantB.tenantId),
+          eq(scoutOdooRecordAccessGrants.nativeUserId, sharedUserId),
+        ),
+      )
+      .orderBy(desc(scoutOdooRecordAccessGrants.revision))
+      .limit(1);
+    expect(recordA?.credentialRef).not.toBe(recordB?.credentialRef);
+    const resolver = createOdooJson2CredentialResolver(
+      database,
+      encryptionKey,
+      scopedSourceId,
+    );
+    await expect(
+      resolver.resolveForUid(301, recordA!.credentialRef, tenantB),
+    ).resolves.toBeNull();
+    await expect(
+      resolver.resolveForUid(301, recordB!.credentialRef, tenantB),
+    ).resolves.toEqual({ uid: 301, apiKey: "tenant-b-odoo-key" });
+
+    await expect(service.revokeAll(tenantA)).resolves.toMatchObject({
+      recordGrantsRevoked: 1,
+      localCredentialRevoked: true,
+    });
+    const [latestB] = await database
+      .select()
+      .from(scoutOdooRecordAccessGrants)
+      .where(
+        and(
+          eq(scoutOdooRecordAccessGrants.tenantId, tenantB.tenantId),
+          eq(scoutOdooRecordAccessGrants.nativeUserId, sharedUserId),
+        ),
+      )
+      .orderBy(desc(scoutOdooRecordAccessGrants.revision))
+      .limit(1);
+    expect(latestB).toMatchObject({ active: true, revision: 1 });
+    await expect(
+      resolver.resolveForUid(301, recordB!.credentialRef, tenantB),
+    ).resolves.toEqual({ uid: 301, apiKey: "tenant-b-odoo-key" });
+  });
+
+  test("model-release consent can be withdrawn without revoking the Odoo record grant", async () => {
+    const releasePrincipal = {
+      ...principal,
+      userId: `${prefix}-release-revoke-user`,
+      bindingFingerprint: "f".repeat(64),
+    };
+    const scopedSourceId = `${sourceInstanceId}-${randomUUID()}`;
+    const service = createOwnedOdooGrantService(
+      database,
+      encryptionKey,
+      scopedSourceId,
+    );
+    await service.issueRecord({
+      principal: releasePrincipal,
+      binding: {
+        sourceUid: 401,
+        companyIds: [1],
+        bindingExpiresAt: "2099-01-01T00:00:00.000Z",
+      },
+      apiKey: "synthetic-release-revoke-key",
+      allowedProjectIds: [701],
+    });
+    await service.consentRelease({
+      principal: releasePrincipal,
+      bindingExpiresAt: "2099-01-01T00:00:00.000Z",
+      modelPolicyExpiresAt: "2099-01-01T00:00:00.000Z",
+      provider: "openrouter",
+      modelPolicyFingerprint,
+    });
+    await expect(
+      service.revokeRelease({
+        principal: releasePrincipal,
+        provider: "openrouter",
+        modelPolicyFingerprint,
+      }),
+    ).resolves.toMatchObject({ revoked: true, revision: 2 });
+    await expect(
+      service.status(releasePrincipal, "openrouter", modelPolicyFingerprint),
+    ).resolves.toMatchObject({
+      record: { active: true, revision: 1 },
+      release: { active: false, revision: 2 },
+    });
   });
 
   test("the newest inactive record revision shadows the prior active grant", async () => {
@@ -307,30 +472,36 @@ describe("owned Odoo grant persistence and credential resolution", () => {
       encryptionKey,
       sourceInstanceId,
     );
-    await expect(resolver.resolveForUid(101, credentialRef)).resolves.toEqual({
+    await expect(
+      resolver.resolveForUid(101, credentialRef, principal),
+    ).resolves.toEqual({
       uid: 101,
       apiKey: "synthetic-odoo-key-101",
     });
-    await expect(resolver.resolveForUid(101, randomUUID())).resolves.toBeNull();
     await expect(
-      resolver.resolveForUid(102, await credentialForUid(102)),
+      resolver.resolveForUid(101, randomUUID(), principal),
     ).resolves.toBeNull();
     await expect(
-      resolver.resolveForUid(103, await credentialForUid(103)),
+      resolver.resolveForUid(102, await credentialForUid(102), principal),
     ).resolves.toBeNull();
     await expect(
-      resolver.resolveForUid(104, await credentialForUid(104)),
+      resolver.resolveForUid(103, await credentialForUid(103), principal),
     ).resolves.toBeNull();
     await expect(
-      resolver.resolveForUid(105, await credentialForUid(105)),
+      resolver.resolveForUid(104, await credentialForUid(104), principal),
     ).resolves.toBeNull();
-    await expect(resolver.resolveForUid(1, credentialRef)).resolves.toBeNull();
+    await expect(
+      resolver.resolveForUid(105, await credentialForUid(105), principal),
+    ).resolves.toBeNull();
+    await expect(
+      resolver.resolveForUid(1, credentialRef, principal),
+    ).resolves.toBeNull();
     await expect(
       createOdooJson2CredentialResolver(
         database,
         encryptionKey,
         "other-instance",
-      ).resolveForUid(101, credentialRef),
+      ).resolveForUid(101, credentialRef, principal),
     ).resolves.toBeNull();
   });
 
@@ -382,6 +553,7 @@ describe("owned Odoo grant persistence and credential resolution", () => {
       transport,
     );
     const request: ProjectTaskReadRequest = {
+      principal,
       sourceIdentity: {
         instanceId: sourceInstanceId,
         uid: 101,
@@ -460,10 +632,11 @@ describe("owned Odoo grant persistence and credential resolution", () => {
 });
 
 async function credentialForUid(uid: number) {
+  const keyId = odooJson2CredentialKeyId(sourceInstanceId, uid, principal);
   const [row] = await database
     .select({ id: credentials.id })
     .from(credentials)
-    .where(sql`${credentials.keyId} = ${`${sourceInstanceId}:uid:${uid}`}`);
+    .where(sql`${credentials.keyId} = ${keyId}`);
   if (!row) throw new Error("Synthetic credential fixture was not inserted");
   return row.id;
 }

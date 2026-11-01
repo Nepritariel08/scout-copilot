@@ -4,6 +4,12 @@ import type { ProjectTaskReadRequest } from "../src/scout/owned-model/record-con
 
 const key = "synthetic-odoo-api-key";
 const request: ProjectTaskReadRequest = {
+  principal: {
+    userId: "native-user-a",
+    tenantId: "tenant-a",
+    deploymentId: "deployment-a",
+    bindingFingerprint: "a".repeat(64),
+  },
   sourceIdentity: {
     instanceId: "odoo-test",
     uid: 401,

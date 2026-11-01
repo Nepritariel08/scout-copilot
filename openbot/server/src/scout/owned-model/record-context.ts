@@ -91,6 +91,8 @@ export type ProjectTaskContextReleaseGrant = {
 };
 
 export type ProjectTaskReadRequest = {
+  /** Exact native grant owner; never provided by the browser. */
+  principal: ProjectTaskContextPrincipal;
   sourceIdentity: ProjectTaskContextGrant["sourceIdentity"];
   model: "project.task";
   domain: readonly [
@@ -315,6 +317,7 @@ export async function resolveProjectTaskContext(
   const requestForGrant = (
     current: ProjectTaskContextGrant,
   ): ProjectTaskReadRequest => ({
+    principal: { ...principal },
     sourceIdentity: {
       instanceId: current.sourceIdentity.instanceId,
       uid: current.sourceIdentity.uid,
