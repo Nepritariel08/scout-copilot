@@ -180,7 +180,8 @@ export class OwnedTextModel implements PlanLanguageModel {
       reportedCostUsd: null,
       reportedModel: null,
     };
-    let providerFinished = false;
+    let providerFinishReason: "stop" | "length" | null = null;
+    let usageReceived = false;
     const fail = async (error: unknown) => {
       if (settled) return;
       settled = true;
@@ -234,7 +235,7 @@ export class OwnedTextModel implements PlanLanguageModel {
               const json = line.slice(5).trim();
               if (!json) return;
               if (json === "[DONE]") {
-                if (!providerFinished)
+                if (providerFinishReason === null)
                   throw new ModelPolicyError("MODEL_UNAVAILABLE");
                 return;
               }
@@ -248,6 +249,12 @@ export class OwnedTextModel implements PlanLanguageModel {
                 throw new ModelPolicyError("MODEL_UNAVAILABLE");
               const packet = value as Record<string, unknown>;
               if (packet.error) throw new ModelPolicyError("MODEL_UNAVAILABLE");
+              const hasUsage =
+                packet.usage !== null &&
+                typeof packet.usage === "object" &&
+                !Array.isArray(packet.usage);
+              if (hasUsage && usageReceived)
+                throw new ModelPolicyError("MODEL_UNAVAILABLE");
               if (
                 typeof packet.model === "string" &&
                 /^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,199}$/.test(packet.model)
@@ -259,16 +266,39 @@ export class OwnedTextModel implements PlanLanguageModel {
                     throw new ModelPolicyError("MODEL_UNAVAILABLE");
                   if (choice.index !== 0)
                     throw new ModelPolicyError("MODEL_UNAVAILABLE");
+                  if (providerFinishReason !== null) {
+                    // OpenRouter repeats the terminal reason on its final accounting frame.
+                    // Admit that one content-free tail, never a second generated response.
+                    const delta = choice.delta;
+                    if (
+                      grant.route.provider !== "openrouter" ||
+                      !hasUsage ||
+                      packet.choices.length !== 1 ||
+                      choice.finish_reason !== providerFinishReason ||
+                      choice.message !== undefined ||
+                      !delta ||
+                      typeof delta !== "object" ||
+                      Array.isArray(delta) ||
+                      !Object.entries(delta).every(
+                        ([key, value]) =>
+                          (key === "content" &&
+                            (value == null || value === "")) ||
+                          (key === "role" &&
+                            (value == null || value === "assistant")),
+                      )
+                    )
+                      throw new ModelPolicyError("MODEL_UNAVAILABLE");
+                  }
                   if (
                     choice.finish_reason !== null &&
                     choice.finish_reason !== undefined
                   ) {
                     if (
-                      providerFinished ||
-                      !["stop", "length"].includes(choice.finish_reason)
+                      choice.finish_reason !== "stop" &&
+                      choice.finish_reason !== "length"
                     )
                       throw new ModelPolicyError("MODEL_UNAVAILABLE");
-                    providerFinished = true;
+                    providerFinishReason = choice.finish_reason;
                   }
                   for (const part of [choice.delta, choice.message])
                     if (
@@ -281,7 +311,8 @@ export class OwnedTextModel implements PlanLanguageModel {
                     )
                       throw new ModelPolicyError("MODEL_ACCESS_DENIED");
                 }
-              if (packet.usage && typeof packet.usage === "object") {
+              if (hasUsage) {
+                usageReceived = true;
                 const reported = packet.usage as Record<string, unknown>;
                 for (const [source, destination] of [
                   ["prompt_tokens", "inputTokens"],
@@ -326,7 +357,7 @@ export class OwnedTextModel implements PlanLanguageModel {
                       pending = "";
                       // The SDK synthesizes a finish when a socket closes. Require the provider's
                       // terminal reason so a cleanly truncated answer cannot become completed.
-                      if (!providerFinished)
+                      if (providerFinishReason === null)
                         throw new ModelPolicyError("MODEL_UNAVAILABLE");
                       out.close();
                       return;
@@ -395,7 +426,7 @@ export class OwnedTextModel implements PlanLanguageModel {
                       throw new ModelPolicyError("MODEL_LIMIT");
                   }
                   if (part.type === "finish") {
-                    if (!providerFinished)
+                    if (providerFinishReason === null)
                       throw new ModelPolicyError("MODEL_UNAVAILABLE");
                     await store.finish(call, "completed", {
                       ...usage,

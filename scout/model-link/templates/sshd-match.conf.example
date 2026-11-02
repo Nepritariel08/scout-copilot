@@ -1,0 +1,22 @@
+# TEMPLATE ONLY. Install only under a fresh, exact WI75 claim after reviewing
+# the complete effective sshd configuration and include order. Do not blindly
+# append this as an early drop-in: a Match stanza scopes every later setting
+# until the next Match, and may silently capture unrelated users.
+# Put this account block last in the effective config (or use a validated
+# explicit Match all reset where supported). Preserve all existing directives.
+Match User scout-matepad-forward
+    AuthenticationMethods publickey
+    PubkeyAuthentication yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    AllowTcpForwarding remote
+    PermitListen 127.0.0.1:18088
+    PermitOpen none
+    GatewayPorts no
+    PermitTTY no
+    AllowAgentForwarding no
+    X11Forwarding no
+    AllowStreamLocalForwarding no
+    PermitTunnel no
+    PermitUserRC no
+    MaxSessions 0

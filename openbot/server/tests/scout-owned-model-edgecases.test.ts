@@ -57,7 +57,7 @@ const options = (): Options => ({
   ],
 });
 
-function grantFor() {
+function grantFor(provider: "local" | "openrouter" = "local") {
   return parseModelPolicy(
     {
       version: 1,
@@ -74,12 +74,19 @@ function grantFor() {
           agentIds: [agentId],
           allowConversationContext: true,
           allowPersonalInstructions: false,
-          route: {
-            provider: "local",
-            model: "fixture-edge",
-            baseUrl: "http://127.0.0.1:25435/v1",
-            apiKeyFile: keyFile,
-          },
+          route:
+            provider === "openrouter"
+              ? {
+                  provider,
+                  model: "openrouter/free",
+                  apiKeyFile: keyFile,
+                }
+              : {
+                  provider,
+                  model: "fixture-edge",
+                  baseUrl: "http://127.0.0.1:25435/v1",
+                  apiKeyFile: keyFile,
+                },
           limits: {
             maxInputBytes: 65536,
             maxOutputTokens: 16,
@@ -508,6 +515,325 @@ describe("owned model adversarial SQL/public-SDK boundaries", () => {
       expect(receipt.errorCode).toBe("MODEL_CONFLICT");
     });
   }
+
+  describe("OpenRouter terminal accounting frames", () => {
+    type Reason = "stop" | "length";
+    const answer = "ACCOUNTING_OK_✓";
+    const reportedModel = "synthetic/accounting-free";
+    const usage = () => ({
+      prompt_tokens: 12,
+      completion_tokens: 4,
+      total_tokens: 16,
+      cost: 0,
+    });
+    const choice = (reason: Reason) => ({
+      index: 0,
+      delta: { content: "", role: "assistant" },
+      finish_reason: reason,
+      native_finish_reason: reason,
+    });
+    const accounting = (reason: Reason) => ({
+      id: "accounting-edge",
+      model: reportedModel,
+      choices: [choice(reason)],
+      usage: usage(),
+    });
+    const prefixBody = (reason: Reason) =>
+      packet({
+        id: "accounting-edge",
+        model: reportedModel,
+        choices: [
+          {
+            index: 0,
+            delta: { role: "assistant", content: answer },
+            finish_reason: null,
+          },
+        ],
+      }) +
+      packet({
+        id: "accounting-edge",
+        model: reportedModel,
+        choices: [choice(reason)],
+      });
+    const bodyFor = (reason: Reason, tails: unknown[]) =>
+      `${prefixBody(reason)}${tails.map(packet).join("")}data: [DONE]\n\n`;
+
+    for (const reason of ["stop", "length"] as const) {
+      for (const fragmented of [false, true]) {
+        test(`accepts ${reason} repeated only by its ${fragmented ? "fragmented " : ""}usage tail and records exact accounting once`, async () => {
+          const body = bodyFor(reason, [accounting(reason)]);
+          const response = fragmented
+            ? transport(() => {
+                const bytes = new TextEncoder().encode(body);
+                const unicode = bytes.indexOf(0xe2);
+                const tail = Buffer.byteLength(prefixBody(reason));
+                // Split inside the answer's UTF-8 character, the accounting SSE
+                // prefix and JSON, and DONE. No chunk aligns with an event.
+                const cuts = [
+                  0,
+                  1,
+                  unicode + 1,
+                  unicode + 2,
+                  tail + 3,
+                  tail + 37,
+                  bytes.length - 4,
+                  bytes.length,
+                ];
+                return new Response(
+                  new ReadableStream<Uint8Array>({
+                    start(out) {
+                      for (let index = 0; index < cuts.length - 1; index++)
+                        out.enqueue(bytes.slice(cuts[index], cuts[index + 1]));
+                      out.close();
+                    },
+                  }),
+                  { headers: { "content-type": "text/event-stream" } },
+                );
+              })
+            : transport(body);
+          const output = await model(
+            await run(),
+            grantFor("openrouter"),
+            response,
+          ).doGenerate(options());
+          expect(output.content).toEqual([{ type: "text", text: answer }]);
+          expect(output.finishReason.unified).toBe(reason);
+          expect(output.usage).toMatchObject({
+            inputTokens: { total: 12 },
+            outputTokens: { total: 4 },
+          });
+          expect(providerCalls).toBe(1);
+          const rows = await receipts();
+          expect(rows).toHaveLength(1);
+          expect(rows[0]).toMatchObject({
+            status: "completed",
+            errorCode: null,
+            inputTokens: 12,
+            outputTokens: 4,
+            reportedCostUsd: "0.000000000000",
+            reportedModel,
+            outputBytes: Buffer.byteLength(answer),
+            provider: "openrouter",
+            requestedModel: "openrouter/free",
+          });
+        });
+      }
+    }
+
+    test("retains compatibility with the empty-choices accounting tail", async () => {
+      const output = await model(
+        await run(),
+        grantFor("openrouter"),
+        transport(
+          bodyFor("stop", [
+            {
+              id: "accounting-edge",
+              model: reportedModel,
+              choices: [],
+              usage: usage(),
+            },
+          ]),
+        ),
+      ).doGenerate(options());
+      expect(output.content).toEqual([{ type: "text", text: answer }]);
+      expect(providerCalls).toBe(1);
+      expect(await receipts()).toHaveLength(1);
+      expect(await terminalReceipt()).toMatchObject({
+        status: "completed",
+        inputTokens: 12,
+        outputTokens: 4,
+        reportedCostUsd: "0.000000000000",
+      });
+    });
+
+    const refusals: {
+      name: string;
+      tails: () => unknown[];
+      codes?: string[];
+    }[] = [
+      {
+        name: "conflicting terminal reason in the accounting tail",
+        tails: () => [accounting("length")],
+      },
+      {
+        name: "a duplicate terminal without accounting",
+        tails: () => [
+          {
+            id: "accounting-edge",
+            choices: [choice("stop")],
+          },
+        ],
+      },
+      {
+        name: "a duplicate terminal with array-shaped usage",
+        tails: () => [{ ...accounting("stop"), usage: [] }],
+      },
+      {
+        name: "new content on the repeated terminal",
+        tails: () => [
+          {
+            ...accounting("stop"),
+            choices: [
+              {
+                ...choice("stop"),
+                delta: { content: "FORBIDDEN_ACCOUNTING_CONTENT" },
+              },
+            ],
+          },
+        ],
+      },
+      {
+        name: "new reasoning on the repeated terminal",
+        tails: () => [
+          {
+            ...accounting("stop"),
+            choices: [
+              {
+                ...choice("stop"),
+                delta: { reasoning: "FORBIDDEN_ACCOUNTING_REASONING" },
+              },
+            ],
+          },
+        ],
+      },
+      {
+        name: "a message on the repeated terminal",
+        tails: () => [
+          {
+            ...accounting("stop"),
+            choices: [
+              {
+                ...choice("stop"),
+                message: {
+                  role: "assistant",
+                  content: "FORBIDDEN_ACCOUNTING_MESSAGE",
+                },
+              },
+            ],
+          },
+        ],
+      },
+      {
+        name: "a tool payload on the repeated terminal",
+        tails: () => [
+          {
+            ...accounting("stop"),
+            choices: [
+              {
+                ...choice("stop"),
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "accounting-tool",
+                      type: "function",
+                      function: {
+                        name: "FORBIDDEN_ACCOUNTING_TOOL",
+                        arguments: "{}",
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+        codes: ["MODEL_UNAVAILABLE", "MODEL_ACCESS_DENIED"],
+      },
+      {
+        name: "a second accounting tail",
+        tails: () => [accounting("stop"), accounting("stop")],
+      },
+      {
+        name: "an empty-choices accounting tail after a repeated terminal tail",
+        tails: () => [
+          accounting("stop"),
+          { ...accounting("stop"), choices: [] },
+        ],
+      },
+      {
+        name: "two empty-choices accounting tails",
+        tails: () => [
+          { ...accounting("stop"), choices: [] },
+          { ...accounting("stop"), choices: [] },
+        ],
+      },
+      {
+        name: "negative prompt tokens in the accounting tail",
+        tails: () => [
+          {
+            ...accounting("stop"),
+            usage: { ...usage(), prompt_tokens: -1 },
+          },
+        ],
+      },
+      {
+        name: "fractional completion tokens in the accounting tail",
+        tails: () => [
+          {
+            ...accounting("stop"),
+            usage: { ...usage(), completion_tokens: 1.5 },
+          },
+        ],
+      },
+      {
+        name: "an out-of-range token count in the accounting tail",
+        tails: () => [
+          {
+            ...accounting("stop"),
+            usage: { ...usage(), prompt_tokens: 2147483648 },
+          },
+        ],
+      },
+      {
+        name: "string cost in the accounting tail",
+        tails: () => [
+          { ...accounting("stop"), usage: { ...usage(), cost: "0" } },
+        ],
+      },
+      {
+        name: "negative cost in the accounting tail",
+        tails: () => [
+          { ...accounting("stop"), usage: { ...usage(), cost: -1 } },
+        ],
+      },
+      {
+        name: "a positive charge in the accounting tail",
+        tails: () => [
+          { ...accounting("stop"), usage: { ...usage(), cost: 0.01 } },
+        ],
+        codes: ["MODEL_COST_VIOLATION"],
+      },
+    ];
+    for (const refusal of refusals) {
+      test(`refuses ${refusal.name} without a successful finish or retry`, async () => {
+        const emitted: unknown[] = [];
+        let failure: unknown;
+        try {
+          const result = await model(
+            await run(),
+            grantFor("openrouter"),
+            transport(bodyFor("stop", refusal.tails())),
+          ).doStream(options());
+          for await (const part of result.stream) emitted.push(part);
+        } catch (error) {
+          failure = error;
+        }
+        const codes = refusal.codes ?? ["MODEL_UNAVAILABLE"];
+        expect(codes.some((code) => String(failure).includes(code))).toBe(true);
+        expect(String(failure)).not.toContain(syntheticKey);
+        expect(JSON.stringify(emitted)).not.toContain("FORBIDDEN_ACCOUNTING");
+        expect(
+          emitted.some((part) => (part as { type?: string }).type === "finish"),
+        ).toBe(false);
+        expect(providerCalls).toBe(1);
+        expect(await receipts()).toHaveLength(1);
+        const receipt = await terminalReceipt();
+        expect(receipt.status).toBe("uncertain");
+        expect(codes.some((code) => code === receipt.errorCode)).toBe(true);
+      });
+    }
+  });
 
   test("malformed/error SSE and invalid usage reject with sanitized errors and retain the dispatched receipt", async () => {
     const bodies = [

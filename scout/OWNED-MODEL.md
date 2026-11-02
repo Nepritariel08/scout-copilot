@@ -181,6 +181,10 @@ rows become refused and expired dispatched rows become uncertain on subsequent
 admission (including budget-refused admission) or an authorized receipt read.
 Completion also requires the same live history producer lease and an observed
 provider terminal reason; clean partial/empty EOF cannot complete a receipt.
+OpenRouter's [documented accounting tail](https://openrouter.ai/docs/api_reference/streaming)
+repeats that reason on a content-free usage frame. The parser accepts one such
+frame with the same reason and validates its token/cost reports. Conflicting
+reasons, additional content/tools and repeated accounting tails still fail.
 These attempts remain counted. The system does not automatically
 refund quota, replay an uncertain call or add a recovery scheduler.
 
