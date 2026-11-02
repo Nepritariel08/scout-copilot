@@ -114,7 +114,14 @@ export function createModelCallStore(database: Database) {
         );
         await sweep(tx, scope.deploymentId);
         const leaseToken = await historyLease(tx, scope);
-        const day = sql`date_trunc('day', clock_timestamp() at time zone 'UTC') at time zone 'UTC'`;
+        // A transaction can begin before midnight and wait for either lock. Use one
+        // database instant after admission waits, never DEFAULT now() (transaction start).
+        const [admission] = await tx.execute<{ admittedAt: string }>(
+          sql`select clock_timestamp()::text as "admittedAt"`,
+        );
+        if (!admission) throw new ModelPolicyError("MODEL_UNAVAILABLE");
+        const admittedAt = sql`${admission.admittedAt}::timestamptz`;
+        const day = sql`date_trunc('day', ${admittedAt} at time zone 'UTC') at time zone 'UTC'`;
         const [totals] = await tx
           .select({
             daily: sql<number>`count(*) filter (where ${calls.createdAt} >= ${day})::int`,
@@ -173,7 +180,8 @@ export function createModelCallStore(database: Database) {
             inputBytes: input.bytes,
             requestDigest: input.digest,
             status: "reserved",
-            expiresAt: sql`clock_timestamp() + ${grant.limits.timeoutMs + 5000} * interval '1 millisecond'`,
+            createdAt: admittedAt,
+            expiresAt: sql`${admittedAt} + ${grant.limits.timeoutMs + 5000} * interval '1 millisecond'`,
           })
           .returning();
         if (!call) throw new ModelPolicyError("MODEL_UNAVAILABLE");

@@ -10,7 +10,8 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { createDatabase } from "../src/db/client";
 import { users } from "../src/db/schema";
 import {
@@ -1770,5 +1771,111 @@ describe("owned model adversarial SQL/public-SDK boundaries", () => {
     ).rejects.toThrow("MODEL_LIMIT");
     expect(providerCalls).toBe(1);
     expect(await receipts()).toHaveLength(21);
+  });
+
+  test("paid admission crossing UTC midnight uses one post-lock database instant for quotas and the receipt", async () => {
+    // Model a transaction that began on the old day and finished its lock waits
+    // on the new day. Only the admission-clock read is substituted; SQL, native
+    // leases, locks, quota predicates and inserts execute on the real test DB.
+    const [boundary] = await database.execute<{
+      admittedAt: string;
+      oldDay: string;
+    }>(sql`
+      with stamp as materialized (select clock_timestamp() as at)
+      select
+        (((date_trunc('day', at at time zone 'UTC') + interval '1 day')
+          at time zone 'UTC') + interval '1 millisecond')::text as "admittedAt",
+        (date_trunc('day', at at time zone 'UTC')
+          at time zone 'UTC')::text as "oldDay"
+      from stamp
+    `);
+    if (!boundary) throw new Error("Missing synthetic database boundary");
+    await seedPaidQuota(20, "MODEL_COST_VIOLATION");
+    await database
+      .update(calls)
+      .set({ createdAt: new Date(boundary.oldDay) })
+      .where(eq(calls.deploymentId, prefix));
+    await seedPaidQuota(19);
+    // Move only the new batch, whose cost marker is null, into the new UTC day.
+    await database.execute(sql`update ${calls} set created_at = ${boundary.admittedAt}::timestamptz
+      where deployment_id = ${prefix} and error_code is null`);
+    let clockReads = 0;
+    const dialect = new PgDialect();
+    const boundaryDatabase = new Proxy(database, {
+      get(target, property, receiver) {
+        if (property !== "transaction")
+          return Reflect.get(target, property, receiver);
+        return (callback: Parameters<typeof target.transaction>[0]) =>
+          target.transaction((tx) =>
+            callback(
+              new Proxy(tx, {
+                get(transaction, member, transactionReceiver) {
+                  if (member !== "execute")
+                    return Reflect.get(
+                      transaction,
+                      member,
+                      transactionReceiver,
+                    );
+                  return (
+                    statement: Parameters<typeof transaction.execute>[0],
+                  ) => {
+                    const query =
+                      typeof statement === "string"
+                        ? statement
+                        : dialect.sqlToQuery(statement.getSQL()).sql;
+                    if (
+                      query !== 'select clock_timestamp()::text as "admittedAt"'
+                    )
+                      return transaction.execute(statement);
+                    clockReads++;
+                    // A premature clock capture cannot pass: both required locks must exist.
+                    return transaction.execute(sql`
+                select ${boundary.admittedAt}::timestamptz::text as "admittedAt"
+                where exists (select 1 from pg_locks where pid = pg_backend_pid()
+                  and locktype = 'advisory' and mode = 'ExclusiveLock' and granted)
+                and exists (select 1 from pg_locks where pid = pg_backend_pid()
+                  and relation = 'scout_history_threads'::regclass
+                  and mode = 'RowShareLock' and granted)
+              `);
+                  };
+                },
+              }),
+            ),
+          );
+      },
+    });
+    const boundaryStore = createModelCallStore(boundaryDatabase);
+    const grant = grantFor("openrouter", true);
+    const call = await boundaryStore.reserve(await run(), grant, {
+      digest: "d".repeat(64),
+      bytes: 100,
+      endpointOrigin: "https://openrouter.ai",
+    });
+    expect(call.createdAt.toISOString()).toBe(
+      new Date(boundary.admittedAt).toISOString(),
+    );
+    expect(call.expiresAt.getTime() - call.createdAt.getTime()).toBe(
+      grant.limits.timeoutMs + 5000,
+    );
+    expect(clockReads).toBe(1);
+    await boundaryStore.finish(call, "refused");
+    await expect(
+      boundaryStore.reserve(
+        await run(),
+        { ...grant, revision: 2, fingerprint: "f".repeat(64) },
+        {
+          digest: "e".repeat(64),
+          bytes: 100,
+          endpointOrigin: "https://openrouter.ai",
+        },
+      ),
+    ).rejects.toThrow("MODEL_LIMIT");
+    expect(clockReads).toBe(2);
+    const [today] = await database.execute<{ count: number }>(sql`
+      select count(*)::int as count from ${calls} where deployment_id = ${prefix}
+        and created_at >= (date_trunc('day', ${boundary.admittedAt}::timestamptz at time zone 'UTC') at time zone 'UTC')
+    `);
+    expect(today?.count).toBe(20);
+    expect(providerCalls).toBe(0);
   });
 });
