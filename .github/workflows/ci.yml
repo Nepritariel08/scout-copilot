@@ -383,7 +383,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        # Use the standard Intel image on the same macOS 26 baseline as macos-latest.
+        # Keep the complete build-cache suite and required aggregate check below.
+        # This qualifies Intel macOS only; Apple Silicon coverage is not claimed.
+        os: [macos-26-intel, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
