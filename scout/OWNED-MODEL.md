@@ -118,16 +118,54 @@ tokenization. Output bytes bound emitted text/reasoning; the wire parser has
 an additional bounded transport allowance. The server pins `max_tokens` to
 the protected output-token limit.
 
-An OpenRouter route has exactly `provider: "openrouter"`, `model` and
-`apiKeyFile`. The example chooses `openrouter/free`. The endpoint is fixed by
+An OpenRouter route has `provider: "openrouter"`, `model` and
+`apiKeyFile`, plus the optional protected `paidProfile` below. The example chooses `openrouter/free`. The endpoint is fixed by
 source to `https://openrouter.ai/api/v1/chat/completions`; policy cannot change
-its host. Every request sends `allow_fallbacks: false`,
+its host. Every request without a paid profile sends `allow_fallbacks: false`,
 `require_parameters: true`, `data_collection: "deny"`, `zdr: true`, and zero
 `max_price` for prompt, completion, request and image. An incompatible or
-unavailable free endpoint must refuse, not relax the policy. There is no paid
-budget or subscription-bypass configuration in this slice. Positive reported
+unavailable free endpoint must refuse, not relax the policy. Positive reported
 OpenRouter cost is treated as `MODEL_COST_VIOLATION`; a provider's report is
 still not a billing guarantee.
+
+### Fixed paid Phala profile
+
+The only paid option is `"paidProfile": "phala-qwen25-7b-v1"` inside the
+OpenRouter route, with the exact model `qwen/qwen-2.5-7b-instruct`. It pins
+`provider.only: ["phala"]`, prompt/completion price ceilings of USD0.10/0.20
+per million tokens, and request/image prices of zero. ZDR, denied data
+collection, no fallback and required parameters remain mandatory. No client
+or policy field can supply another paid model, provider or price. The profile
+requires at most 512 output tokens and a 30,000 ms timeout. Lower protected limits
+still apply. Changing the profile or model changes the policy fingerprint and
+requires a fresh matching Odoo context-release consent before business context.
+
+This fixed model advertises a 32,768-token context. Conservatively charging all
+32,768 input tokens and 512 output tokens at the ceiling rates gives
+`(32768 * 0.10 + 512 * 0.20) / 1000000 = USD0.0033792` per call, below the fixed
+USD0.01 reported-cost ceiling. Serialized input bytes remain a separate payload
+limit; the adapter makes no universal bytes-to-tokens claim. These engineering
+controls depend on the provider honoring its context, output and billing
+contract; they are not a bank-level spending guarantee or a refund mechanism.
+
+Paid admission uses the smaller of the configured global daily limit and a
+source-fixed 20 reservations per deployment/UTC day. The existing durable
+deployment-wide ledger and admission lock count all users, revisions, providers
+and statuses, including free, uncertain, cancelled or deleted-history calls.
+Changing a policy revision, route, or configured limit cannot reset this count.
+Together with the fixed per-call ceiling this bounds admitted paid calls at
+USD0.20/day under that billing contract. Deployment IDs must stay stable;
+separate deployments have separate allowances. No migration or second ledger
+is introduced.
+
+Paid completion requires valid input/output token counts and reported USD cost.
+Missing accounting remains null and the receipt becomes `uncertain`; its full
+daily slot remains consumed and no automatic replay occurs. Reported input
+above 32,768 tokens, output above the requested limit, or cost above USD0.01
+fails with `MODEL_COST_VIOLATION`. Such a receipt blocks further paid admission
+in that deployment's UTC-day window, including after policy changes. Calls
+already dispatched cannot be unbilled or recalled. Absent profiles keep the
+old free wire request, fingerprint, allowance and positive-cost refusal.
 
 A local route replaces the entire `route` object with this shape:
 

@@ -10,6 +10,7 @@ import {
   type ModelGrant,
   ModelPolicyError,
   type ModelPrincipal,
+  PAID_PHALA_PROFILE,
 } from "./policy";
 
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -113,13 +114,21 @@ export function createModelCallStore(database: Database) {
         );
         await sweep(tx, scope.deploymentId);
         const leaseToken = await historyLease(tx, scope);
-        const day = sql`date_trunc('day', clock_timestamp() at time zone 'UTC') at time zone 'UTC'`;
+        // A transaction can begin before midnight and wait for either lock. Use one
+        // database instant after admission waits, never DEFAULT now() (transaction start).
+        const [admission] = await tx.execute<{ admittedAt: string }>(
+          sql`select clock_timestamp()::text as "admittedAt"`,
+        );
+        if (!admission) throw new ModelPolicyError("MODEL_UNAVAILABLE");
+        const admittedAt = sql`${admission.admittedAt}::timestamptz`;
+        const day = sql`date_trunc('day', ${admittedAt} at time zone 'UTC') at time zone 'UTC'`;
         const [totals] = await tx
           .select({
             daily: sql<number>`count(*) filter (where ${calls.createdAt} >= ${day})::int`,
             userDaily: sql<number>`count(*) filter (where ${calls.createdAt} >= ${day} and ${calls.ownerUserId} = ${scope.userId} and ${calls.tenantId} = ${scope.tenantId})::int`,
             active: sql<number>`count(*) filter (where ${calls.status} in ('reserved','dispatched'))::int`,
             userActive: sql<number>`count(*) filter (where ${calls.status} in ('reserved','dispatched') and ${calls.ownerUserId} = ${scope.userId} and ${calls.tenantId} = ${scope.tenantId})::int`,
+            costViolations: sql<number>`count(*) filter (where ${calls.createdAt} >= ${day} and ${calls.errorCode} = 'MODEL_COST_VIOLATION')::int`,
           })
           .from(calls)
           .where(eq(calls.deploymentId, scope.deploymentId));
@@ -132,9 +141,18 @@ export function createModelCallStore(database: Database) {
               eq(calls.runId, scope.runId),
             ),
           );
+        const paid =
+          grant.route.provider === "openrouter" && !!grant.route.paidProfile;
+        const globalDailyLimit = paid
+          ? Math.min(
+              grant.globalMaxCallsPerDay,
+              PAID_PHALA_PROFILE.maxCallsPerDay,
+            )
+          : grant.globalMaxCallsPerDay;
         if (
           !totals ||
-          totals.daily >= grant.globalMaxCallsPerDay ||
+          totals.daily >= globalDailyLimit ||
+          (paid && totals.costViolations > 0) ||
           totals.userDaily >= grant.limits.maxCallsPerDay ||
           totals.active >= grant.globalMaxConcurrent ||
           totals.userActive >= grant.limits.maxConcurrent ||
@@ -162,7 +180,8 @@ export function createModelCallStore(database: Database) {
             inputBytes: input.bytes,
             requestDigest: input.digest,
             status: "reserved",
-            expiresAt: sql`clock_timestamp() + ${grant.limits.timeoutMs + 5000} * interval '1 millisecond'`,
+            createdAt: admittedAt,
+            expiresAt: sql`${admittedAt} + ${grant.limits.timeoutMs + 5000} * interval '1 millisecond'`,
           })
           .returning();
         if (!call) throw new ModelPolicyError("MODEL_UNAVAILABLE");

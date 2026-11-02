@@ -23,6 +23,16 @@ export class ModelPolicyError extends Error {
 const identifier = z.string().trim().min(1).max(200);
 const absolutePath = z.string().min(1).max(1000).refine(isAbsolute);
 const modelId = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,199}$/);
+/** Fixed engineering limits, not operator-adjustable daily spend multipliers. */
+export const PAID_PHALA_PROFILE = {
+  id: "phala-qwen25-7b-v1",
+  model: "qwen/qwen-2.5-7b-instruct",
+  maxInputTokens: 32768,
+  maxOutputTokens: 512,
+  maxCostUsd: 0.01,
+  maxCallsPerDay: 20,
+  timeoutMs: 30000,
+} as const;
 const localBase = z
   .string()
   .url()
@@ -44,6 +54,7 @@ const route = z.discriminatedUnion("provider", [
     provider: z.literal("openrouter"),
     model: modelId,
     apiKeyFile: absolutePath,
+    paidProfile: z.literal(PAID_PHALA_PROFILE.id).optional(),
   }),
   z.strictObject({
     provider: z.literal("local"),
@@ -52,26 +63,40 @@ const route = z.discriminatedUnion("provider", [
     apiKeyFile: absolutePath.optional(),
   }),
 ]);
-const member = z.strictObject({
-  userId: identifier,
-  tenantId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/),
-  active: z.boolean(),
-  revision: z.number().int().positive(),
-  expiresAt: z.iso.datetime(),
-  agentIds: z.array(identifier).min(1).max(50),
-  allowConversationContext: z.literal(true),
-  allowPersonalInstructions: z.boolean(),
-  route,
-  limits: z.strictObject({
-    maxInputBytes: z.number().int().min(1024).max(262144),
-    maxOutputTokens: z.number().int().min(1).max(4096),
-    maxOutputBytes: z.number().int().min(1024).max(262144),
-    maxCallsPerRun: z.number().int().min(1).max(8),
-    maxCallsPerDay: z.number().int().min(1).max(1000),
-    maxConcurrent: z.number().int().min(1).max(4),
-    timeoutMs: z.number().int().min(1000).max(120000),
-  }),
-});
+const member = z
+  .strictObject({
+    userId: identifier,
+    tenantId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/),
+    active: z.boolean(),
+    revision: z.number().int().positive(),
+    expiresAt: z.iso.datetime(),
+    agentIds: z.array(identifier).min(1).max(50),
+    allowConversationContext: z.literal(true),
+    allowPersonalInstructions: z.boolean(),
+    route,
+    limits: z.strictObject({
+      maxInputBytes: z.number().int().min(1024).max(262144),
+      maxOutputTokens: z.number().int().min(1).max(4096),
+      maxOutputBytes: z.number().int().min(1024).max(262144),
+      maxCallsPerRun: z.number().int().min(1).max(8),
+      maxCallsPerDay: z.number().int().min(1).max(1000),
+      maxConcurrent: z.number().int().min(1).max(4),
+      timeoutMs: z.number().int().min(1000).max(120000),
+    }),
+  })
+  .superRefine((binding, context) => {
+    if (binding.route.provider !== "openrouter" || !binding.route.paidProfile)
+      return;
+    if (
+      binding.route.model !== PAID_PHALA_PROFILE.model ||
+      binding.limits.maxOutputTokens > PAID_PHALA_PROFILE.maxOutputTokens ||
+      binding.limits.timeoutMs > PAID_PHALA_PROFILE.timeoutMs
+    )
+      context.addIssue({
+        code: "custom",
+        message: "Invalid fixed paid profile",
+      });
+  });
 const configuration = z.strictObject({
   version: z.literal(1),
   deploymentId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/),
@@ -227,3 +252,14 @@ export const OPENROUTER_OWNED_PREFERENCES = {
   zdr: true,
   max_price: { prompt: 0, completion: 0, request: 0, image: 0 },
 } as const;
+
+/** The only paid route is a fixed text-only profile; clients cannot supply rates. */
+export function openRouterOwnedPreferences(grant: ModelGrant) {
+  if (grant.route.provider !== "openrouter" || !grant.route.paidProfile)
+    return OPENROUTER_OWNED_PREFERENCES;
+  return {
+    ...OPENROUTER_OWNED_PREFERENCES,
+    only: ["phala"],
+    max_price: { prompt: 0.1, completion: 0.2, request: 0, image: 0 },
+  };
+}

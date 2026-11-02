@@ -2,8 +2,11 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { historyDigest } from "../src/scout/history/protocol";
 import {
   createModelPolicyReader,
+  openRouterOwnedPreferences,
+  PAID_PHALA_PROFILE,
   parseModelPolicy,
   readModelKey,
   readProtectedModelFile,
@@ -59,6 +62,61 @@ afterAll(async () => {
     await rm(directory, { recursive: true, force: true });
 });
 describe("operator-owned model and context policy", () => {
+  test("absent paid profile preserves the original fingerprint and exact free preferences", () => {
+    const original = policy();
+    const grant = parseModelPolicy(original, principal);
+    expect(grant.fingerprint).toBe(historyDigest(original));
+    expect(grant.route).not.toHaveProperty("paidProfile");
+    expect(openRouterOwnedPreferences(grant)).toEqual({
+      allow_fallbacks: false,
+      require_parameters: true,
+      data_collection: "deny",
+      zdr: true,
+      max_price: { prompt: 0, completion: 0, request: 0, image: 0 },
+    });
+  });
+  test("the fixed paid profile binds one model and changes the consent fingerprint", () => {
+    const original = policy();
+    const paid = policy();
+    Object.assign(paid.bindings[0].route, {
+      model: PAID_PHALA_PROFILE.model,
+      paidProfile: PAID_PHALA_PROFILE.id,
+    });
+    paid.bindings[0].limits.maxOutputTokens = 512;
+    paid.bindings[0].limits.timeoutMs = 30000;
+    const grant = parseModelPolicy(paid, principal);
+    expect(grant.fingerprint).not.toBe(
+      parseModelPolicy(original, principal).fingerprint,
+    );
+    expect(openRouterOwnedPreferences(grant)).toEqual({
+      allow_fallbacks: false,
+      require_parameters: true,
+      data_collection: "deny",
+      zdr: true,
+      only: ["phala"],
+      max_price: { prompt: 0.1, completion: 0.2, request: 0, image: 0 },
+    });
+    for (const changed of [
+      { model: "openrouter/free" },
+      { paidProfile: "unapproved-profile" },
+      { max_price: { prompt: 100 } },
+      { paidProfile: null },
+      { provider: "local", baseUrl: "http://127.0.0.1:11434/v1" },
+    ]) {
+      const value = structuredClone(paid);
+      Object.assign(value.bindings[0].route, changed);
+      expect(() => parseModelPolicy(value, principal)).toThrow(
+        "MODEL_NOT_CONFIGURED",
+      );
+    }
+    for (const changed of [{ maxOutputTokens: 513 }, { timeoutMs: 30001 }]) {
+      const value = structuredClone(paid);
+      Object.assign(value.bindings[0].limits, changed);
+      expect(() => parseModelPolicy(value, principal)).toThrow(
+        "MODEL_NOT_CONFIGURED",
+      );
+    }
+  });
   test("uses exact native subject/tenant/deployment/agent binding, never an email or browser route", () => {
     expect(parseModelPolicy(policy(), principal).route.model).toBe(
       "openrouter/free",

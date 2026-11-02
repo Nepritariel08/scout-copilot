@@ -10,7 +10,8 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { createDatabase } from "../src/db/client";
 import { users } from "../src/db/schema";
 import {
@@ -22,6 +23,7 @@ import { createHistoryStore } from "../src/scout/history/store";
 import { OwnedTextModel } from "../src/scout/owned-model/model";
 import {
   type ModelGrant,
+  PAID_PHALA_PROFILE,
   parseModelPolicy,
 } from "../src/scout/owned-model/policy";
 import {
@@ -57,7 +59,7 @@ const options = (): Options => ({
   ],
 });
 
-function grantFor(provider: "local" | "openrouter" = "local") {
+function grantFor(provider: "local" | "openrouter" = "local", paid = false) {
   return parseModelPolicy(
     {
       version: 1,
@@ -78,8 +80,9 @@ function grantFor(provider: "local" | "openrouter" = "local") {
             provider === "openrouter"
               ? {
                   provider,
-                  model: "openrouter/free",
+                  model: paid ? PAID_PHALA_PROFILE.model : "openrouter/free",
                   apiKeyFile: keyFile,
+                  ...(paid ? { paidProfile: PAID_PHALA_PROFILE.id } : {}),
                 }
               : {
                   provider,
@@ -89,7 +92,7 @@ function grantFor(provider: "local" | "openrouter" = "local") {
                 },
           limits: {
             maxInputBytes: 65536,
-            maxOutputTokens: 16,
+            maxOutputTokens: paid ? 512 : 16,
             maxOutputBytes: 4096,
             maxCallsPerRun: 1,
             maxCallsPerDay: 100,
@@ -140,7 +143,9 @@ function transport(
   return Object.assign(
     async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => {
       providerCalls++;
-      expect((await receipts())[0]?.status).toBe("dispatched");
+      expect(
+        (await receipts()).some((receipt) => receipt.status === "dispatched"),
+      ).toBe(true);
       if (typeof body === "function") return body(init ?? {});
       return new Response(body, {
         headers: { "content-type": "text/event-stream" },
@@ -170,6 +175,59 @@ const success = () =>
     choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
   }) +
   "data: [DONE]\n\n";
+
+function paidSuccess(
+  usage: unknown = { prompt_tokens: 57, completion_tokens: 6, cost: 0.0000069 },
+) {
+  return success().replace(
+    "data: [DONE]\n\n",
+    `${packet({ id: "edge", choices: [], usage })}data: [DONE]\n\n`,
+  );
+}
+
+async function seedPaidQuota(
+  count: number,
+  errorCode?: string,
+  yesterday = false,
+) {
+  const now = new Date();
+  const createdAt = yesterday
+    ? new Date(
+        Date.UTC(
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          now.getUTCDate() - 1,
+          12,
+        ),
+      )
+    : now;
+  await database.insert(calls).values(
+    Array.from({ length: count }, (_, index) => ({
+      id: randomUUID(),
+      ownerUserId: index % 2 ? `${prefix}-another-user` : userId,
+      tenantId: index % 2 ? "another-tenant" : principal.tenantId,
+      deploymentId: prefix,
+      agentId,
+      threadId: randomUUID(),
+      runId: randomUUID(),
+      ordinal: 1,
+      leaseToken: randomUUID(),
+      requestDigest: "a".repeat(64),
+      policyFingerprint: (index % 2 ? "b" : "c").repeat(64),
+      policyRevision: index + 1,
+      provider: "openrouter" as const,
+      requestedModel: index % 2 ? "openrouter/free" : PAID_PHALA_PROFILE.model,
+      endpointOrigin: "https://openrouter.ai",
+      inputBytes: 100,
+      status: (
+        ["completed", "refused", "uncertain", "reserved", "dispatched"] as const
+      )[index % 5],
+      errorCode: errorCode ?? null,
+      createdAt,
+      expiresAt: new Date(createdAt.getTime() - 1000),
+    })),
+  );
+}
 
 function model(
   scope: ModelRun,
@@ -1447,5 +1505,377 @@ describe("owned model adversarial SQL/public-SDK boundaries", () => {
     expect(receipt?.status).toBe("completed");
     expect(receipt).not.toHaveProperty("leaseToken");
     expect(providerCalls).toBe(1);
+  });
+
+  test("paid profile pins Phala, bounded output and prices despite hostile client options", async () => {
+    const grant = grantFor("openrouter", true);
+    let captured: Record<string, unknown> | undefined;
+    const result = await model(
+      await run(),
+      grant,
+      transport((init) => {
+        captured = JSON.parse(String(init.body));
+        return new Response(paidSuccess(), {
+          headers: { "content-type": "text/event-stream" },
+        });
+      }),
+    ).doGenerate({
+      ...options(),
+      maxOutputTokens: 4096,
+      providerOptions: {
+        openai: {
+          model: "unapproved",
+          provider: { only: ["unapproved"], max_price: { prompt: 100 } },
+        },
+      },
+      headers: { "x-provider": "unapproved" },
+    });
+    expect(result.content).toEqual([{ type: "text", text: "EDGE_OK" }]);
+    expect(captured?.model).toBe(PAID_PHALA_PROFILE.model);
+    expect(captured?.max_tokens).toBe(512);
+    expect(captured?.provider).toEqual({
+      allow_fallbacks: false,
+      require_parameters: true,
+      data_collection: "deny",
+      zdr: true,
+      only: ["phala"],
+      max_price: { prompt: 0.1, completion: 0.2, request: 0, image: 0 },
+    });
+    expect(await terminalReceipt()).toMatchObject({
+      status: "completed",
+      inputTokens: 57,
+      outputTokens: 6,
+      reportedCostUsd: "0.000006900000",
+    });
+    expect(providerCalls).toBe(1);
+  });
+
+  test("paid accounting accepts exact input/output/cost ceilings without rounding upward charges away", async () => {
+    await model(
+      await run(),
+      grantFor("openrouter", true),
+      transport(
+        paidSuccess({
+          prompt_tokens: 32768,
+          completion_tokens: 512,
+          cost: 0.01,
+        }),
+      ),
+    ).doGenerate(options());
+    expect(await terminalReceipt()).toMatchObject({
+      status: "completed",
+      inputTokens: 32768,
+      outputTokens: 512,
+      reportedCostUsd: "0.010000000000",
+    });
+  });
+
+  for (const [name, usage, error] of [
+    ["missing all usage", undefined, "MODEL_UNAVAILABLE"],
+    [
+      "missing cost",
+      { prompt_tokens: 1, completion_tokens: 1 },
+      "MODEL_UNAVAILABLE",
+    ],
+    [
+      "null cost",
+      { prompt_tokens: 1, completion_tokens: 1, cost: null },
+      "MODEL_UNAVAILABLE",
+    ],
+    ["missing input", { completion_tokens: 1, cost: 0 }, "MODEL_UNAVAILABLE"],
+    ["missing output", { prompt_tokens: 1, cost: 0 }, "MODEL_UNAVAILABLE"],
+    [
+      "invalid tokens",
+      { prompt_tokens: 1.5, completion_tokens: 1, cost: 0 },
+      "MODEL_UNAVAILABLE",
+    ],
+    [
+      "invalid cost",
+      { prompt_tokens: 1, completion_tokens: 1, cost: "0" },
+      "MODEL_UNAVAILABLE",
+    ],
+    [
+      "input beyond context",
+      { prompt_tokens: 32769, completion_tokens: 1, cost: 0.001 },
+      "MODEL_COST_VIOLATION",
+    ],
+    [
+      "input beyond receipt integer range",
+      { prompt_tokens: 2147483648, completion_tokens: 1, cost: 0.001 },
+      "MODEL_COST_VIOLATION",
+    ],
+    [
+      "output beyond requested cap",
+      { prompt_tokens: 1, completion_tokens: 513, cost: 0.001 },
+      "MODEL_COST_VIOLATION",
+    ],
+    [
+      "cost just above cap",
+      { prompt_tokens: 1, completion_tokens: 1, cost: 0.010000000001 },
+      "MODEL_COST_VIOLATION",
+    ],
+    [
+      "cost beyond receipt formatting range",
+      { prompt_tokens: 1, completion_tokens: 1, cost: 1e100 },
+      "MODEL_COST_VIOLATION",
+    ],
+  ] as const) {
+    test(`paid ${name} cannot become completed or replay automatically`, async () => {
+      const response = usage === undefined ? success() : paidSuccess(usage);
+      await expect(
+        model(
+          await run(),
+          grantFor("openrouter", true),
+          transport(response),
+        ).doGenerate(options()),
+      ).rejects.toThrow(error);
+      expect(await terminalReceipt()).toMatchObject({
+        status: "uncertain",
+        errorCode: error,
+      });
+      expect(providerCalls).toBe(1);
+      expect(await receipts()).toHaveLength(1);
+    });
+  }
+
+  test("paid reported output respects a lower protected token cap", async () => {
+    const grant = grantFor("openrouter", true);
+    grant.limits.maxOutputTokens = 4;
+    await expect(
+      model(await run(), grant, transport(paidSuccess())).doGenerate(options()),
+    ).rejects.toThrow("MODEL_COST_VIOLATION");
+  });
+
+  test("paid admission serializes its fixed twentieth slot across users, revisions and all retained statuses", async () => {
+    await seedPaidQuota(19);
+    const grant = grantFor("openrouter", true);
+    const scopes = await Promise.all([run(), run()]);
+    const results = await Promise.allSettled(
+      scopes.map((scope) =>
+        store.reserve(scope, grant, {
+          digest: "d".repeat(64),
+          bytes: 100,
+          endpointOrigin: "https://openrouter.ai",
+        }),
+      ),
+    );
+    expect(results.filter((item) => item.status === "fulfilled")).toHaveLength(
+      1,
+    );
+    expect(results.filter((item) => item.status === "rejected")).toHaveLength(
+      1,
+    );
+    const winner = results.find((item) => item.status === "fulfilled");
+    if (winner?.status !== "fulfilled")
+      throw new Error("Missing twentieth reservation");
+    await store.finish(winner.value, "uncertain");
+    await database.delete(threads).where(eq(threads.id, winner.value.threadId));
+    const revised = {
+      ...grant,
+      revision: 200,
+      fingerprint: "f".repeat(64),
+      globalMaxCallsPerDay: 10000,
+    };
+    await expect(
+      store.reserve(await run(), revised, {
+        digest: "e".repeat(64),
+        bytes: 100,
+        endpointOrigin: "https://openrouter.ai",
+      }),
+    ).rejects.toThrow("MODEL_LIMIT");
+    expect(await receipts()).toHaveLength(20);
+    // A later free grant can retain its old allowance, but switching back cannot reset paid admission.
+    const free = await store.reserve(await run(), grantFor("openrouter"), {
+      digest: "e".repeat(64),
+      bytes: 100,
+      endpointOrigin: "https://openrouter.ai",
+    });
+    await store.finish(free, "refused");
+    await expect(
+      store.reserve(await run(), revised, {
+        digest: "e".repeat(64),
+        bytes: 100,
+        endpointOrigin: "https://openrouter.ai",
+      }),
+    ).rejects.toThrow("MODEL_LIMIT");
+    expect(await receipts()).toHaveLength(21);
+    expect(providerCalls).toBe(0);
+  });
+
+  test("paid unknown cost consumes the last daily slot and never invents zero accounting", async () => {
+    await seedPaidQuota(19);
+    const grant = grantFor("openrouter", true);
+    await expect(
+      model(
+        await run(),
+        grant,
+        transport(
+          paidSuccess({
+            prompt_tokens: 57,
+            completion_tokens: 6,
+          }),
+        ),
+      ).doGenerate(options()),
+    ).rejects.toThrow("MODEL_UNAVAILABLE");
+    const unknown = (await receipts()).find(
+      (row) => row.errorCode === "MODEL_UNAVAILABLE",
+    );
+    expect(unknown).toMatchObject({
+      status: "uncertain",
+      reportedCostUsd: null,
+    });
+    await expect(
+      model(
+        await run(),
+        { ...grant, revision: 2, fingerprint: "f".repeat(64) },
+        transport(paidSuccess()),
+      ).doGenerate(options()),
+    ).rejects.toThrow("MODEL_LIMIT");
+    expect(providerCalls).toBe(1);
+  });
+
+  test("paid overrun trips a deployment breaker that survives policy changes", async () => {
+    const grant = grantFor("openrouter", true);
+    await expect(
+      model(
+        await run(),
+        grant,
+        transport(
+          paidSuccess({
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            cost: 0.010000000001,
+          }),
+        ),
+      ).doGenerate(options()),
+    ).rejects.toThrow("MODEL_COST_VIOLATION");
+    await expect(
+      model(
+        await run(),
+        { ...grant, revision: 2, fingerprint: "f".repeat(64) },
+        transport(paidSuccess()),
+      ).doGenerate(options()),
+    ).rejects.toThrow("MODEL_LIMIT");
+    expect(providerCalls).toBe(1);
+    expect(await receipts()).toHaveLength(1);
+  });
+
+  test("paid admission retains smaller configured limits and UTC-day boundaries", async () => {
+    await seedPaidQuota(20, "MODEL_COST_VIOLATION", true);
+    const grant = { ...grantFor("openrouter", true), globalMaxCallsPerDay: 1 };
+    await model(await run(), grant, transport(paidSuccess())).doGenerate(
+      options(),
+    );
+    await expect(
+      model(await run(), grant, transport(paidSuccess())).doGenerate(options()),
+    ).rejects.toThrow("MODEL_LIMIT");
+    expect(providerCalls).toBe(1);
+    expect(await receipts()).toHaveLength(21);
+  });
+
+  test("paid admission crossing UTC midnight uses one post-lock database instant for quotas and the receipt", async () => {
+    // Model a transaction that began on the old day and finished its lock waits
+    // on the new day. Only the admission-clock read is substituted; SQL, native
+    // leases, locks, quota predicates and inserts execute on the real test DB.
+    const [boundary] = await database.execute<{
+      admittedAt: string;
+      oldDay: string;
+    }>(sql`
+      with stamp as materialized (select clock_timestamp() as at)
+      select
+        (((date_trunc('day', at at time zone 'UTC') + interval '1 day')
+          at time zone 'UTC') + interval '1 millisecond')::text as "admittedAt",
+        (date_trunc('day', at at time zone 'UTC')
+          at time zone 'UTC')::text as "oldDay"
+      from stamp
+    `);
+    if (!boundary) throw new Error("Missing synthetic database boundary");
+    await seedPaidQuota(20, "MODEL_COST_VIOLATION");
+    await database
+      .update(calls)
+      .set({ createdAt: new Date(boundary.oldDay) })
+      .where(eq(calls.deploymentId, prefix));
+    await seedPaidQuota(19);
+    // Move only the new batch, whose cost marker is null, into the new UTC day.
+    await database.execute(sql`update ${calls} set created_at = ${boundary.admittedAt}::timestamptz
+      where deployment_id = ${prefix} and error_code is null`);
+    let clockReads = 0;
+    const dialect = new PgDialect();
+    const boundaryDatabase = new Proxy(database, {
+      get(target, property, receiver) {
+        if (property !== "transaction")
+          return Reflect.get(target, property, receiver);
+        return (callback: Parameters<typeof target.transaction>[0]) =>
+          target.transaction((tx) =>
+            callback(
+              new Proxy(tx, {
+                get(transaction, member, transactionReceiver) {
+                  if (member !== "execute")
+                    return Reflect.get(
+                      transaction,
+                      member,
+                      transactionReceiver,
+                    );
+                  return (
+                    statement: Parameters<typeof transaction.execute>[0],
+                  ) => {
+                    const query =
+                      typeof statement === "string"
+                        ? statement
+                        : dialect.sqlToQuery(statement.getSQL()).sql;
+                    if (
+                      query !== 'select clock_timestamp()::text as "admittedAt"'
+                    )
+                      return transaction.execute(statement);
+                    clockReads++;
+                    // A premature clock capture cannot pass: both required locks must exist.
+                    return transaction.execute(sql`
+                select ${boundary.admittedAt}::timestamptz::text as "admittedAt"
+                where exists (select 1 from pg_locks where pid = pg_backend_pid()
+                  and locktype = 'advisory' and mode = 'ExclusiveLock' and granted)
+                and exists (select 1 from pg_locks where pid = pg_backend_pid()
+                  and relation = 'scout_history_threads'::regclass
+                  and mode = 'RowShareLock' and granted)
+              `);
+                  };
+                },
+              }),
+            ),
+          );
+      },
+    });
+    const boundaryStore = createModelCallStore(boundaryDatabase);
+    const grant = grantFor("openrouter", true);
+    const call = await boundaryStore.reserve(await run(), grant, {
+      digest: "d".repeat(64),
+      bytes: 100,
+      endpointOrigin: "https://openrouter.ai",
+    });
+    expect(call.createdAt.toISOString()).toBe(
+      new Date(boundary.admittedAt).toISOString(),
+    );
+    expect(call.expiresAt.getTime() - call.createdAt.getTime()).toBe(
+      grant.limits.timeoutMs + 5000,
+    );
+    expect(clockReads).toBe(1);
+    await boundaryStore.finish(call, "refused");
+    await expect(
+      boundaryStore.reserve(
+        await run(),
+        { ...grant, revision: 2, fingerprint: "f".repeat(64) },
+        {
+          digest: "e".repeat(64),
+          bytes: 100,
+          endpointOrigin: "https://openrouter.ai",
+        },
+      ),
+    ).rejects.toThrow("MODEL_LIMIT");
+    expect(clockReads).toBe(2);
+    const [today] = await database.execute<{ count: number }>(sql`
+      select count(*)::int as count from ${calls} where deployment_id = ${prefix}
+        and created_at >= (date_trunc('day', ${boundary.admittedAt}::timestamptz at time zone 'UTC') at time zone 'UTC')
+    `);
+    expect(today?.count).toBe(20);
+    expect(providerCalls).toBe(0);
   });
 });
