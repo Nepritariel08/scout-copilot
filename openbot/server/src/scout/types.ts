@@ -91,6 +91,7 @@ export type ScoutBinding = ScoutMembership & {
     SCOUT_ODOO_UID: string;
     SCOUT_ODOO_COMPANY_IDS: string;
     SCOUT_ODOO_KEY_FILE: string;
+    SCOUT_QUEUE_SOURCE_SURFACE?: "chatgpt" | "api";
   };
   identity: { database: string; uid: number; companyIds: number[] };
 };

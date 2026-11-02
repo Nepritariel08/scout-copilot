@@ -58,6 +58,7 @@ const membership = z.strictObject({
     SCOUT_ODOO_UID: positiveInteger,
     SCOUT_ODOO_COMPANY_IDS: companyIds,
     SCOUT_ODOO_KEY_FILE: absolutePath,
+    SCOUT_QUEUE_SOURCE_SURFACE: z.enum(["chatgpt", "api"]).optional(),
   }),
 });
 const configuration = z.strictObject({
@@ -133,6 +134,11 @@ export function parseScoutBinding(
         keyFile: binding.environment.SCOUT_ODOO_KEY_FILE,
         expiresAt: binding.expiresAt,
         policy: tenantPolicy,
+        // Preserve old intent fingerprints when no override is configured.
+        // An explicit provenance change must invalidate the previous binding.
+        ...(binding.environment.SCOUT_QUEUE_SOURCE_SURFACE === undefined
+          ? {}
+          : { sourceSurface: binding.environment.SCOUT_QUEUE_SOURCE_SURFACE }),
       }),
     )
     .digest("hex");

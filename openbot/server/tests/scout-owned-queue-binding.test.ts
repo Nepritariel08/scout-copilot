@@ -48,6 +48,19 @@ describe("owned queue requires separate matching current membership and draft au
     expect((await native()).userId).toBe(actor.id);
     await expect(read(actor)).rejects.toThrow("SCOUT_NOT_CONFIGURED");
   });
+  test("operator source changes queue provenance without changing native membership", async () => {
+    const { queue, native, read } = fixture();
+    const original = await read(actor);
+    const nativeFingerprint = (await native()).fingerprint;
+    Object.assign(queue.bindings[0].environment, {
+      SCOUT_QUEUE_SOURCE_SURFACE: "api",
+    });
+    const changed = await read(actor);
+    expect(changed.fingerprint).not.toBe(original.fingerprint);
+    expect(changed.identity).toEqual(original.identity);
+    expect(changed.environment.SCOUT_QUEUE_SOURCE_SURFACE).toBe("api");
+    expect((await native()).fingerprint).toBe(nativeFingerprint);
+  });
   test("a queue grant cannot admit a revoked native member or replace native policy", async () => {
     const { membership, read } = fixture();
     membership.memberships[0].active = false;
