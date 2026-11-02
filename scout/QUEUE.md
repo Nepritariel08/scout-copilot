@@ -37,16 +37,29 @@ verified owner/service-only Windows ACLs. Only the key path is stored in JSON.
 The reader rejects non-files, relative paths, oversized/invalid/extra fields,
 insecure remote origins and arbitrary process/module/environment arguments.
 Use the pinned queue connector contract
-`dba1dab16dcaa32c03984229c628cd866e02e712` in a separate protected environment.
+`70d409d328a2afb9c5bb52c0a3da39e6e3f97a4f` in a separate protected environment.
 The six requester tools and actual UID/database/companies/draft-only/no-worker/
 no-business-actions context are verified on every connection and operation.
 
-**Origin-label limitation before live rollout:** that pinned MCP entrypoint
-currently writes `source_surface=chatgpt`, including calls from another client.
-Scout keeps its actual conversation/source ID and `scout:` request key locally,
-but a live Scout deployment must reconcile the connector's origin labeling with
-the queue owner. Do not report that field as accurate Scout-client provenance.
-The canonical queue/connector source was not changed by this adapter lane.
+For Scout, explicitly set `SCOUT_QUEUE_SOURCE_SURFACE=api` in that protected
+binding's `environment`. Only `api` and `chatgpt` are admitted; an absent setting
+preserves the legacy `chatgpt` process default and the previously issued Scout
+binding fingerprint. An explicit setting is included in the fingerprint, so a
+change cannot recover an old intent under unchanged provenance authority.
+Ambient process settings, browser requests and MCP/model tool arguments cannot
+choose the value. The existing fixed command remains `python -m
+scout_queue.mcp_server`; no wrapper, extra argument or worker is introduced.
+
+The canonical connector revision above adds the separate operator-only setting;
+it does not change the published ChatGPT default or the six tool schemas. Scout
+uses Odoo's existing `api` source label together with its actual conversation/
+source ID, native requester binding, `scout:` request key and receipt linkage.
+The generic label alone is not proof of authenticated client or user identity.
+The older deployed `dba1dab16dcaa32c03984229c628cd866e02e712` connector always
+labels submissions `chatgpt`; it must not be used to claim accurate Scout API
+provenance. Source changes and a configured label do not establish deployment
+or a new Scout-originated DSH round trip; qualify the exact installed connector
+and protected binding, then retain those live receipts separately.
 
 ## Submission, review and recovery
 

@@ -131,6 +131,49 @@ describe("explicit native account to tenant/requester binding", () => {
     config.policies[0].revision = config.bindings[0].policyRevision = 2;
     expect(parseScoutBinding(config, actor).fingerprint).not.toBe(original);
   });
+  test("absent operator source preserves the previously issued fingerprint", () => {
+    const config = scoutFixtureConfig();
+    config.bindings[0].command[0] = "/synthetic-python";
+    config.bindings[0].cwd = "/synthetic-queue";
+    config.bindings[0].environment.SCOUT_ODOO_KEY_FILE =
+      "/synthetic-requester.key";
+    // Captured from unchanged base 86623a9 with these fixed public fixture paths.
+    expect(parseScoutBinding(config, actor).fingerprint).toBe(
+      "961a158c2131e2c53518d177a4bc1afaf2c9b5bd104afc2fd72ca280f025dc56",
+    );
+  });
+  test("an explicit operator source is pinned without changing requester authority", () => {
+    const config = scoutFixtureConfig();
+    const original = parseScoutBinding(config, actor);
+    Object.assign(config.bindings[0].environment, {
+      SCOUT_QUEUE_SOURCE_SURFACE: "api",
+    });
+    const api = parseScoutBinding(config, actor);
+    expect(api.environment.SCOUT_QUEUE_SOURCE_SURFACE).toBe("api");
+    expect(api.identity).toEqual(original.identity);
+    expect(api.fingerprint).not.toBe(original.fingerprint);
+    Object.assign(config.bindings[0].environment, {
+      SCOUT_QUEUE_SOURCE_SURFACE: "chatgpt",
+    });
+    const chatgpt = parseScoutBinding(config, actor);
+    expect(chatgpt.fingerprint).not.toBe(api.fingerprint);
+    expect(chatgpt.fingerprint).not.toBe(original.fingerprint);
+    const legacy = scoutFixtureConfig();
+    expect(parseScoutBinding(legacy, actor).fingerprint).toBe(
+      original.fingerprint,
+    );
+  });
+  for (const source of ["", "scout", "dsh", " api", "API", null, false, {}]) {
+    test(`invalid operator source ${JSON.stringify(source)} is refused`, () => {
+      const config = scoutFixtureConfig();
+      Object.assign(config.bindings[0].environment, {
+        SCOUT_QUEUE_SOURCE_SURFACE: source,
+      });
+      expect(() => parseScoutBinding(config, actor)).toThrow(
+        "SCOUT_NOT_CONFIGURED",
+      );
+    });
+  }
   test("protected file is re-read, including revocation and malformed data", async () => {
     const directory = await mkdtemp(join(tmpdir(), "scout-binding-"));
     const path = join(directory, "binding.json");

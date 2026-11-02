@@ -21,8 +21,24 @@ export const SCOUT_REQUESTER_TOOLS = [
   "scout_cancel_work",
 ] as const;
 
-function transportFor(binding: ScoutBinding): Transport {
-  const env: Record<string, string> = { ...binding.environment };
+/** Only protected binding values and the existing platform allowlist reach stdio. */
+export function scoutConnectorEnvironment(
+  binding: ScoutBinding,
+  environment: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+  const env: Record<string, string> = {
+    SCOUT_ODOO_URL: binding.environment.SCOUT_ODOO_URL,
+    SCOUT_ODOO_DB: binding.environment.SCOUT_ODOO_DB,
+    SCOUT_ODOO_UID: binding.environment.SCOUT_ODOO_UID,
+    SCOUT_ODOO_COMPANY_IDS: binding.environment.SCOUT_ODOO_COMPANY_IDS,
+    SCOUT_ODOO_KEY_FILE: binding.environment.SCOUT_ODOO_KEY_FILE,
+  };
+  const source = binding.environment.SCOUT_QUEUE_SOURCE_SURFACE;
+  if (source !== undefined) {
+    if (source !== "chatgpt" && source !== "api")
+      throw new ScoutError("SCOUT_NOT_CONFIGURED", 503);
+    env.SCOUT_QUEUE_SOURCE_SURFACE = source;
+  }
   for (const key of [
     "PATH",
     "SystemRoot",
@@ -34,13 +50,17 @@ function transportFor(binding: ScoutBinding): Transport {
     "LC_ALL",
     "SSL_CERT_FILE",
   ]) {
-    if (process.env[key]) env[key] = process.env[key];
+    if (environment[key]) env[key] = environment[key];
   }
+  return env;
+}
+
+function transportFor(binding: ScoutBinding): Transport {
   const transport = new StdioClientTransport({
     command: binding.command[0],
     args: binding.command.slice(1),
     cwd: binding.cwd,
-    env,
+    env: scoutConnectorEnvironment(binding),
     stderr: "ignore",
   });
   return transport;

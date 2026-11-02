@@ -17,14 +17,19 @@
       "policyRevision": 1,
       "active": false,
       "expiresAt": "2000-01-01T00:00:00Z",
-      "command": ["/opt/scout-queue/.venv/bin/python", "-m", "scout_queue.mcp_server"],
+      "command": [
+        "/opt/scout-queue/.venv/bin/python",
+        "-m",
+        "scout_queue.mcp_server"
+      ],
       "cwd": "/opt/scout-queue",
       "environment": {
         "SCOUT_ODOO_URL": "https://odoo.example.com",
         "SCOUT_ODOO_DB": "approved_database",
         "SCOUT_ODOO_UID": "7",
         "SCOUT_ODOO_COMPANY_IDS": "1",
-        "SCOUT_ODOO_KEY_FILE": "/etc/scout/requester.key"
+        "SCOUT_ODOO_KEY_FILE": "/etc/scout/requester.key",
+        "SCOUT_QUEUE_SOURCE_SURFACE": "api"
       }
     }
   ]
