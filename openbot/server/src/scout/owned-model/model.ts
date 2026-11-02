@@ -5,7 +5,8 @@ import { ScoutError } from "../types";
 import {
   type ModelGrant,
   ModelPolicyError,
-  OPENROUTER_OWNED_PREFERENCES,
+  openRouterOwnedPreferences,
+  PAID_PHALA_PROFILE,
   readModelKey,
 } from "./policy";
 import type { ModelCallStore, ModelRun, ModelUsage } from "./store";
@@ -132,6 +133,8 @@ export class OwnedTextModel implements PlanLanguageModel {
     let grant = await this.authorize();
     if (grant.fingerprint !== this.initialGrant.fingerprint)
       throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+    const paid =
+      grant.route.provider === "openrouter" && !!grant.route.paidProfile;
     // The public built-in agent advertises its own tools. This text-only port discards all
     // definitions/selection rather than forwarding them; tool content and provider calls still deny.
     const body = {
@@ -142,7 +145,7 @@ export class OwnedTextModel implements PlanLanguageModel {
       ...(grant.route.provider === "openrouter"
         ? {
             stream_options: { include_usage: true },
-            provider: OPENROUTER_OWNED_PREFERENCES,
+            provider: openRouterOwnedPreferences(grant),
           }
         : {}),
     };
@@ -323,11 +326,22 @@ export class OwnedTextModel implements PlanLanguageModel {
                     if (
                       typeof n !== "number" ||
                       !Number.isSafeInteger(n) ||
-                      n < 0 ||
-                      n > 2147483647
+                      n < 0
                     )
                       throw new ModelPolicyError("MODEL_UNAVAILABLE");
+                    if (n > 2147483647)
+                      throw new ModelPolicyError(
+                        paid ? "MODEL_COST_VIOLATION" : "MODEL_UNAVAILABLE",
+                      );
                     usage[destination] = n;
+                    if (
+                      paid &&
+                      n >
+                        (source === "prompt_tokens"
+                          ? PAID_PHALA_PROFILE.maxInputTokens
+                          : grant.limits.maxOutputTokens)
+                    )
+                      throw new ModelPolicyError("MODEL_COST_VIOLATION");
                   }
                 }
                 if (reported.cost !== undefined && reported.cost !== null) {
@@ -335,12 +349,20 @@ export class OwnedTextModel implements PlanLanguageModel {
                   if (
                     typeof cost !== "number" ||
                     !Number.isFinite(cost) ||
-                    cost < 0 ||
-                    cost > 1000000
+                    cost < 0
                   )
                     throw new ModelPolicyError("MODEL_UNAVAILABLE");
+                  if (cost > 1000000)
+                    throw new ModelPolicyError(
+                      grant.route.provider === "openrouter"
+                        ? "MODEL_COST_VIOLATION"
+                        : "MODEL_UNAVAILABLE",
+                    );
                   usage.reportedCostUsd = cost.toFixed(12);
-                  if (grant.route.provider === "openrouter" && cost > 0)
+                  if (
+                    grant.route.provider === "openrouter" &&
+                    cost > (paid ? PAID_PHALA_PROFILE.maxCostUsd : 0)
+                  )
                     throw new ModelPolicyError("MODEL_COST_VIOLATION");
                 }
               }
@@ -358,6 +380,13 @@ export class OwnedTextModel implements PlanLanguageModel {
                       // The SDK synthesizes a finish when a socket closes. Require the provider's
                       // terminal reason so a cleanly truncated answer cannot become completed.
                       if (providerFinishReason === null)
+                        throw new ModelPolicyError("MODEL_UNAVAILABLE");
+                      if (
+                        paid &&
+                        (usage.inputTokens === null ||
+                          usage.outputTokens === null ||
+                          usage.reportedCostUsd === null)
+                      )
                         throw new ModelPolicyError("MODEL_UNAVAILABLE");
                       out.close();
                       return;

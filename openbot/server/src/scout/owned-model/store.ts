@@ -10,6 +10,7 @@ import {
   type ModelGrant,
   ModelPolicyError,
   type ModelPrincipal,
+  PAID_PHALA_PROFILE,
 } from "./policy";
 
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -120,6 +121,7 @@ export function createModelCallStore(database: Database) {
             userDaily: sql<number>`count(*) filter (where ${calls.createdAt} >= ${day} and ${calls.ownerUserId} = ${scope.userId} and ${calls.tenantId} = ${scope.tenantId})::int`,
             active: sql<number>`count(*) filter (where ${calls.status} in ('reserved','dispatched'))::int`,
             userActive: sql<number>`count(*) filter (where ${calls.status} in ('reserved','dispatched') and ${calls.ownerUserId} = ${scope.userId} and ${calls.tenantId} = ${scope.tenantId})::int`,
+            costViolations: sql<number>`count(*) filter (where ${calls.createdAt} >= ${day} and ${calls.errorCode} = 'MODEL_COST_VIOLATION')::int`,
           })
           .from(calls)
           .where(eq(calls.deploymentId, scope.deploymentId));
@@ -132,9 +134,18 @@ export function createModelCallStore(database: Database) {
               eq(calls.runId, scope.runId),
             ),
           );
+        const paid =
+          grant.route.provider === "openrouter" && !!grant.route.paidProfile;
+        const globalDailyLimit = paid
+          ? Math.min(
+              grant.globalMaxCallsPerDay,
+              PAID_PHALA_PROFILE.maxCallsPerDay,
+            )
+          : grant.globalMaxCallsPerDay;
         if (
           !totals ||
-          totals.daily >= grant.globalMaxCallsPerDay ||
+          totals.daily >= globalDailyLimit ||
+          (paid && totals.costViolations > 0) ||
           totals.userDaily >= grant.limits.maxCallsPerDay ||
           totals.active >= grant.globalMaxConcurrent ||
           totals.userActive >= grant.limits.maxConcurrent ||
