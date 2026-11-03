@@ -33,15 +33,15 @@ function CapabilityRow({
 /** A read-only server projection. No status row grants access or connects an account. */
 export function ScoutCapabilities({
   section,
+  embedded = false,
 }: {
   section: "skills" | "connections";
+  embedded?: boolean;
 }) {
   const catalog = useQuery(scoutCatalogQueryOptions());
   const data = catalog.data;
-  return (
-    <PageShell
-      title={section === "skills" ? "Scout capabilities" : "Connections"}
-    >
+  const content = (
+    <>
       {catalog.isPending ? (
         <p role="status">Checking Scout's capabilities…</p>
       ) : null}
@@ -131,6 +131,15 @@ export function ScoutCapabilities({
           </PageSection>
         )
       ) : null}
+    </>
+  );
+  return embedded ? (
+    content
+  ) : (
+    <PageShell
+      title={section === "skills" ? "Scout capabilities" : "Connections"}
+    >
+      {content}
     </PageShell>
   );
 }

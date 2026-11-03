@@ -3,6 +3,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import type { ComponentType } from "react";
+import { authKeys } from "@/lib/auth/queries";
 import { deploymentKeys } from "@/lib/deployment/queries";
 import { Route as SkillsRoute } from "@/routes/_authed/_app/capabilities.skills";
 import { Route as ConnectionsRoute } from "@/routes/_authed/_app/connections.index";
@@ -44,6 +45,7 @@ function screen(
     async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       const path = String(input);
       requested.push(`${init?.method ?? "GET"} ${path}`);
+      if (path === "/api/agents") return Response.json({ agents: [] });
       if (path !== "/api/scout/capabilities")
         throw new Error(`Unexpected legacy or external request: ${path}`);
       return response();
@@ -54,6 +56,12 @@ function screen(
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   client.setQueryData(deploymentKeys.capabilities(), { mode: "owned" });
+  client.setQueryData(authKeys.currentUser(), {
+    id: "fixture-owner",
+    email: "owner@fixture.example",
+    role: "user",
+    onboarding: null,
+  });
   const Component = route.options.component as ComponentType;
   const view = render(
     <QueryClientProvider client={client}>
@@ -74,7 +82,7 @@ test("owned Skills uses the authorized catalog without querying unavailable plug
   expect(requested).toEqual(["GET /api/scout/capabilities"]);
 });
 
-test("owned Connections shows seven disconnected accounts and starts no OAuth or plugin calls", async () => {
+test("owned Connections offers Odoo setup while seven other accounts remain disconnected", async () => {
   const { view, requested } = screen(ConnectionsRoute, () => json(catalog));
   await view.findByText("Microsoft Teams");
   expect(view.getAllByText("Not connected")).toHaveLength(7);
@@ -82,7 +90,14 @@ test("owned Connections shows seven disconnected accounts and starts no OAuth or
     view.getByText(/Connections in ChatGPT do not carry over/),
   ).toBeTruthy();
   expect(view.queryByRole("button", { name: /^Connect/ })).toBeNull();
-  expect(requested).toEqual(["GET /api/scout/capabilities"]);
+  expect(new Set(requested)).toEqual(
+    new Set(["GET /api/agents", "GET /api/scout/capabilities"]),
+  );
+  expect(
+    view.getByText(
+      "No built-in Scout profiles are available for this account.",
+    ),
+  ).toBeTruthy();
 });
 
 test("an unrecognized catalog never becomes an available capability", async () => {

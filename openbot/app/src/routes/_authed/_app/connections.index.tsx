@@ -16,7 +16,7 @@ import {
 } from "@/components/layout/page-shell";
 import { RowMark } from "@/components/layout/row-mark";
 import { PluginLogo } from "@/components/plugins/plugin-logo";
-import { ScoutCapabilities } from "@/components/scout/capabilities";
+import { OwnedOdooConnections } from "@/components/scout/owned-odoo-connections";
 import { providerIcon } from "@/components/settings/linked-accounts";
 import {
   linkedNotice,
@@ -264,7 +264,7 @@ function RouteComponent() {
       </PageShell>
     );
   return capabilities.data?.mode === "owned" ? (
-    <ScoutCapabilities section="connections" />
+    <OwnedOdooConnections />
   ) : (
     <LicensedConnectionsPage />
   );
