@@ -185,14 +185,13 @@ test("local gate ignores silence/broadband noise and requires sustained speech p
     [0.001, 0.1],
     [0.1, 0.5],
     [0.6, 0.1],
-    [0.05, 0.005],
   ]) {
-    const gate = new OwnedUtteranceGate();
+    const gate = new OwnedUtteranceGate(48_000);
     for (let now = 1000; now <= 31_000; now += 50)
       expect(gate.push(rms ?? 0, crossings ?? 0, now)).toBe(false);
     expect(gate.hasSpeech()).toBe(false);
   }
-  const gate = new OwnedUtteranceGate();
+  const gate = new OwnedUtteranceGate(48_000);
   for (let now = 1000; now <= 1500; now += 50)
     expect(gate.push(0.04, 0.1, now)).toBe(false);
   expect(gate.hasSpeech()).toBe(true);
@@ -200,6 +199,68 @@ test("local gate ignores silence/broadband noise and requires sustained speech p
     expect(gate.push(0.001, 0.1, now)).toBe(false);
   expect(gate.push(0.001, 0.1, 2550)).toBe(true);
   expect(gate.push(0.001, 0.1, 2600)).toBe(false);
+});
+
+function toneFeatures(sampleRate: number, frequency: number, now: number) {
+  const samples = Float32Array.from(
+    { length: 1024 },
+    (_, i) =>
+      0.06 *
+      Math.sin(2 * Math.PI * frequency * (now / 1000 + i / sampleRate) + 0.37),
+  );
+  let squares = 0,
+    crossings = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const value = samples[i] ?? 0;
+    squares += value * value;
+    if (i && value >= 0 !== (samples[i - 1] ?? 0) >= 0) crossings++;
+  }
+  return [
+    Math.sqrt(squares / samples.length),
+    crossings / samples.length,
+  ] as const;
+}
+
+for (const sampleRate of [44_100, 48_000, 96_000]) {
+  for (const frequency of [50, 60]) {
+    test(`local gate rejects sample-derived ${frequency}Hz hum at ${sampleRate}Hz`, () => {
+      const gate = new OwnedUtteranceGate(sampleRate);
+      for (let now = 1000; now <= 31_000; now += 50) {
+        expect(
+          gate.push(...toneFeatures(sampleRate, frequency, now), now),
+        ).toBe(false);
+      }
+      for (let now = 31_050; now <= 32_100; now += 50)
+        expect(gate.push(0.001, 0, now)).toBe(false);
+      expect(gate.hasSpeech()).toBe(false);
+    });
+  }
+  for (const frequency of [180, 300]) {
+    test(`local gate accepts sample-derived ${frequency}Hz energy at ${sampleRate}Hz only after a quiet tail`, () => {
+      const gate = new OwnedUtteranceGate(sampleRate);
+      for (let now = 1000; now <= 1500; now += 50) {
+        expect(
+          gate.push(...toneFeatures(sampleRate, frequency, now), now),
+        ).toBe(false);
+      }
+      expect(gate.hasSpeech()).toBe(true);
+      for (let now = 1550; now < 2550; now += 50)
+        expect(gate.push(0.001, 0, now)).toBe(false);
+      expect(gate.push(0.001, 0, 2550)).toBe(true);
+      expect(gate.push(0.001, 0, 2600)).toBe(false);
+    });
+  }
+}
+
+test("local gate never admits audio with an invalid sample rate", () => {
+  for (const sampleRate of [0, -48_000, NaN, Infinity, -Infinity]) {
+    const gate = new OwnedUtteranceGate(sampleRate);
+    for (let now = 1000; now <= 1500; now += 50)
+      expect(gate.push(0.04, 0.1, now)).toBe(false);
+    for (let now = 1550; now <= 2600; now += 50)
+      expect(gate.push(0.001, 0, now)).toBe(false);
+    expect(gate.hasSpeech()).toBe(false);
+  }
 });
 
 test("stop during microphone permission cancels its late stream", async () => {

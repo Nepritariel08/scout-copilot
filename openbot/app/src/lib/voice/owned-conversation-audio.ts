@@ -30,7 +30,7 @@ export function createOwnedConversationAudio(): ConversationAudio {
       analyser.connect(muted);
       muted.connect(context.destination);
       const data = new Float32Array(analyser.fftSize);
-      const gate = new OwnedUtteranceGate();
+      const gate = new OwnedUtteranceGate(context.sampleRate);
       const timer = setInterval(() => {
         if (context.state !== "running") return;
         analyser.getFloatTimeDomainData(data);

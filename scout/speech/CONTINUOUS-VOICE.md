@@ -53,6 +53,13 @@ run, source/permission change or identity transition must block/pause voice.
   semantic speech classifier**. It rejects silence, clipped/broadband noise and
   steady hum patterns in deterministic fixtures; actual room/browser/microphone
   behavior still needs device acceptance. It sends no audio features externally.
+  The lower zero-crossing bound uses the actual AudioContext sample rate and an
+  approximate 100 Hz floor; an invalid sample rate never admits an utterance. The
+  unchanged 1024-sample window quantizes this estimate, especially at 96 kHz, so
+  some energy near the floor can still be rejected. Deterministic sample-derived
+  fixtures reject 50/60 Hz tones and admit 180/300 Hz energy at 44.1/48/96 kHz only
+  after sustained energy and the quiet tail. These fixtures do not establish
+  speech recognition or guarantee rejection of real room noise.
 - A quiet/noise-only recording rolls over locally after 30 seconds without an STT
   or model call. A 30 second clip without a complete spoken utterance is discarded
   and the session pauses. Never use the time cap as a reason to submit noise or

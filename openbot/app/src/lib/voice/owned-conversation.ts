@@ -57,16 +57,27 @@ export class OwnedUtteranceGate {
   private speech = false;
   private finished = false;
   private noise = 0.003;
+  constructor(private readonly sampleRate: number) {}
   hasSpeech = () => this.speech;
   push(rms: number, crossings: number, now: number): boolean {
-    if (this.finished || !Number.isFinite(rms) || !Number.isFinite(crossings))
+    if (
+      this.finished ||
+      !Number.isFinite(this.sampleRate) ||
+      this.sampleRate <= 0 ||
+      !Number.isFinite(rms) ||
+      !Number.isFinite(crossings)
+    )
       return false;
     const elapsed = this.last ? Math.max(0, Math.min(100, now - this.last)) : 0;
     this.last = now;
     const threshold = Math.max(0.008, this.noise * 3);
     const quiet = rms < threshold;
+    // Two zero crossings per cycle: use a 100Hz floor at the actual sample rate.
     const voice =
-      !quiet && rms < 0.45 && crossings >= 0.015 && crossings <= 0.3;
+      !quiet &&
+      rms < 0.45 &&
+      crossings >= 200 / this.sampleRate &&
+      crossings <= 0.3;
     if (quiet && !this.speech)
       this.noise = Math.min(0.012, this.noise * 0.98 + rms * 0.02);
     if (voice) {
