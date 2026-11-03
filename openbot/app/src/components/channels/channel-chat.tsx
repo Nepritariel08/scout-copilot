@@ -1375,9 +1375,8 @@ export function ChannelChat({
             // Approval recovery can await after the initial scope check. Stop
             // must still prevent the first model dispatch when it settles.
             if (
-              !alive.current ||
-              currentScope.current !== scopeKey ||
-              skipIf?.()
+              onTarget &&
+              (!alive.current || currentScope.current !== scopeKey || skipIf?.())
             ) {
               stoppedBeforeDispatch = true;
               const kept = withoutMessages(target.messages, added);
