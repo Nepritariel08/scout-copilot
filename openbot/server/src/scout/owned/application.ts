@@ -64,6 +64,7 @@ import { createScoutService } from "../service";
 import { createScoutStore } from "../store";
 import { ScoutError } from "../types";
 import { createOwnedAuthority } from "./authority";
+import { ownedCatalog } from "./catalog";
 import {
   assertOwnedNativeIdentityConfiguration,
   createOwnedNativeIdentity,
@@ -341,6 +342,12 @@ export async function createOwnedApplication(
             ]),
           ));
   const handler = createOwnedRuntimeRoutes({
+    catalog: ownedCatalog({
+      odooSelectedTask: Boolean(recordContext),
+      delegatedDraft: Boolean(
+        config.scoutDelegatedDraftsEnabled && config.scoutQueueBindingsFile,
+      ),
+    }),
     authority,
     engine: historyEngine,
     agents,

@@ -20,6 +20,7 @@ import type {
 } from "../owned-model/record-context";
 import { ScoutError } from "../types";
 import type { createOwnedAuthority } from "./authority";
+import type { OwnedCatalog } from "./catalog";
 
 const mintInput = z.strictObject({
   agentId: z.string().trim().min(1).max(200),
@@ -129,6 +130,7 @@ export function createOwnedRuntimeRoutes(deps: {
   generativeUi: boolean;
   modelReceipts?: (request: Request, threadId: string) => Promise<unknown>;
   odooGrants?: OwnedOdooGrants;
+  catalog?: OwnedCatalog;
 }) {
   const app = new Hono<{ Variables: AppVariables }>();
   app.use("*", async (context, next) => {
@@ -177,6 +179,7 @@ export function createOwnedRuntimeRoutes(deps: {
   app.use("/api/threads/*", bodyLimit({ maxSize: 4000 }));
   app.use("/api/copilotkit/*", deps.authority.requireTenant);
   app.use("/api/scout/model/*", deps.authority.requireTenant);
+  app.use("/api/scout/capabilities", deps.authority.requireTenant);
   app.use("/api/scout/odoo/context-grants", deps.authority.requireTenant);
   app.use("/api/scout/odoo/context-grants/*", deps.authority.requireTenant);
   app.use("/api/scout/odoo/context-grants", bodyLimit({ maxSize: 8192 }));
@@ -197,6 +200,14 @@ export function createOwnedRuntimeRoutes(deps: {
             : 503,
       );
     return context.json({ code: "HISTORY_UNAVAILABLE" }, 503);
+  });
+  app.get("/api/scout/capabilities", async (context) => {
+    const before = await deps.authority.binding(context.req.raw);
+    const catalog = deps.catalog;
+    if (!catalog) return context.json({ code: "MODEL_NOT_CONFIGURED" }, 503);
+    return context.json(
+      await withCurrentMembership(context.req.raw, before, async () => catalog),
+    );
   });
   app.post("/api/scout/odoo/context-grants", async (context) => {
     const depsGrants = deps.odooGrants;

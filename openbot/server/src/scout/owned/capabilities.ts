@@ -93,6 +93,7 @@ const API: readonly Route[] = [
   ),
 
   // Owned history, requester port and conservative model receipts.
+  route("GET", /^\/api\/scout\/capabilities$/),
   route("POST", /^\/api\/threads\/mint$/),
   route("GET", /^\/api\/threads\/[^/]+$/),
   route("GET POST", /^\/api\/scout\/threads$/),

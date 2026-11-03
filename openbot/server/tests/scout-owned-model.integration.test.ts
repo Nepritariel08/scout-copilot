@@ -432,6 +432,23 @@ beforeEach(async () => {
   await database.delete(calls).where(eq(calls.deploymentId, prefix));
   await writeFile(policyFile, JSON.stringify(configuration()));
 });
+test("capability catalog is authenticated, native-scoped and does not imply a connected work app", async () => {
+  const response = await request("/api/scout/capabilities");
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const catalog = await response.json();
+  expect(catalog.skills.odooSelectedTask).toBe("requires_authorization");
+  expect(catalog.skills.delegatedDraft).toBe("unavailable");
+  expect(catalog.integrations.teams).toBe("not_connected");
+  expect(JSON.stringify(catalog)).not.toContain(alice);
+  expect(providerCalls).toBe(0);
+  expect(
+    (await request("/api/scout/capabilities", undefined, "unknown-session"))
+      .status,
+  ).toBe(401);
+  active = false;
+  expect((await request("/api/scout/capabilities")).status).toBe(401);
+});
 afterAll(async () => {
   await app?.close();
   provider?.stop(true);

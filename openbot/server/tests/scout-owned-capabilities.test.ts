@@ -8,6 +8,7 @@ describe("owned private-pilot HTTP capability admission", () => {
   test("preserves the qualified conversation, resource, native shell and platform administration routes", () => {
     const routes: [string, string][] = [
       ["GET", "/api/capabilities"],
+      ["GET", "/api/scout/capabilities"],
       ["GET", "/api/me"],
       ["POST", "/api/me/onboarding"],
       ["GET", "/api/settings/preferences"],
