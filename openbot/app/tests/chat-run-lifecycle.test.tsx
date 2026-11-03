@@ -32,6 +32,7 @@ import {
   APPROVAL_WAITING_RESULT,
   forgetSeedClaims,
 } from "@/lib/channels/run-lifecycle";
+import * as ownedPresentation from "@/lib/owned-presentation";
 import { queryClient } from "@/query-client";
 
 /**
@@ -280,6 +281,23 @@ function reset({
     ]);
 }
 
+test("the default owned chat sends text without offering deferred voice controls", async () => {
+  const channel = freshChannel();
+  reset();
+  // The backend can offer speech while the owner pilot deliberately keeps its UI deferred.
+  ownedVoiceEnabled = true;
+  const view = render(tree(channel));
+  await view.findByRole("textbox", { name: "Message" });
+  expect(
+    view.queryByRole("button", { name: "Start hands-free voice" }),
+  ).toBeNull();
+  expect(view.queryByRole("button", { name: "Record message" })).toBeNull();
+  await type(view, "Synthetic core text request");
+  await view.findByText("Reply 1");
+  expect(runRequests).toHaveLength(1);
+  expect(transcriptionRequests).toBe(0);
+});
+
 test("continuous Stop during captured-target approval recovery prevents model dispatch and removes only its unsent turn", async () => {
   const channel = freshChannel();
   const priorUser = {
@@ -421,6 +439,11 @@ test("continuous Stop during captured-target approval recovery prevents model di
     return NativeResponse.json({ messages: prior });
   };
   let view: ReturnType<typeof render> | undefined;
+  // Exercise the retained optional engine without enabling it in the owner's default UI.
+  const presentation = spyOn(
+    ownedPresentation,
+    "ownedVoiceUiAvailable",
+  ).mockReturnValue(true);
   try {
     view = render(tree(channel));
     await view.findByText(priorUser.content);
@@ -469,6 +492,7 @@ test("continuous Stop during captured-target approval recovery prevents model di
     hold = false;
     held.resolve(NativeResponse.json({ messages: prior }));
     view?.unmount();
+    presentation.mockRestore();
     for (const [key, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);
