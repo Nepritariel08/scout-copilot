@@ -55,6 +55,9 @@ export function ScoutOdooContext({
   const scopeKey = JSON.stringify([user.data?.id ?? "", agentId]);
   const currentScope = useRef(scopeKey);
   currentScope.current = scopeKey;
+  const previousScope = useRef(scopeKey);
+  const selectTask = useRef(onSelectTaskId);
+  selectTask.current = onSelectTaskId;
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -65,6 +68,12 @@ export function ScoutOdooContext({
   const scopeCurrent = (expected: string) =>
     mounted.current && currentScope.current === expected;
   useEffect(() => {
+    const changed = previousScope.current !== scopeKey;
+    previousScope.current = scopeKey;
+    // ChannelChat owns the next-turn intent. Clear it only when its account
+    // or profile actually changes; mounting/re-rendering the current scope
+    // must preserve the task the person has already selected.
+    if (changed) selectTask.current?.(null);
     currentScope.current = scopeKey;
     setApiKey("");
     setTaskId("");

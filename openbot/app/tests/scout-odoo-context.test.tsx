@@ -11,6 +11,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { ScoutOdooContext } from "../src/components/scout/odoo-context";
 import { type AuthenticatedUser, authKeys } from "../src/lib/auth/queries";
 import {
@@ -390,3 +391,62 @@ test("the selected task marker is removed after successful or failed runs", asyn
     withOdooTaskSelection(host, "channel:one", "0077", async () => "unused"),
   ).rejects.toThrow("valid Odoo task ID");
 });
+
+test.each(["account", "profile"] as const)(
+  "chat preserves its initial selected intent and clears it on a native %s transition",
+  async (transition) => {
+    status = {
+      route: activeRoute,
+      provider: "openrouter",
+      record: activeRecord,
+      release: activeRelease,
+    };
+    const selected: (string | null)[] = [];
+    function ParentChat({ agentId }: { agentId: string }) {
+      const [taskId, setTaskId] = useState<string | null>("77");
+      return (
+        <>
+          <output aria-label="Next chat task">{taskId ?? "none"}</output>
+          <ScoutOdooContext
+            agentId={agentId}
+            selectedTaskId={taskId}
+            contextTaskId={null}
+            onSelectTaskId={(next) => {
+              selected.push(next);
+              setTaskId(next);
+            }}
+            busy={false}
+          />
+        </>
+      );
+    }
+    const chat = (agentId: string) => (
+      <QueryClientProvider client={cache}>
+        <ParentChat agentId={agentId} />
+      </QueryClientProvider>
+    );
+    const view = render(chat("scout"));
+    fireEvent.click(view.getByText("Odoo context"));
+    await view.findByText(/Odoo project task #77 is queued/);
+    expect(view.getByLabelText("Next chat task").textContent).toBe("77");
+    expect(selected).toEqual([]);
+    view.rerender(chat("scout"));
+    await settleReactWork();
+    expect(selected).toEqual([]);
+    if (transition === "account") {
+      cache.setQueryData(authKeys.currentUser(), {
+        ...owner,
+        id: "employee-2",
+        email: "second@fixture.example",
+      });
+    } else {
+      view.rerender(chat("other-profile"));
+    }
+    await waitFor(() =>
+      expect(view.getByLabelText("Next chat task").textContent).toBe("none"),
+    );
+    expect(selected).toEqual([null]);
+    expect(view.queryByText(/Odoo project task #77 is queued/)).toBeNull();
+    expect(calls).toEqual([]);
+  },
+);
