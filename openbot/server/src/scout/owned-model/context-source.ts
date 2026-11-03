@@ -113,7 +113,11 @@ export function createOwnedOdooContextAdapters(
     );
   return {
     sourceInstanceId: source.sourceInstanceId,
-    recordContext: { ...store, qualifyGrant: qualification.qualifyGrant },
+    recordContext: {
+      ...store,
+      qualifyGrant: qualification.qualifyGrant,
+      assertQualification: qualification.assertQualification,
+    },
     // Internal composition callbacks. The authenticated route must admit/recheck
     // the native mapping and pass its composite principal and identity class.
     renewQualification: async (

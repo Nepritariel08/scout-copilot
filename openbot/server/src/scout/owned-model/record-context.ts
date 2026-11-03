@@ -83,6 +83,8 @@ export type ProjectTaskContextProvider = "openrouter" | "local";
 export type ProjectTaskQualificationProof = {
   grantDigest: string;
   expiresAt: string;
+  /** Opaque server receipt for this exact credential-bound qualification. */
+  proofId: string;
 };
 
 /** Separate consent to release this exact data class to this protected provider route. */
@@ -130,6 +132,13 @@ export type ProjectTaskContextPort = {
     grant: ProjectTaskContextGrant,
     identityClass?: "customer",
   ): Promise<ProjectTaskQualificationProof>;
+  /** Recheck the same receipt after source I/O; never qualifies or renews. */
+  assertQualification?(
+    principal: ProjectTaskContextPrincipal,
+    grant: ProjectTaskContextGrant,
+    proof: ProjectTaskQualificationProof,
+    identityClass?: "customer",
+  ): Promise<void>;
   readProjectTask(request: ProjectTaskReadRequest): Promise<unknown>;
   /** Internal seam only: the protected admission wrapper selects this; browser input never does. */
   readCustomerProjectTask?(request: ProjectTaskReadRequest): Promise<unknown>;
@@ -337,18 +346,21 @@ export async function resolveProjectTaskContext(
   }
   const releaseGrantSnapshot = safeJson(releaseGrant);
   const grantSnapshot = safeJson(grant);
+  const assertQualification = port.assertQualification;
   const qualificationExpiry = async (current: ProjectTaskContextGrant) => {
-    if (!port.qualifyGrant)
-      return current.sourceIdentity.qualificationExpiresAt;
+    if (!port.qualifyGrant) return null;
+    if (!assertQualification) return deny();
     const proof = await port.qualifyGrant(principal, current);
     if (
       !proof ||
+      typeof proof.proofId !== "string" ||
+      !proof.proofId ||
       proof.grantDigest !== historyDigest(current) ||
       !(Date.parse(proof.expiresAt) > now()) ||
       Date.parse(proof.expiresAt) > Date.parse(current.expiresAt)
     )
       return deny();
-    return proof.expiresAt;
+    return { ...proof };
   };
   const requestForGrant = (
     current: ProjectTaskContextGrant,
@@ -376,14 +388,20 @@ export async function resolveProjectTaskContext(
   let effectiveQualificationExpiresAt =
     grant.sourceIdentity.qualificationExpiresAt;
   const readSelectedTask = async (current: ProjectTaskContextGrant) => {
-    effectiveQualificationExpiresAt = await qualificationExpiry(current);
-    return projectTaskRow(
-      await port.readProjectTask(
-        requestForGrant(current, effectiveQualificationExpiresAt),
-      ),
-      recordId,
-      current.sourceIdentity.companyIds,
+    const proof = await qualificationExpiry(current);
+    effectiveQualificationExpiresAt =
+      proof?.expiresAt ?? current.sourceIdentity.qualificationExpiresAt;
+    const value = await port.readProjectTask(
+      requestForGrant(current, effectiveQualificationExpiresAt),
     );
+    // The source may finish with an old bearer key after its local vault row
+    // was revoked or rotated. Recheck the exact receipt, without renewal, before
+    // any record data or the final grant/release fence can be returned.
+    if (proof) {
+      if (!assertQualification) return deny();
+      await assertQualification(principal, current, proof);
+    }
+    return projectTaskRow(value, recordId, current.sourceIdentity.companyIds);
   };
   let selected: ReturnType<typeof projectTaskRow>;
   try {

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { historyDigest } from "../history/protocol";
 import { credentialKey, type OdooUserApiKeyResolver } from "./odoo-json2";
 import { ModelPolicyError } from "./policy";
@@ -151,6 +151,7 @@ export function createOdooQualificationProofs(options: {
             );
             const result = {
               grantDigest: historyDigest(current),
+              proofId: randomUUID(),
               expiresAt: new Date(
                 Math.min(Date.parse(current.expiresAt), now() + lifetimeMs),
               ).toISOString(),
@@ -183,6 +184,37 @@ export function createOdooQualificationProofs(options: {
         cache.delete(key);
         return deny();
       }
+    },
+    async assertQualification(
+      principal: ProjectTaskContextPrincipal,
+      expected: ProjectTaskContextGrant,
+      proof: ProjectTaskQualificationProof,
+      identityClass?: "customer",
+    ): Promise<void> {
+      if (identityClass !== undefined && identityClass !== "customer")
+        return deny();
+      const receipt = { ...proof };
+      const expectedDigest = historyDigest(expected);
+      if (receipt.grantDigest !== expectedDigest) return deny();
+      const initial = await snapshot(principal, expectedDigest);
+      const key = keyFor(
+        initial.grant,
+        initial.credentialIdentity,
+        identityClass,
+      );
+      const current = cache.get(key);
+      const same = () =>
+        current &&
+        cache.get(key) === current &&
+        current.proofId === receipt.proofId &&
+        current.grantDigest === receipt.grantDigest &&
+        // The native wrapper may narrow expiry, never extend the source receipt.
+        Date.parse(receipt.expiresAt) <= Date.parse(current.expiresAt) &&
+        Date.parse(receipt.expiresAt) > now();
+      if (!same()) return deny();
+      await checked(principal, expectedDigest, initial.credentialIdentity);
+      // A parallel replacement must not turn an old read into a new proof.
+      if (!same()) return deny();
     },
     async status(
       principal: ProjectTaskContextPrincipal,

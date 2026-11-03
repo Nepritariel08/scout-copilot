@@ -1,6 +1,16 @@
 import { expect, test } from "bun:test";
+import { historyDigest } from "../src/scout/history/protocol";
+import {
+  bindOwnedOdooContext,
+  type OdooAdmissionReader,
+} from "../src/scout/owned-model/odoo-binding";
+import { ModelPolicyError } from "../src/scout/owned-model/policy";
 import { createOdooQualificationProofs } from "../src/scout/owned-model/qualification-proof";
-import type { ProjectTaskContextGrant } from "../src/scout/owned-model/record-context";
+import {
+  type ProjectTaskContextGrant,
+  type ProjectTaskContextPort,
+  resolveProjectTaskContext,
+} from "../src/scout/owned-model/record-context";
 
 function grant(index: number): ProjectTaskContextGrant {
   return {
@@ -114,7 +124,107 @@ test("explicit customer proof uses only the separate customer qualifier", async 
       return [1];
     },
   });
-  await proofs.qualifyGrant(current.principal, current, "customer");
+  const proof = await proofs.qualifyGrant(
+    current.principal,
+    current,
+    "customer",
+  );
+  await proofs.assertQualification(
+    current.principal,
+    current,
+    proof,
+    "customer",
+  );
   expect(employee).toBe(0);
   expect(customer).toBe(1);
+});
+
+test("a qualification extension without a non-renewing fence cannot read source data", async () => {
+  const current = grant(1);
+  let reads = 0;
+  const port: ProjectTaskContextPort = {
+    sourceInstanceId: "synthetic",
+    getGrant: async () => current,
+    getReleaseGrant: async () => ({
+      principal: current.principal,
+      active: true,
+      revision: 1,
+      expiresAt: current.expiresAt,
+      sourceInstanceId: "synthetic",
+      dataClass: "odoo.project_task_summary.v1",
+      provider: "local",
+      modelPolicyFingerprint: "b".repeat(64),
+    }),
+    qualifyGrant: async () => ({
+      grantDigest: historyDigest(current),
+      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      proofId: "opaque-synthetic",
+    }),
+    readProjectTask: async () => {
+      reads++;
+      return [];
+    },
+  };
+  await expect(
+    resolveProjectTaskContext(
+      port,
+      current.principal,
+      1,
+      "local",
+      "b".repeat(64),
+    ),
+  ).rejects.toThrow("MODEL_ACCESS_DENIED");
+  expect(reads).toBe(0);
+});
+
+test("native post-read fence translates the receipt and denies a mapping change during its check", async () => {
+  const current = grant(1);
+  const native = { ...current.principal, bindingFingerprint: "b".repeat(64) };
+  const nativeGrant = { ...current, principal: native };
+  let active = true;
+  const admit: OdooAdmissionReader = async () => ({
+    principal: current.principal,
+    binding: {
+      userId: current.principal.userId,
+      tenantId: current.principal.tenantId,
+      deploymentId: current.principal.deploymentId,
+      sourceInstanceId: "synthetic",
+      sourceUid: 101,
+      companyIds: [1],
+      revision: 1,
+      active: true,
+      expiresAt: current.expiresAt,
+      fingerprint: "c".repeat(64),
+    },
+    expiresAt: current.expiresAt,
+    assertCurrent: async () => {
+      if (!active) throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+    },
+  });
+  const proof = {
+    grantDigest: historyDigest(nativeGrant),
+    proofId: "opaque-synthetic",
+    expiresAt: new Date(Date.now() + 60000).toISOString(),
+  };
+  const wrapped = bindOwnedOdooContext(
+    {
+      sourceInstanceId: "synthetic",
+      getGrant: async () => current,
+      getReleaseGrant: async () => null,
+      readProjectTask: async () => [],
+      assertQualification: async (principal, inner, receipt) => {
+        expect(principal).toEqual(current.principal);
+        expect(inner).toEqual(current);
+        expect(receipt).toEqual({
+          ...proof,
+          grantDigest: historyDigest(current),
+        });
+        active = false;
+      },
+    },
+    admit,
+  );
+  await expect(
+    wrapped.assertQualification?.(native, nativeGrant, proof),
+  ).rejects.toThrow("MODEL_ACCESS_DENIED");
 });

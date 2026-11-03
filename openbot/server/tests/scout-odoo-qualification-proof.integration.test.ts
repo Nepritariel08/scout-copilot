@@ -138,7 +138,11 @@ async function fixture(lifetime = 12 * 60 * 60 * 1000) {
       now: () => now,
     });
   const proofs = make();
-  const port = { ...store, qualifyGrant: proofs.qualifyGrant };
+  const port = {
+    ...store,
+    qualifyGrant: proofs.qualifyGrant,
+    assertQualification: proofs.assertQualification,
+  };
   const grant = async () =>
     validateProjectTaskContextGrant(
       await store.getGrant(principal),
@@ -277,6 +281,40 @@ describe("renewable qualification with real immutable SQL grants and encrypted v
     expect(f.calls()).toBe(1);
   });
 
+  for (const phase of ["initial resolve", "final task read"] as const) {
+    for (const change of [
+      "revoke",
+      "rotate",
+      "rotate with parallel replacement",
+    ] as const) {
+      test(`${change} during ${phase} denies the old credential-bound proof without renewing it`, async () => {
+        const f = await fixture();
+        const original = await f.grant();
+        const resolved =
+          phase === "final task read" ? await f.resolve() : undefined;
+        f.afterRead(async () => {
+          if (change === "revoke") await f.revoke();
+          else {
+            await f.rotateSameReference();
+            if (change === "rotate with parallel replacement")
+              await f.proofs.qualifyGrant(f.principal, original);
+          }
+        });
+        await expect(
+          resolved ? resolved.assertCurrent(f.principal, "local") : f.resolve(),
+        ).rejects.toThrow("MODEL_ACCESS_DENIED");
+        expect(await f.grant()).toEqual(original);
+        expect(f.calls()).toBe(
+          change === "rotate with parallel replacement" ? 2 : 1,
+        );
+        if (change === "rotate with parallel replacement")
+          expect((await f.proofs.status(f.principal, original)).current).toBe(
+            true,
+          );
+      });
+    }
+  }
+
   test("concurrent readers coalesce one qualification but each retains current vault checks", async () => {
     const f = await fixture();
     const original = await f.grant();
@@ -396,6 +434,15 @@ describe("renewable qualification with real immutable SQL grants and encrypted v
     const proof = await wrapped.qualifyGrant?.(native, nativeGrant);
     expect(proof?.grantDigest).toBe(historyDigest(nativeGrant));
     expect(proof?.grantDigest).not.toBe(historyDigest(await f.grant()));
+    const resolved = await resolveProjectTaskContext(
+      wrapped,
+      native,
+      42,
+      "local",
+      policyFingerprint,
+      f.time,
+    );
+    await resolved.assertCurrent(native, "local");
     f.advance(16 * 60 * 1000);
     f.afterQualify(async () => {
       active = false;
