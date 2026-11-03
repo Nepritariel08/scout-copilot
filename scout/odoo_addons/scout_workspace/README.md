@@ -45,6 +45,12 @@ sharing, including meeting logs/transcripts ingested into Odoo.
   in `finally`. At consumption the protected config, exact mapping/version and
   active existing account are rechecked under admission locks. Native MFA remains
   `default`; Entra sign-in does not skip a configured Odoo TOTP challenge.
+  An incomplete SSO MFA challenge retains only server-side identity metadata for
+  five minutes. Native finalization rechecks that exact binding revision, config
+  and active account for BOTH TOTP and remembered-browser paths; rejection uses
+  native logout to clear partial/temporarily finalized session state. Successful
+  completion removes the marker. A successful password/other primary login
+  supersedes only the old SSO marker, preserving its ordinary Odoo MFA behavior.
 - No bearer/ID token is written to Odoo, logs, user records or credential fields.
   The standard code response uses a transient authorization code in the callback
   query, followed by a no-store/no-referrer303. Before live qualification, proxy
@@ -105,8 +111,11 @@ MSAL1.39.0, PyJWT2.14.0 and the existing Odoo-compatible cryptography42.0.8.
 Pin/qualify the complete Odoo dependency environment before any deployment;
 do not run a global pip upgrade against the Community service.
 
-At the first qualification checkpoint, all16 addon test methods passed with
-zero failed/error results. Odoo's stats counted18 including subtests. Its
+At the final qualification checkpoint, all19 addon test methods passed with
+zero failed/error results. Odoo's stats counted21 including subtests. The MFA
+tests use actual native TOTP codes and generated synthetic remembered-device
+credentials, including revocation between primary verification and finalization,
+unchanged completion, password-origin MFA and already completed sessions. Its
 Windows synthetic-filestore garbage collector emitted a PermissionError warning;
 the addon tests and process exit still passed. This does not qualify Linux file
 ownership, actual Entra login, callback log redaction, host deployment or embedding.

@@ -1,7 +1,10 @@
+import base64
 import json
 import secrets
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
@@ -10,14 +13,18 @@ import jwt
 import msal
 from cryptography.hazmat.primitives.asymmetric import rsa
 from odoo import SUPERUSER_ID, Command, api
+from odoo.addons.auth_totp.controllers.home import Home as TotpHome
+from odoo.addons.auth_totp.models.totp import hotp
 from odoo.exceptions import AccessDenied, AccessError, ValidationError
 from odoo.http import Response, request_var
 from odoo.http.session import Session, authenticate, get_default_session
 from odoo.tests import TransactionCase, tagged
 from psycopg2 import IntegrityError
+from werkzeug.test import EnvironBuilder
+from werkzeug.wrappers import Request as HttpRequest
 
 from .. import sso
-from ..controllers.main import ScoutWorkspace
+from ..controllers.main import ScoutWorkspace, WorkspaceLogin
 
 TENANT = "11111111-1111-4111-8111-111111111111"
 CLIENT = "22222222-2222-4222-8222-222222222222"
@@ -156,17 +163,15 @@ class TestWorkspace(TransactionCase):
             db=self.env.cr.dbname,
             env=self.env,
             cookies={},
-            default_lang="en_US",
+            default_lang=lambda: "en_US",
             httproot=sso.ODOO_ORIGIN,
-            httprequest=SimpleNamespace(
-                url_root=sso.ODOO_ORIGIN + "/",
-                remote_addr="127.0.0.1",
-                cookies={},
-                environ={
-                    "HTTP_HOST": "odoo.somethingsomewhere.ph",
-                    "REMOTE_ADDR": "127.0.0.1",
-                },
+            httprequest=HttpRequest(
+                EnvironBuilder(
+                    base_url=sso.ODOO_ORIGIN + "/",
+                    environ_base={"REMOTE_ADDR": "127.0.0.1"},
+                ).get_environ()
             ),
+            future_response=Response(),
             redirect=lambda location, status=303: Response(
                 status=status, headers={"Location": location}
             ),
@@ -176,7 +181,148 @@ class TestWorkspace(TransactionCase):
             request.env = request.env(context={**request.env.context, **values})
 
         request.update_context = update_context
+        request.update_env = lambda user: setattr(
+            request, "env", request.env(user=user)
+        )
+        request.render = lambda *_args, **_kwargs: Response("synthetic MFA form")
         return request
+
+    @contextmanager
+    def pending_mfa(self, origin="sso"):
+        self.internal.totp_secret = "IRXWM5LT"
+        self.internal.totp_last_counter = 0
+        request = self.request()
+        token = request_var.set(request)
+        try:
+            with patch.object(sso, "load_settings", return_value=self.settings):
+                if origin == "sso":
+                    with sso.admitted(self.proof()) as credential:
+                        authenticate(request.session, self.env, credential)
+                else:
+                    authenticate(
+                        request.session,
+                        self.env,
+                        {
+                            "type": "password",
+                            "login": self.internal.login,
+                            "password": "synthetic-password",
+                        },
+                    )
+                self.assertIsNone(request.session.uid)
+                self.assertEqual(request.session["pre_uid"], self.internal.id)
+                yield request
+        finally:
+            request_var.reset(token)
+
+    def complete_mfa(self, request, mode):
+        if mode == "trusted":
+            key = (
+                self.env["auth_totp.device"]
+                .with_user(self.internal)
+                .sudo()
+                ._generate(
+                    "browser",
+                    "Synthetic remembered browser",
+                    self.env.cr.now() + timedelta(hours=1),
+                )
+            )
+            request.cookies = {"td_id": key}
+            request.httprequest.method = "GET"
+            kwargs = {}
+        else:
+            request.httprequest.method = "POST"
+            kwargs = {
+                "totp_token": str(
+                    hotp(base64.b32decode("IRXWM5LT"), int(time.time() / 30))
+                )
+            }
+        with patch.object(TotpHome, "_login_redirect", return_value="/scout/workspace"):
+            return WorkspaceLogin().web_totp(**kwargs)
+
+    def test_native_totp_and_trusted_device_complete_unchanged_sso_challenge(self):
+        for mode in ("totp", "trusted"):
+            with self.subTest(mode=mode), self.pending_mfa() as request:
+                self.assertIn(sso.MFA_KEY, request.session)
+                self.complete_mfa(request, mode)
+                self.assertEqual(request.session.uid, self.internal.id)
+                self.assertNotIn(sso.MFA_KEY, request.session)
+                # Fully finalized sessions resume native Odoo lifecycle.
+                self.binding.active = False
+                self.internal.with_user(self.internal)._after_session_login()
+                self.assertEqual(request.session.uid, self.internal.id)
+            self.binding.active = True
+
+    def test_sso_mfa_finalization_rechecks_revocation_for_totp_and_trusted_device(self):
+        for mode in ("totp", "trusted"):
+            for change in (
+                "mapping_disabled",
+                "mapping_revision",
+                "config_revision",
+                "config_disabled",
+                "user_disabled",
+                "expired",
+            ):
+                with (
+                    self.subTest(mode=mode, change=change),
+                    self.pending_mfa() as request,
+                ):
+                    if change == "mapping_disabled":
+                        self.binding.active = False
+                    elif change == "mapping_revision":
+                        self.binding.write({"active": True})
+                    elif change == "user_disabled":
+                        self.internal.active = False
+                    elif change == "expired":
+                        marker = dict(request.session[sso.MFA_KEY])
+                        marker["expires_at"] = time.time() - 1
+                        request.session[sso.MFA_KEY] = marker
+                    changed = sso.Settings(
+                        TENANT,
+                        CLIENT,
+                        self.env.cr.dbname,
+                        "d" * 64,
+                        "synthetic-rotated-credential",
+                    )
+                    if change == "config_disabled":
+                        setting = patch.object(
+                            sso, "load_settings", side_effect=AccessDenied()
+                        )
+                    else:
+                        setting = patch.object(
+                            sso,
+                            "load_settings",
+                            return_value=changed
+                            if change == "config_revision"
+                            else self.settings,
+                        )
+                    with setting, self.assertRaises(AccessDenied):
+                        self.complete_mfa(request, mode)
+                    self.assertIsNone(request.session.uid)
+                    self.assertNotIn("pre_uid", request.session)
+                    self.assertNotIn(sso.MFA_KEY, request.session)
+                self.internal.active = True
+                self.binding.active = True
+
+    def test_password_mfa_supersedes_pending_sso_and_ignores_sso_config_revocation(
+        self,
+    ):
+        for mode in ("totp", "trusted"):
+            with self.subTest(mode=mode), self.pending_mfa() as request:
+                authenticate(
+                    request.session,
+                    self.env,
+                    {
+                        "type": "password",
+                        "login": self.internal.login,
+                        "password": "synthetic-password",
+                    },
+                )
+                self.assertNotIn(sso.MFA_KEY, request.session)
+                self.binding.active = False
+                with patch.object(sso, "load_settings", side_effect=AccessDenied()):
+                    self.complete_mfa(request, mode)
+                self.assertEqual(request.session.uid, self.internal.id)
+            self.binding.active = True
 
     def test_native_session_preserves_internal_and_portal_accounts_and_password(self):
         for user, binding in (

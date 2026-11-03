@@ -1,7 +1,7 @@
 import secrets
 import time
 
-from odoo.addons.web.controllers.home import Home
+from odoo.addons.auth_totp.controllers.home import Home
 from odoo.addons.web.controllers.utils import _get_login_redirect_url, ensure_db
 from odoo.exceptions import AccessDenied
 from odoo.http import Controller, request, route
@@ -28,6 +28,13 @@ def redirect(location):
 
 
 class WorkspaceLogin(Home):
+    @route(type="http")
+    def web_totp(self, *args, **kwargs):
+        if sso.MFA_KEY in request.session:
+            uid = request.session.get("pre_uid") or request.session.uid
+            sso.check_pending_identity(request.env(user=uid))
+        return super().web_totp(*args, **kwargs)
+
     @route()
     def web_login(self, *args, **kwargs):
         response = super().web_login(*args, **kwargs)

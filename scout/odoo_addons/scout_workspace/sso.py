@@ -22,6 +22,7 @@ FLOW_SECONDS = 300
 MAX_PENDING = 8
 FLOWS_KEY = "scout_workspace_flows"
 BROWSER_KEY = "scout_workspace_browser"
+MFA_KEY = "scout_workspace_pending_mfa"
 _proof = ContextVar("scout_workspace_verified_proof", default=None)
 
 
@@ -218,10 +219,31 @@ def consume_proof(credential, env):
     ):
         raise AccessDenied()
     proof.used = True
+    assert_current_identity(proof, env)
+    from odoo.http import request
+
+    if request:
+        request.session[MFA_KEY] = {
+            "database": proof.database,
+            "uid": proof.uid,
+            "login": proof.login,
+            "binding_id": proof.binding_id,
+            "binding_version": proof.binding_version,
+            "tenant": proof.tenant,
+            "oid": proof.oid,
+            "config_fingerprint": proof.config_fingerprint,
+            "expires_at": time.time() + FLOW_SECONDS,
+        }
+    return {"uid": proof.uid, "auth_method": "scout_entra", "mfa": "default"}
+
+
+def assert_current_identity(proof, env):
     settings = load_settings()
     if (
         settings.database != proof.database
         or settings.fingerprint != proof.config_fingerprint
+        or env.cr.dbname != proof.database
+        or env.uid != proof.uid
     ):
         raise AccessDenied()
     # Authentication metadata only. Lock the exact binding/user through native
@@ -246,4 +268,32 @@ def consume_proof(credential, env):
         or settings.tenant_id != proof.tenant
     ):
         raise AccessDenied()
-    return {"uid": proof.uid, "auth_method": "scout_entra", "mfa": "default"}
+
+
+def check_pending_identity(env, *, finalize=False):
+    """Native finalize calls this for immediate, TOTP and trusted-device login.
+
+    A native finalize has tentatively populated uid before its after-login hook.
+    Always use native logout on a rejected SSO challenge, never leave that uid.
+    Fully finalized sessions have no marker and retain native Odoo lifecycle.
+    """
+    from odoo.http import request
+    from odoo.http.session import logout
+
+    if not request or MFA_KEY not in request.session:
+        return
+    try:
+        pending = dict(request.session[MFA_KEY])
+        if pending.pop("expires_at") <= time.time():
+            raise AccessDenied()
+        proof = VerifiedProof(**pending)
+        assert_current_identity(proof, env)
+        if finalize:
+            request.session.pop(MFA_KEY)
+    except Exception:
+        logout(request.session, keep_db=True)
+        raise AccessDenied("SCOUT_SIGNIN_CHALLENGE_REVOKED") from None
+
+
+def finalize_pending_identity(env):
+    check_pending_identity(env, finalize=True)

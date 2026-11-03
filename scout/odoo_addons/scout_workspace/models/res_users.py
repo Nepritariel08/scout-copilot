@@ -1,6 +1,6 @@
 from odoo import models
 
-from ..sso import consume_proof
+from ..sso import MFA_KEY, consume_proof, finalize_pending_identity
 
 
 class ResUsers(models.Model):
@@ -13,4 +13,16 @@ class ResUsers(models.Model):
 
                 raise AccessDenied()
             return consume_proof(credential, self.env)
-        return super()._check_credentials(credential, env)
+        info = super()._check_credentials(credential, env)
+        # A successful different PRIMARY login supersedes an unfinished SSO
+        # challenge. TOTP itself must keep the marker through native finalize.
+        if credential.get("type") != "totp":
+            from odoo.http import request
+
+            if request:
+                request.session.pop(MFA_KEY, None)
+        return info
+
+    def _after_session_login(self):
+        finalize_pending_identity(self.env)
+        return super()._after_session_login()
