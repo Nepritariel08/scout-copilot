@@ -94,27 +94,37 @@ Unknown/denied principal or binding returns `404 COMPUTER_ACCESS_DENIED`;
 unsupported commands `403 COMPUTER_ACTION_UNAVAILABLE`; invalid input `400
 COMPUTER_INPUT_INVALID`; in-flight collision/cancel `409 COMPUTER_BUSY` or
 `COMPUTER_CANCELLED`; upstream failure `503 COMPUTER_UNAVAILABLE`. Disabled global
-admission remains the parent's `503 OWNED_FEATURE_UNAVAILABLE`. Bodies expose only
+admission returns `503 SCOUT_CAPABILITY_UNAVAILABLE` before the legacy optional
+surface (which uses `OWNED_FEATURE_UNAVAILABLE`). The UI recognizes both exact
+disabled-composition codes. Bodies expose only
 codes, not provider error text, tokens, loopback addresses or another user's IDs.
 Successful responses use `Cache-Control: no-store`.
 
 ## Bounds and fail-closed behavior
 
 The provider must be per-bot and return a numeric loopback HTTP endpoint. Before
-any browser request, the adapter strictly pushes `allowlist_only` egress for
-`example.org`; a failed/unsupported push prevents navigation and readback. It does
+any browser request, the adapter strictly pushes `owned_public_sample` egress with
+empty rules; a failed/unsupported push prevents navigation and readback. It does
 not inherit the upstream default `allow_all` network or `allow:["true"]` action
 policy. Navigation goes through the actual gateway's policy decision and durable
 audit writer before dispatch. Reads/snapshots/screenshots get an additional
 explicit public-page policy and pre/post origin checks.
 
-The reused egress engine treats a domain rule as that domain plus subdomains, and
-a domain match can resolve to RFC1918/loopback; metadata/link-local is denied
-independently. The fixed server navigation and released page URL are narrower than
-this network matcher. Do not claim DNS-rebinding/private-resolution isolation from
-this source adapter alone. Live qualification needs an effective external network
-boundary denying private/metadata destinations, or a separately reviewed owned
-backend egress restriction, before activation.
+The owned mode admits only explicit CONNECT to normalized `example.org:443`,
+requires bounded A and AAAA resolution and rejects any private/special answer.
+It refuses plain HTTP and independently resolving upstream proxies, then dials
+only the validated literal addresses. In-flight policy transitions involving the
+strict mode are fenced after DNS and immediately before dialing. The classifier
+documents its pinned IANA range basis and conservative limits. The existing four
+network modes retain their prior behavior. A matching reviewed computer image is
+required; an older image refuses the new mode.
+
+This proxy is not process-level network isolation. Before activation, verify
+IPv4/IPv6 namespace/container boundaries, no host mounts or arbitrary shell,
+browser proxy settings and direct TCP/UDP, WebRTC/QUIC, loopback/private/metadata
+and custom-route/NAT64 bypass canaries. CONNECT restricts host/port/IP; the owned
+action and result checks separately restrict the exact URL. Existing established
+streams and deployment-specific routes need actual runtime qualification.
 
 The native membership, immutable principal, config/token fingerprint, active
 binding/expiry, agent visibility and model-run fence are rechecked before and
