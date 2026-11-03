@@ -163,7 +163,7 @@ describe("owned fixed public computer model tool", () => {
     const tool = create(async () => observed);
     expect(
       tool.definitions(options()).map((value) => value.function.name),
-    ).toEqual(grant.allowedToolNames);
+    ).toEqual(grant.allowedToolNames ?? []);
     expect(tool.matchesPrefix("scout_computer_read_")).toBe(true);
     expect(tool.matchesPrefix("scout_computer_type")).toBe(false);
     const altered = options();

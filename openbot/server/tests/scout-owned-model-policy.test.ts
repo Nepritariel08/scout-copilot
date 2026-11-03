@@ -5,6 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { historyDigest } from "../src/scout/history/protocol";
 import {
   createModelPolicyReader,
+  type ModelGrant,
   openRouterOwnedPreferences,
   PAID_PHALA_PROFILE,
   parseModelPolicy,
@@ -66,7 +67,7 @@ describe("operator-owned model and context policy", () => {
     for (const allowedToolNames of [
       ["scout_computer_read_public"],
       ["scout_capabilities", "scout_computer_read_public"],
-    ]) {
+    ] satisfies NonNullable<ModelGrant["allowedToolNames"]>[]) {
       const config = policy();
       Object.assign(config.bindings[0], { allowedToolNames });
       expect(() => parseModelPolicy(config, principal)).toThrow(
