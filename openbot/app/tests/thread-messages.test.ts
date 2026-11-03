@@ -271,20 +271,89 @@ describe("thread history retrieval outcomes", () => {
     }
   };
 
-  test("HTTP failures are unavailable history, not valid empty history", async () => {
+  test("authorized history taking longer than the gateway join deadline is restored", async () => {
+    let capturedSignal: AbortSignal | undefined;
     await withFetch(
-      async () => new Response("broken", { status: 500 }),
+      async (_input, init) => {
+        capturedSignal = init?.signal ?? undefined;
+        await Bun.sleep(1700);
+        return Response.json({ messages: [userTurn, answer] });
+      },
       async () => {
-        const read = await readThreadMessages("thread-1", "agent-1");
+        const restored = await readThreadMessages("slow-authorized", "agent-1");
+        expect(restored).toMatchObject({
+          availability: "ready",
+          messages: [userTurn, answer],
+        });
+        expect(capturedSignal?.aborted).toBe(false);
+      },
+    );
+  });
 
-        expect(read).toEqual({
+  test("an already cancelled scope does not start a history request", async () => {
+    let requests = 0;
+    await withFetch(
+      async () => {
+        requests++;
+        return Response.json({ messages: [answer] });
+      },
+      async () => {
+        const scope = new AbortController();
+        scope.abort();
+        const restored = await readThreadMessages("left-thread", "agent-1", {
+          signal: scope.signal,
+        });
+        expect(restored.availability).toBe("unavailable");
+        expect(requests).toBe(0);
+      },
+    );
+  });
+
+  test("scope cancellation settles and aborts a read even when the transport ignores abort", async () => {
+    const scope = new AbortController();
+    let transportSignal: AbortSignal | undefined;
+    let complete: (response: Response) => void = () => {};
+    await withFetch(
+      (_input, init) => {
+        transportSignal = init?.signal ?? undefined;
+        return new Promise<Response>((resolve) => {
+          complete = resolve;
+        });
+      },
+      async () => {
+        const reading = readThreadMessages("left-thread", "agent-1", {
+          signal: scope.signal,
+        });
+        scope.abort();
+        expect(await reading).toEqual({
           messages: [],
           unreadable: 0,
           availability: "unavailable",
         });
+        expect(transportSignal?.aborted).toBe(true);
+        complete(Response.json({ messages: [answer] }));
+        await Bun.sleep(0);
       },
     );
   });
+
+  test.each([401, 403, 500, 503])(
+    "HTTP %s is unavailable history, not valid empty history",
+    async (status) => {
+      await withFetch(
+        async () => new Response("broken", { status }),
+        async () => {
+          const read = await readThreadMessages("thread-1", "agent-1");
+
+          expect(read).toEqual({
+            messages: [],
+            unreadable: 0,
+            availability: "unavailable",
+          });
+        },
+      );
+    },
+  );
 
   test("network failures are unavailable history, not valid empty history", async () => {
     await withFetch(

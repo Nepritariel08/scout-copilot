@@ -57,11 +57,15 @@ const UNAVAILABLE_THREAD: StoredThread = {
   availability: "unavailable",
 };
 
-const THREAD_MESSAGES_DEADLINE_MS = 1500;
+// Source authorization can require several bounded Odoo reads. This is independent
+// of the short gateway-join deadline; a successful slow read is still real history.
+const THREAD_MESSAGES_DEADLINE_MS = 30_000;
 
 type ReadThreadMessagesOptions = {
-  /** Shorter only in tests; production uses the mount/send ordering deadline. */
+  /** Shorter in tests or a bounded fallback; not the gateway-join deadline. */
   deadlineMs?: number;
+  /** Navigation or a superseding refresh must release its network read. */
+  signal?: AbortSignal;
 };
 
 /**
@@ -184,15 +188,25 @@ export async function readThreadMessages(
   const controller = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const deadlineMs = options.deadlineMs ?? THREAD_MESSAGES_DEADLINE_MS;
+  const cancel = () => controller.abort();
+  let finishAbort: () => void = () => {};
+  const aborted = new Promise<StoredThread>((resolve) => {
+    finishAbort = () => resolve(UNAVAILABLE_THREAD);
+    controller.signal.addEventListener("abort", finishAbort, { once: true });
+  });
+  options.signal?.addEventListener("abort", cancel, { once: true });
+  if (options.signal?.aborted) cancel();
 
   try {
+    if (controller.signal.aborted) return UNAVAILABLE_THREAD;
     const read = async () => {
       const response = await tryClient(
         `/api/copilotkit/threads/${encodeURIComponent(threadId)}/messages?agentId=${encodeURIComponent(agentId)}`,
         { signal: controller.signal },
       );
-      if (!response.ok) return UNAVAILABLE_THREAD;
+      if (controller.signal.aborted || !response.ok) return UNAVAILABLE_THREAD;
       const body: unknown = await response.json();
+      if (controller.signal.aborted) return UNAVAILABLE_THREAD;
       const stored =
         typeof body === "object" && body !== null && "messages" in body
           ? body.messages
@@ -200,17 +214,13 @@ export async function readThreadMessages(
       return Array.isArray(stored) ? readableTurns(stored) : UNAVAILABLE_THREAD;
     };
 
-    const deadline = new Promise<StoredThread>((resolve) => {
-      timeout = setTimeout(() => {
-        controller.abort();
-        resolve(UNAVAILABLE_THREAD);
-      }, deadlineMs);
-    });
-
-    return await Promise.race([read(), deadline]);
+    timeout = setTimeout(cancel, deadlineMs);
+    return await Promise.race([read(), aborted]);
   } catch {
     return UNAVAILABLE_THREAD;
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", cancel);
+    controller.signal.removeEventListener("abort", finishAbort);
   }
 }

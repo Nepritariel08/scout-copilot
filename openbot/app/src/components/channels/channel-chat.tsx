@@ -75,6 +75,7 @@ import { afterMs } from "@/lib/copilot/join-thread";
 import { repairUnansweredToolCalls } from "@/lib/copilot/repair-history";
 import { stoppedReason } from "@/lib/copilot/stopped-turn";
 import { readThreadMessages } from "@/lib/copilot/thread-messages";
+import { deploymentCapabilitiesQueryOptions } from "@/lib/deployment/queries";
 import { appConfig } from "@/lib/generated/application-config";
 import { useSkillCommands } from "@/lib/plugins/skill-commands";
 import { withOdooTaskSelection } from "@/lib/scout-odoo";
@@ -495,6 +496,13 @@ export function ChannelChat({
   /** Read the store again; see the activity effect. Settles what a follow streamed. */
   const pullRef = useRef<() => void>(() => {});
   const alive = useRef(true);
+  const scopeKey = JSON.stringify([
+    channel.id,
+    channel.threadId,
+    runtimeAgentId,
+  ]);
+  const currentScope = useRef(scopeKey);
+  currentScope.current = scopeKey;
   useEffect(() => {
     alive.current = true;
     return () => {
@@ -517,13 +525,21 @@ export function ChannelChat({
 
   /** Promise gate for ordering the first message after the thread join when possible. */
   const openJoinGate = useRef<() => void>(() => {});
-  const joinGate = useRef<Promise<void> | null>(null);
-  if (joinGate.current === null) {
-    joinGate.current = new Promise<void>((resolve) => {
-      openJoinGate.current = resolve;
-    });
+  const joinGate = useRef<{
+    scope: string;
+    promise: Promise<void>;
+    started: boolean;
+  } | null>(null);
+  if (joinGate.current === null || joinGate.current.scope !== scopeKey) {
+    joinGate.current = {
+      scope: scopeKey,
+      started: false,
+      promise: new Promise<void>((resolve) => {
+        openJoinGate.current = resolve;
+      }),
+    };
   }
-  const joinGatePromise = joinGate.current;
+  const joinGatePromise = joinGate.current.promise;
 
   /** Promise gate so messages typed before runtime readiness wait instead of being discarded. */
   const openReadyGate = useRef<() => void>(() => {});
@@ -545,7 +561,15 @@ export function ChannelChat({
    */
   const agentRef = useRef(agent);
   agentRef.current = agent;
-  const voiceArchive = useVoiceArchive(channel.id);
+  const capabilities = useQuery(deploymentCapabilitiesQueryOptions());
+  // Licensed deployments retain their archive even when new calls are disabled.
+  // Unknown/old capabilities never imply an owned archive endpoint exists.
+  const voiceHistoryAvailable =
+    capabilities.data?.mode === "intelligence" ||
+    capabilities.data?.voice === true;
+  const voiceHistoryAvailableRef = useRef(voiceHistoryAvailable);
+  voiceHistoryAvailableRef.current = voiceHistoryAvailable;
+  const voiceArchive = useVoiceArchive(channel.id, voiceHistoryAvailable);
   const [voiceContextNotice, setVoiceContextNotice] = useState<string | null>(
     null,
   );
@@ -581,6 +605,21 @@ export function ChannelChat({
     if (!isReady) return;
     let current = true;
     const version = ++historyReadVersion.current;
+    const readingController = new AbortController();
+    // Registration can restart hydration within one channel. Cleanup releases
+    // only its own gate; senders then wait for any replacement attempt.
+    if (joinGate.current?.started) {
+      joinGate.current = {
+        scope: scopeKey,
+        started: true,
+        promise: new Promise<void>((resolve) => {
+          openJoinGate.current = resolve;
+        }),
+      };
+    } else if (joinGate.current) {
+      joinGate.current.started = true;
+    }
+    const releaseJoinGate = openJoinGate.current;
 
     void (async () => {
       /*
@@ -594,7 +633,9 @@ export function ChannelChat({
         threadId: channel.threadId,
       });
       // The stored transcript, asked for at once too: a long thread takes a moment to read.
-      const reading = readThreadMessages(channel.threadId, runtimeAgentId);
+      const reading = readThreadMessages(channel.threadId, runtimeAgentId, {
+        signal: readingController.signal,
+      });
       let runOpen = false;
       let runId: string | null | undefined;
       /** The join has replayed up to the live run's own start: what it draws now is current. */
@@ -663,7 +704,7 @@ export function ChannelChat({
          */
         if (live && current) {
           const following = follow.current({ first: live });
-          openJoinGate.current();
+          releaseJoinGate();
           if (typeof runId === "string") {
             // Nothing is drawn until there is a whole transcript to draw: the stand-in, or the
             // replay once it has reached the live run. Drawn piecemeal, the transcript scrolled
@@ -673,7 +714,12 @@ export function ChannelChat({
               if (current) setRestoring(false);
             };
             release = () => {
-              if (!reachedLive) return;
+              if (
+                !current ||
+                version !== historyReadVersion.current ||
+                !reachedLive
+              )
+                return;
               release = null;
               setStandIn(null);
               show();
@@ -681,14 +727,24 @@ export function ChannelChat({
             release();
             void (async () => {
               let stored = await reading;
+              if (!current || version !== historyReadVersion.current) return;
               // The store answers slowly while the replay floods the page: give it longer here.
               if (stored.availability !== "ready" && !reachedLive && !ended)
                 stored = await readThreadMessages(
                   channel.threadId,
                   runtimeAgentId,
-                  { deadlineMs: STAND_IN_READ_MS },
+                  {
+                    deadlineMs: STAND_IN_READ_MS,
+                    signal: readingController.signal,
+                  },
                 );
-              if (ended || reachedLive || stored.availability !== "ready")
+              if (
+                !current ||
+                version !== historyReadVersion.current ||
+                ended ||
+                reachedLive ||
+                stored.availability !== "ready"
+              )
                 return;
               setStandIn(withoutUnansweredCalls(stored.messages));
               show();
@@ -700,7 +756,8 @@ export function ChannelChat({
             await following;
           }
           release = null;
-          setStandIn(null);
+          if (current && version === historyReadVersion.current)
+            setStandIn(null);
           // The follow read the store as it ended, with retries and its own notice rules; a second,
           // single-shot read here could only fail on a slow store and claim history was lost.
           followed = true;
@@ -749,14 +806,15 @@ export function ChannelChat({
         // never coming.
         if (current) setRestoring(false);
         // Release even on join/restore failure; the gate orders messages, not withholds them.
-        openJoinGate.current();
+        releaseJoinGate();
       }
     })();
 
     return () => {
       current = false;
+      readingController.abort();
     };
-  }, [copilotkit, agent, isReady, channel.threadId, runtimeAgentId]);
+  }, [copilotkit, agent, isReady, channel.threadId, runtimeAgentId, scopeKey]);
 
   /*
    * A turn nobody here streamed, surfaced while the channel is open.
@@ -806,11 +864,15 @@ export function ChannelChat({
     const initialActivity = authoredActivity();
     let lastSeen = initialActivity;
     let cancelled = false;
+    let readingController: AbortController | undefined;
 
     const pull = () => {
       // A followed turn is streaming the same messages; reading the store now would add them twice.
       // The follow reads once it is over.
       if (followingRef.current) return;
+      readingController?.abort();
+      readingController = new AbortController();
+      const signal = readingController.signal;
       const version = ++historyReadVersion.current;
       const isCurrent = () =>
         !cancelled && version === historyReadVersion.current;
@@ -829,6 +891,7 @@ export function ChannelChat({
           const stored = await readThreadMessages(
             channel.threadId,
             runtimeAgentId,
+            { signal },
           );
           if (!isCurrent()) return;
           if (stored.availability === "unavailable") {
@@ -910,6 +973,7 @@ export function ChannelChat({
     })();
     return () => {
       cancelled = true;
+      readingController?.abort();
       unsubscribe();
     };
   }, [channel.id, channel.threadId, joinGatePromise, runtimeAgentId]);
@@ -1063,34 +1127,44 @@ export function ChannelChat({
      * effect bounds itself and opens this gate from a `finally`. If that effect never ran there is
      * no runtime agent, and no connect in flight to wait on.
      */
-    if (isReadyRef.current) {
-      await joinGatePromise;
+    if (isReadyRef.current || joinGate.current?.started) {
+      for (;;) {
+        const waiting = joinGate.current;
+        if (!waiting || waiting.scope !== scopeKey) return "";
+        await waiting.promise;
+        if (!alive.current || currentScope.current !== scopeKey) return "";
+        if (joinGate.current === waiting) break;
+      }
     }
 
     // A send that only makes sense against the thread as it now stands; see the seed below.
-    if (skipIf?.()) return "";
+    if (!alive.current || currentScope.current !== scopeKey || skipIf?.())
+      return "";
 
     // Every wait is behind us, so this is the agent the screen is actually rendering. Read once and
     // used throughout, so the message, the repair and the run cannot land on two different agents.
     // Give initial voice history time to restore, while keeping ordinary chat usable on failure.
     setVoiceContextNotice(null);
     let voiceHistoryTimer: ReturnType<typeof setTimeout> | undefined;
-    const priorCalls = await Promise.race([
-      loadVoiceArchive(channel.id),
-      new Promise<never>((_resolve, reject) => {
-        voiceHistoryTimer = setTimeout(
-          () => reject(new Error("Voice history timed out")),
-          2000,
-        );
-      }),
-    ])
-      .catch(() => {
-        setVoiceContextNotice(
-          "Couldn’t bring in what was said on the call. You may need to repeat it.",
-        );
-        return cachedVoiceArchive(channel.id);
-      })
-      .finally(() => clearTimeout(voiceHistoryTimer));
+    const priorCalls = voiceHistoryAvailableRef.current
+      ? await Promise.race([
+          loadVoiceArchive(channel.id),
+          new Promise<never>((_resolve, reject) => {
+            voiceHistoryTimer = setTimeout(
+              () => reject(new Error("Voice history timed out")),
+              2000,
+            );
+          }),
+        ])
+          .catch(() => {
+            setVoiceContextNotice(
+              "Couldn’t bring in what was said on the call. You may need to repeat it.",
+            );
+            return cachedVoiceArchive(channel.id);
+          })
+          .finally(() => clearTimeout(voiceHistoryTimer))
+      : [];
+    if (!alive.current || currentScope.current !== scopeKey) return "";
     const target = agentRef.current;
     const existingMessageIds = new Set(
       target.messages.map((message) => message.id),
