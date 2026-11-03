@@ -1,4 +1,11 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  expect,
+  test,
+} from "bun:test";
 import type { Message, RunAgentInput } from "@ag-ui/core";
 import { RunAgentInputSchema } from "@ag-ui/core/schemas";
 import { CopilotKitProvider, useCopilotKit } from "@copilotkit/react-core/v2";
@@ -164,6 +171,11 @@ beforeAll(() => {
       },
     },
   );
+});
+beforeEach(() => {
+  // The first case may inherit a prior file's indefinitely fresh capabilities.
+  // Clear before the test can seed its own auth/cache state, not inside mounting().
+  queryClient.clear();
 });
 afterEach(() => {
   cleanup();

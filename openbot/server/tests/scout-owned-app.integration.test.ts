@@ -479,7 +479,9 @@ beforeEach(async () => {
   beforeModelDispatch = undefined;
   observedModelBodies = [];
   revokeOdooMapOnTaskRead = false;
-  membershipRevision = 1;
+  // Grants are intentionally append-only. A new native binding scope isolates
+  // each case without deleting another case's grant or encrypted credential.
+  membershipRevision++;
   odooMapRevision = 1;
   changeMembershipOnLookup = false;
   changeOdooMapOnLookup = false;
@@ -836,6 +838,7 @@ describe("owned composition through the actual Scout app", () => {
         provider: "openrouter",
         record: null,
         release: null,
+        qualification: { renewable: false, current: false, expiresAt: null },
         route: {
           provider: "openrouter",
           model: "fixture-model",
@@ -911,6 +914,7 @@ describe("owned composition through the actual Scout app", () => {
       const before = await requestConfiguredGrant("GET", statusPath);
       expect(before.status).toBe(200);
       const beforeStatus = await before.json();
+      const originalMembershipRevision = membershipRevision;
       changeMembershipOnLookup = true;
       let response: Response;
       try {
@@ -921,7 +925,7 @@ describe("owned composition through the actual Scout app", () => {
         );
       } finally {
         changeMembershipOnLookup = false;
-        membershipRevision = 1;
+        membershipRevision = originalMembershipRevision;
       }
       expect(response.status).toBe(403);
       expect(odooFixtureCalls).toBeGreaterThan(0);
