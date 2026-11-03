@@ -74,6 +74,17 @@ hands-free voice is required, with review-before-Send push-to-talk as fallback.
   deadlines, activities, timesheets and business permissions. Existing Odoo/DSH
   work-item identities, durable intents and receipts remain authoritative for
   delegated execution. No duplicate business tracker or scheduler is introduced.
+- **Odoo is the authoritative data-security layer, including meeting logs and
+  transcripts.** Resolve Microsoft identity to the existing Odoo user; enforce
+  that user's model ACLs, record rules, field groups, company scope and attachment
+  access. Scout cannot grant additional business access. Retrieval runs in that
+  user context, without a superuser or raw-SQL shortcut. Recheck current source
+  rights before model release, cached answers, downloads and history reads.
+  Fireflies/Teams ingestion may populate Odoo records with canonical provenance;
+  prompt-time access must use Odoo's permissions rather than a privileged direct
+  transcript account. Search/vector indexes are derived data, not an alternative
+  authorization source. Runtime authentication, tool approval and budget limits
+  complement these Odoo checks without becoming a parallel business-role system.
 - Use the existing Community Linode and PostgreSQL infrastructure. The current
   dedicated owned-conversation database remains intact. Putting Scout into the
   Odoo workspace does not require unreviewed writes to Odoo's SQL tables or moving
