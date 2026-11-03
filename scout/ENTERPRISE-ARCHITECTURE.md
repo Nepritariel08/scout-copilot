@@ -79,10 +79,13 @@ hands-free voice is required, with review-before-Send push-to-talk as fallback.
   Odoo workspace does not require unreviewed writes to Odoo's SQL tables or moving
   working chat history. If native Odoo conversation models are later selected,
   qualify a persistence adapter, migration, export and restore before replacement.
-- Provide an Odoo application entry point and a shared workspace experience.
+- **Odoo Community is the selected workspace; OpenDuet supplies the assistant
+  interface; Microsoft Entra remains the login provider.** Implement this as an
+  Odoo workspace integration that reuses the existing interface and chat engine.
   Native Odoo business actions use the mapped user's ORM/API permissions. Preserve
-  the current authenticated Scout URL and callbacks during integration; embedding
-  or changing origins must qualify its session and browser trust boundaries.
+  existing accounts, data and the current authenticated Scout callbacks during
+  integration; qualify the workspace session/origin boundary and keep Microsoft
+  authentication top-level rather than embedding its sign-in screen.
 - External sources remain connected through source-specific adapters. Microsoft
   sign-in alone grants no Outlook/Teams/SharePoint data access; installed ChatGPT
   plugins do not transfer tokens, consent or tool availability into Scout.
