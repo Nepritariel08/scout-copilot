@@ -1,4 +1,5 @@
 import type { TranscriptionConfig } from "./config";
+import { speechResponseJson } from "./response";
 
 export interface TranscriptionProvider {
   transcribe(file: File, signal: AbortSignal): Promise<string>;
@@ -40,12 +41,13 @@ export function createTranscriptionProvider(
                 : "Couldn't process this recording. Try again, or ask an admin if it keeps happening.",
             );
           }
-          const result: unknown = await response.json().catch(() => null);
+          const result = await speechResponseJson(response).catch(() => null);
           if (
             !result ||
             typeof result !== "object" ||
             !("text" in result) ||
-            typeof result.text !== "string"
+            typeof result.text !== "string" ||
+            new TextEncoder().encode(result.text).byteLength > 16_384
           ) {
             throw new TranscriptionError(
               "The transcription service returned an invalid response. Please retry.",

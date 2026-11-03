@@ -114,3 +114,27 @@ test("malformed success is a visible failure", async () => {
     ),
   ).rejects.toThrow("invalid response");
 });
+
+test("bounds chunked responses and transcript bytes without leaking upstream data", async () => {
+  for (const response of [
+    Response.json({ text: "x".repeat(16_385) }),
+    new Response(new Uint8Array(32_769)),
+    new Response("{}", { headers: { "content-length": "999999" } }),
+    new Response(new Uint8Array([0xff, 0xff])),
+  ]) {
+    const provider = createTranscriptionProvider(
+      {
+        provider: "openai-compatible",
+        baseUrl: "http://127.0.0.1:18083/v1",
+        model: "synthetic",
+      },
+      async () => response,
+    );
+    await expect(
+      provider.transcribe(
+        new File(["synthetic"], "recording.webm"),
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("invalid response");
+  }
+});
