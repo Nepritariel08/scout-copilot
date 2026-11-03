@@ -80,13 +80,13 @@ export function ScoutCapabilities({
                   detail="Submit a reviewed request to DSH and explicitly accept the returned draft."
                 />
                 <CapabilityRow
-                  title="Voice input and read aloud"
+                  title="Hands-free voice and read aloud"
                   status={
                     data.voice === "push_to_talk" ? "available" : "unavailable"
                   }
                   detail={
                     data.voice === "push_to_talk"
-                      ? "Record a short message, review its transcript, then send. Read aloud plays a completed saved answer."
+                      ? "Start hands-free voice to speak, hear the saved answer, and continue. Push-to-talk lets you review a transcript before sending. Stop voice to return to typing."
                       : "Local speech has not been enabled for this deployment."
                   }
                 />

@@ -12,6 +12,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -19,6 +20,7 @@ import { attachmentModality } from "@/components/channels/chat-messages";
 import { toAgentOptions } from "@/components/channels/composer";
 import type { ComposerDraft } from "@/components/channels/composer/draft";
 import { ConversationView } from "@/components/channels/conversation-view";
+import { OwnedVoiceConversation } from "@/components/channels/owned-voice-conversation";
 import {
   seedMessage,
   takeFirstMessage,
@@ -95,6 +97,7 @@ import {
   voiceArchiveContext,
   withVoiceChats,
 } from "@/lib/voice/archive";
+import { createOwnedChannelVoiceTurn } from "@/lib/voice/owned-channel-turn";
 import { useVoiceCall } from "@/lib/voice/use-voice-call";
 import { queryClient } from "@/query-client";
 import { newId } from "../../lib/new-id";
@@ -574,6 +577,25 @@ export function ChannelChat({
     ...currentUserQueryOptions(),
     enabled: ownedSpeechAvailable,
   });
+  const speechIdentity = `${speechOwner.data?.id ?? "pending"}:${scopeKey}`;
+  const currentSpeechIdentity = useRef(speechIdentity);
+  currentSpeechIdentity.current = speechIdentity;
+  const [ownedVoiceState, setOwnedVoiceState] = useState({
+    identity: speechIdentity,
+    busy: false,
+  });
+  const ownedVoiceStateRef = useRef(ownedVoiceState);
+  const ownedVoiceBusy =
+    ownedVoiceState.identity === speechIdentity && ownedVoiceState.busy;
+  const ownedVoiceBusyChanged = useCallback(
+    (busy: boolean) => {
+      if (currentSpeechIdentity.current === speechIdentity) {
+        ownedVoiceStateRef.current = { identity: speechIdentity, busy };
+        setOwnedVoiceState({ identity: speechIdentity, busy });
+      }
+    },
+    [speechIdentity],
+  );
   // Licensed deployments retain their archive even when new calls are disabled.
   // Unknown/old capabilities never imply an owned archive endpoint exists.
   const voiceHistoryAvailable =
@@ -1127,6 +1149,7 @@ export function ChannelChat({
     attachments: Attachment[],
     skipIf?: () => boolean,
     odooTaskId?: string,
+    onTarget?: (target: typeof agent) => void,
   ) => {
     // Wait briefly for the runtime agent instance before adding the message.
     if (!isReadyRef.current) {
@@ -1181,6 +1204,7 @@ export function ChannelChat({
       : [];
     if (!alive.current || currentScope.current !== scopeKey) return "";
     const target = agentRef.current;
+    onTarget?.(target);
     const existingMessageIds = new Set(
       target.messages.map((message) => message.id),
     );
@@ -1331,6 +1355,7 @@ export function ChannelChat({
      * and sending the words again drew a second copy beside it.
      */
     let serverStarted = false;
+    let stoppedBeforeDispatch = false;
     const startWatch = target.subscribe({
       onRunInitialized: () => {
         started = true;
@@ -1346,9 +1371,21 @@ export function ChannelChat({
         target.agentId,
         odooTaskId ?? null,
         () =>
-          withVoiceContext(copilotkit, target.agentId, voiceHistory, () =>
-            copilotkit.runAgent({ agent: target }),
-          ),
+          withVoiceContext(copilotkit, target.agentId, voiceHistory, () => {
+            // Approval recovery can await after the initial scope check. Stop
+            // must still prevent the first model dispatch when it settles.
+            if (
+              !alive.current ||
+              currentScope.current !== scopeKey ||
+              skipIf?.()
+            ) {
+              stoppedBeforeDispatch = true;
+              const kept = withoutMessages(target.messages, added);
+              if (kept !== target.messages) target.setMessages([...kept]);
+              return Promise.resolve();
+            }
+            return copilotkit.runAgent({ agent: target });
+          }),
       );
     } finally {
       startWatch.unsubscribe();
@@ -1356,6 +1393,7 @@ export function ChannelChat({
       awaitingReply.current = false;
       setRunsInFlight((count) => count - 1);
     }
+    if (stoppedBeforeDispatch) return "";
 
     /*
      * ANOTHER RUN HAD THE THREAD: the server continuing after Allow once, another tab, another
@@ -1442,9 +1480,20 @@ export function ChannelChat({
     {
       skipIf,
       odooTaskId,
-    }: { skipIf?: () => boolean; odooTaskId?: string } = {},
+      onTarget,
+    }: {
+      skipIf?: () => boolean;
+      odooTaskId?: string;
+      onTarget?: (target: typeof agent) => void;
+    } = {},
   ) => {
     const trimmed = text.trim();
+    if (
+      !onTarget &&
+      ownedVoiceStateRef.current.identity === currentSpeechIdentity.current &&
+      ownedVoiceStateRef.current.busy
+    )
+      throw new Error("Stop voice before sending a typed message.");
     // A pasted screenshot with no caption is still a message to send: `canSendDraft` already
     // unlocks the button for exactly this case, so refusing it here would leave the button
     // enabled and inert.
@@ -1476,6 +1525,7 @@ export function ChannelChat({
         attachments,
         skipIf,
         odooTaskId,
+        onTarget,
       );
     } finally {
       turnsRef.current -= 1;
@@ -1541,6 +1591,46 @@ export function ChannelChat({
   /** Stable reference for effects and component callbacks. */
   const sayRef = useRef(say);
   sayRef.current = say;
+  const ownedVoiceTurn = useMemo(
+    () =>
+      createOwnedChannelVoiceTurn<typeof agent>({
+        threadId: channel.threadId,
+        isCurrent: () =>
+          alive.current &&
+          currentScope.current === scopeKey &&
+          currentSpeechIdentity.current === speechIdentity,
+        send: async (text, hooks) => {
+          const odooTaskId = selectedOdooTaskIdRef.current ?? undefined;
+          if (odooTaskId) {
+            selectedOdooTaskIdRef.current = null;
+            setSelectedOdooTaskId(null);
+            setContextOdooTaskId(odooTaskId);
+          }
+          try {
+            return await sayRef.current(text, [], [], { ...hooks, odooTaskId });
+          } finally {
+            if (currentSpeechIdentity.current === speechIdentity)
+              setContextOdooTaskId(null);
+          }
+        },
+        assistantIds: (target) =>
+          new Set(
+            target.messages
+              .filter((message) => message.role === "assistant")
+              .map((message) => message.id),
+          ),
+        replyId: (target) =>
+          target.messages.findLast((message) => message.role === "assistant")
+            ?.id,
+        read: (signal) =>
+          readThreadMessages(channel.threadId, runtimeAgentId, { signal }),
+        cancel: (target) => {
+          copilotkit.stopAgent({ agent: target });
+          freshConnectionAfterStop(target);
+        },
+      }),
+    [channel.threadId, runtimeAgentId, scopeKey, speechIdentity, copilotkit],
+  );
   const stopEpoch = useRef(0);
 
   const call = useVoiceCall({
@@ -1814,6 +1904,27 @@ export function ChannelChat({
           {appConfig.brand.tenantId === "scout" && channel.active ? (
             <ScoutDrafts channelId={channel.id} />
           ) : null}
+          {ownedSpeechAvailable && !task?.send ? (
+            <OwnedVoiceConversation
+              key={speechIdentity}
+              enabled
+              identityKey={speechIdentity}
+              blocked={
+                !speechOwner.data?.id ||
+                !isReady ||
+                restoring ||
+                !channel.active ||
+                historyAvailability !== "ready" ||
+                following ||
+                taskBusy ||
+                (!ownedVoiceTurn.isAsking() &&
+                  (agent.isRunning || runsInFlight > 0 || turnsInFlight > 0))
+              }
+              ask={ownedVoiceTurn.ask}
+              cancelOwnTurn={ownedVoiceTurn.cancel}
+              onBusyChange={ownedVoiceBusyChanged}
+            />
+          ) : null}
           {appConfig.brand.tenantId === "scout" &&
           channel.active &&
           !task?.send ? (
@@ -1822,7 +1933,12 @@ export function ChannelChat({
               selectedTaskId={selectedOdooTaskId}
               contextTaskId={contextOdooTaskId}
               onSelectTaskId={selectOdooTask}
-              busy={agent.isRunning || turnsInFlight > 0 || following}
+              busy={
+                ownedVoiceBusy ||
+                agent.isRunning ||
+                turnsInFlight > 0 ||
+                following
+              }
             />
           ) : null}
           <ConversationView
@@ -1875,8 +1991,8 @@ export function ChannelChat({
             busy={agent.isRunning || turnsInFlight > 0 || following || taskBusy}
             // The `/` menu exposes only skills granted to this Bot.
             commands={task?.send && !task.durable ? undefined : skillCommands}
-            // Readiness is handled by `say`; deletion is the only disabled-chat state.
-            disabled={!channel.active}
+            // Voice owns the input until Stop; readiness remains handled by `say`.
+            disabled={!channel.active || ownedVoiceBusy}
             /*
              * NOTHING WHILE HISTORY IS RESTORING, then all of it at once. A join replays the thread
              * turn by turn, and the transcript scrolls each new turn to the top as it lands: on a
@@ -1902,7 +2018,9 @@ export function ChannelChat({
                 <HandoffResumeNotice
                   botId={runtimeAgentId}
                   agent={agent}
-                  ready={isReady && !restoring && channel.active}
+                  ready={
+                    isReady && !restoring && channel.active && !ownedVoiceBusy
+                  }
                   run={async () => {
                     setRunsInFlight((count) => count + 1);
                     try {
