@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { resolve } from "node:path";
 import { Hono } from "hono";
 import type { AuditStore } from "../src/audit";
 import type { AppVariables, AuthenticatedActor } from "../src/auth/guards";
@@ -34,8 +35,8 @@ const initialConfig = () => ({
   version: 1,
   deploymentId: "computer-test",
   supervisorUrl: "http://127.0.0.1:18089/",
-  supervisorTokenFile: "C:\\synthetic\\supervisor-token",
-  computerTokenFile: "C:\\synthetic\\computer-token",
+  supervisorTokenFile: resolve("synthetic", "supervisor-token"),
+  computerTokenFile: resolve("synthetic", "computer-token"),
   grants: [
     {
       userId: "alice",
