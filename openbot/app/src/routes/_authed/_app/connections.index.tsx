@@ -16,6 +16,7 @@ import {
 } from "@/components/layout/page-shell";
 import { RowMark } from "@/components/layout/row-mark";
 import { PluginLogo } from "@/components/plugins/plugin-logo";
+import { ScoutCapabilities } from "@/components/scout/capabilities";
 import { providerIcon } from "@/components/settings/linked-accounts";
 import {
   linkedNotice,
@@ -34,6 +35,7 @@ import {
   ItemTitle,
 } from "@/components/ui/item";
 import { type ConnectionRow, connectionRows } from "@/lib/connections/rows";
+import { deploymentCapabilitiesQueryOptions } from "@/lib/deployment/queries";
 import { appConfig } from "@/lib/generated/application-config";
 import {
   identityProvidersQueryOptions,
@@ -246,6 +248,29 @@ export function sharedAccountsListedOn(
 }
 
 function RouteComponent() {
+  const capabilities = useQuery(deploymentCapabilitiesQueryOptions());
+  if (capabilities.isPending)
+    return (
+      <PageShell title="Connections">
+        <p role="status">Checking connections…</p>
+      </PageShell>
+    );
+  if (capabilities.isError)
+    return (
+      <PageShell title="Connections">
+        <p role="alert">
+          Couldn't check this deployment's capabilities. Reload to retry.
+        </p>
+      </PageShell>
+    );
+  return capabilities.data?.mode === "owned" ? (
+    <ScoutCapabilities section="connections" />
+  ) : (
+    <LicensedConnectionsPage />
+  );
+}
+
+function LicensedConnectionsPage() {
   const { connected: outcome, authorized, linked } = Route.useSearch();
   /*
    * ALL THREE READ ONCE HERE, AND ALL THREE DROPPED FROM THE URL BELOW — not just `?linked=`.

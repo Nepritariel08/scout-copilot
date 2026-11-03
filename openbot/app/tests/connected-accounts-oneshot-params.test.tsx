@@ -9,6 +9,7 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { cleanup, render, waitFor } from "@testing-library/react";
+import { deploymentKeys } from "@/lib/deployment/queries";
 import { identityKeys } from "@/lib/identity/queries";
 import { pluginKeys } from "@/lib/plugins/queries";
 import { Route } from "@/routes/_authed/_app/connections.index";
@@ -45,6 +46,9 @@ type TestRouter = { state: { location: { search: unknown; href: string } } };
 function renderScreen(search: string) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
+  });
+  queryClient.setQueryData(deploymentKeys.capabilities(), {
+    mode: "intelligence",
   });
   // Seeded rather than fetched: this screen's data is not what is under test here.
   queryClient.setQueryData(pluginKeys.page(), { servers: [], catalogue: [] });

@@ -7,6 +7,7 @@ import { CapabilitiesShell } from "@/components/capabilities/capabilities-shell"
 import { DetailPanel } from "@/components/layout/detail-panel";
 import { PageRows, PageSection } from "@/components/layout/page-shell";
 import { StaggerItem } from "@/components/layout/stagger";
+import { ScoutCapabilities } from "@/components/scout/capabilities";
 import { EditSkill } from "@/components/skills/edit-skill";
 import { NewSkill } from "@/components/skills/new-skill";
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,7 @@ import {
 } from "@/components/ui/item";
 import { Separator } from "@/components/ui/separator";
 import { currentUserQueryOptions } from "@/lib/auth/queries";
+import { deploymentCapabilitiesQueryOptions } from "@/lib/deployment/queries";
 import { removeSkillMutationOptions } from "@/lib/plugins/mutations";
 import { pluginsPageQueryOptions } from "@/lib/plugins/queries";
 
@@ -52,6 +54,29 @@ export const Route = createFileRoute("/_authed/_app/capabilities/skills")({
 });
 
 function SkillsPage() {
+  const capabilities = useQuery(deploymentCapabilitiesQueryOptions());
+  if (capabilities.isPending)
+    return (
+      <CapabilitiesShell>
+        <p role="status">Checking capabilities…</p>
+      </CapabilitiesShell>
+    );
+  if (capabilities.isError)
+    return (
+      <CapabilitiesShell>
+        <p role="alert">
+          Couldn't check this deployment's capabilities. Reload to retry.
+        </p>
+      </CapabilitiesShell>
+    );
+  return capabilities.data?.mode === "owned" ? (
+    <ScoutCapabilities section="skills" />
+  ) : (
+    <LicensedSkillsPage />
+  );
+}
+
+function LicensedSkillsPage() {
   const queryClient = useQueryClient();
   const { new: isCreating, edit: editingSlug } = Route.useSearch();
   const navigate = Route.useNavigate();
