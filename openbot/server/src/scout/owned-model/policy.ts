@@ -73,6 +73,7 @@ const member = z
     agentIds: z.array(identifier).min(1).max(50),
     allowConversationContext: z.literal(true),
     allowPersonalInstructions: z.boolean(),
+    allowedToolNames: z.tuple([z.literal("scout_capabilities")]).optional(),
     route,
     limits: z.strictObject({
       maxInputBytes: z.number().int().min(1024).max(262144),
@@ -85,6 +86,11 @@ const member = z
     }),
   })
   .superRefine((binding, context) => {
+    if (binding.allowedToolNames && binding.limits.maxCallsPerRun < 2)
+      context.addIssue({
+        code: "custom",
+        message: "Tool calls require a bounded follow-up call",
+      });
     if (binding.route.provider !== "openrouter" || !binding.route.paidProfile)
       return;
     if (

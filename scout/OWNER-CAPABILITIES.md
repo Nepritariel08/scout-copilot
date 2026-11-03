@@ -22,3 +22,35 @@ The first owner acceptance pack is:
 Voice is unavailable in this source slice. The catalog is not plugin installation
 or evidence that a workflow ran. Source/fixture tests do not establish deployment,
 live inference or human acceptance.
+
+## Protected status tool
+
+An operator may add `"allowedToolNames": ["scout_capabilities"]` to one member's
+protected model policy and set `limits.maxCallsPerRun` to at least two. The field
+is optional with no default; omission preserves the previous policy fingerprint
+and text-only outbound request. Changing it changes the policy fingerprint and
+therefore requires renewed policy-bound Odoo release consent before reusing task
+context. No web request or model argument can enable it.
+
+The existing public MIT SDK runs the tool loop. The provider receives exactly
+one server-owned empty-object function schema, with parallel calls disabled;
+SDK-injected state tools and browser definitions never reach the provider.
+The tool returns only the product catalog. It cannot select an account, URL,
+credential, data source or Odoo record, submit DSH work, accept a draft or call an
+external integration. The per-run ledger permits one status execution and admits
+only its exact result into the follow-up. Old status exchanges are validated and
+omitted from future provider prompts; their saved text answers remain readable.
+
+Each provider hop still reserves and completes its own SQL usage receipt and
+passes existing quota, cost, timeout, cancellation and current-authority checks.
+The tool call is withheld until provider finish and required usage are validated.
+Definitions and tool messages count toward the full outbound request byte cap;
+the small catalog result also has an output byte cap. Unknown or malformed calls,
+missing usage, cancellation or revoked admission cannot execute a tool or start
+an authorized follow-up. No second scheduler, general MCP client, work-app
+credential migration or private-context history class is introduced.
+
+Withdrawing the tool opt-in restores the unchanged text-only transcript contract.
+Stored tool-bearing conversations remain readable, but their model continuation
+then refuses the tool transcript; use a fresh text-only conversation. Broadening
+the default replay contract is outside this first status-tool qualification.

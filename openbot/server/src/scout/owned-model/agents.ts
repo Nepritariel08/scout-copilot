@@ -11,7 +11,9 @@ import { createUserInstructionsStore } from "../../user-instructions";
 import { createBoundHistory } from "../history/service";
 import type { HistoryStore } from "../history/store";
 import type { createOwnedAuthority } from "../owned/authority";
+import type { OwnedCatalog } from "../owned/catalog";
 import type { TenantScope } from "../owned/scope";
+import { OwnedCapabilityTool } from "./capability-tool";
 import type { ContextHistory } from "./context-history";
 import { OwnedTextModel } from "./model";
 import {
@@ -64,6 +66,7 @@ export function createOwnedModelAgents(deps: {
   /** Test-only trusted adapter seam. Production leaves this absent until source identity is qualified. */
   recordContext?: ProjectTaskContextPort;
   contextHistory: ContextHistory;
+  catalog?: OwnedCatalog;
 }) {
   const load = createRuntimeAgentLoader(
     deps.database,
@@ -199,6 +202,15 @@ export function createOwnedModelAgents(deps: {
                 return grant;
               };
               const grant = await authorize();
+              const capabilityTool =
+                grant.allowedToolNames && deps.catalog
+                  ? new OwnedCapabilityTool(
+                      deps.catalog,
+                      grant,
+                      authorize,
+                      signal,
+                    )
+                  : undefined;
               const model = new OwnedTextModel(
                 {
                   userId: actor.id,
@@ -214,6 +226,7 @@ export function createOwnedModelAgents(deps: {
                 signal,
                 deps.transport,
                 selectedContext?.prompt,
+                capabilityTool,
               );
               return createActorAgentResolver({
                 loadAgents: async (current) =>
@@ -226,6 +239,16 @@ export function createOwnedModelAgents(deps: {
                   languageModel: model,
                 },
                 resolveModelApiKey: async () => null,
+                ...(capabilityTool
+                  ? {
+                      loadToolsForActor:
+                        (userId: string) => async (botId: string) => {
+                          if (userId !== actor.id || botId !== registered.id)
+                            throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+                          return [capabilityTool.grantedTool()];
+                        },
+                    }
+                  : {}),
                 ...(grant.allowPersonalInstructions
                   ? {
                       loadInstructionsForActor: (userId: string) => () =>

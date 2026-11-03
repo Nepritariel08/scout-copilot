@@ -296,8 +296,26 @@ beforeAll(async () => {
         headers: request.headers,
         body: (await request.json()) as Record<string, unknown>,
       };
+      const statusCall =
+        behavior.startsWith("status-") &&
+        !(captured.body.messages as { role: string }[]).some(
+          (message) => message.role === "tool",
+        );
+      if (behavior === "status-revoked" && statusCall) {
+        const revoked = configuration();
+        revoked.bindings[0].active = false;
+        await writeFile(policyFile, JSON.stringify(revoked));
+      }
       const ledger = await rows();
       expect(ledger.some((row) => row.status === "dispatched")).toBe(true);
+      if (behavior === "status-cancel" && statusCall) {
+        const current = ledger.find((row) => row.status === "dispatched")!;
+        await history.stop(
+          { userId: alice, tenantId: "tenant-a" },
+          current.threadId,
+          current.runId,
+        );
+      }
       if (behavior === "membership-change") aliceMembershipRevision = 2;
       if (behavior === "error")
         return new Response("synthetic-owned-provider-key", { status: 502 });
@@ -310,14 +328,23 @@ beforeAll(async () => {
           ? "x".repeat(6000)
           : "OWNED_MODEL_SYNTHETIC_OK";
       const delta =
-        behavior === "tool"
+        behavior === "tool" || statusCall
           ? {
               tool_calls: [
                 {
                   index: 0,
-                  id: "unexpected",
+                  id: statusCall ? "status_call" : "unexpected",
                   type: "function",
-                  function: { name: "browser_secret_action", arguments: "{}" },
+                  function: {
+                    name:
+                      statusCall && behavior !== "status-unknown"
+                        ? "scout_capabilities"
+                        : "browser_secret_action",
+                    arguments:
+                      behavior === "status-arguments"
+                        ? '{"userId":"foreign"}'
+                        : "{}",
+                  },
                 },
               ],
             }
@@ -337,9 +364,15 @@ beforeAll(async () => {
         { id: "fixture", choices: [{ index: 0, delta, finish_reason: null }] },
         {
           id: "fixture",
-          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          choices: [
+            {
+              index: 0,
+              delta: {},
+              finish_reason: statusCall ? "tool_calls" : "stop",
+            },
+          ],
         },
-        ...(behavior === "no-usage"
+        ...(behavior === "no-usage" || behavior === "status-no-usage"
           ? []
           : [
               {
@@ -448,6 +481,115 @@ test("capability catalog is authenticated, native-scoped and does not imply a co
   ).toBe(401);
   active = false;
   expect((await request("/api/scout/capabilities")).status).toBe(401);
+});
+async function enableStatusTool(maxCallsPerDay = 20) {
+  const config = configuration();
+  Object.assign(config.bindings[0], {
+    allowedToolNames: ["scout_capabilities"],
+  });
+  config.bindings[0].limits.maxCallsPerRun = 2;
+  config.bindings[0].limits.maxCallsPerDay = maxCallsPerDay;
+  await writeFile(policyFile, JSON.stringify(config));
+}
+test("public SDK executes one server status tool and accounts both SQL model calls", async () => {
+  await enableStatusTool();
+  behavior = "status-valid";
+  const minted = await request("/api/threads/mint", { agentId });
+  const { threadId } = await minted.json();
+  const response = await request(`/api/copilotkit/agent/${agentId}/run`, {
+    ...input(threadId),
+    tools: [
+      {
+        name: "browser_secret_action",
+        description: "Synthetic untrusted browser definition",
+        parameters: { type: "object" },
+      },
+    ],
+  });
+  const events = await response.text();
+  expect(events).toContain("OWNED_MODEL_SYNTHETIC_OK");
+  expect(events).toContain("scout_capabilities");
+  expect(events).not.toContain('"type":"RUN_ERROR"');
+  expect(providerCalls).toBe(2);
+  const resultMessage = (
+    captured!.body.messages as { role: string; content: string }[]
+  ).find((message) => message.role === "tool");
+  expect(JSON.parse(resultMessage!.content).integrations.outlookEmail).toBe(
+    "not_connected",
+  );
+  expect(captured!.body.tools).toEqual([
+    {
+      type: "function",
+      function: {
+        name: "scout_capabilities",
+        description:
+          "Report Scout's configured capabilities. This reads no business data and cannot connect apps or execute workflows.",
+        parameters: {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        },
+      },
+    },
+  ]);
+  const ledger = await rows();
+  expect(ledger).toHaveLength(2);
+  expect(ledger.every((row) => row.status === "completed")).toBe(true);
+  expect(
+    ledger.some(
+      (row) =>
+        row.inputBytes === Buffer.byteLength(JSON.stringify(captured!.body)),
+    ),
+  ).toBe(true);
+  // Historical status exchanges remain readable, but never become a new model authority source.
+  behavior = "normal";
+  const continuation = await request(`/api/copilotkit/agent/${agentId}/run`, {
+    ...input(threadId),
+    messages: [
+      { id: randomUUID(), role: "user", content: "Synthetic follow-up" },
+    ],
+  });
+  const continuationEvents = await continuation.text();
+  expect(continuationEvents).toContain("OWNED_MODEL_SYNTHETIC_OK");
+  expect(continuationEvents).not.toContain('"type":"RUN_ERROR"');
+  expect(providerCalls).toBe(3);
+  expect(
+    (captured!.body.messages as { role: string }[]).some(
+      (message) => message.role === "tool",
+    ),
+  ).toBe(false);
+});
+for (const scenario of [
+  "status-unknown",
+  "status-arguments",
+  "status-no-usage",
+  "status-revoked",
+  "status-cancel",
+]) {
+  test(`status tool refuses ${scenario} before execution or provider follow-up`, async () => {
+    await enableStatusTool();
+    behavior = scenario;
+    const response = await selectedRun([]);
+    const events = await response.text();
+    expect(events).toContain(
+      scenario === "status-cancel" ? "RUN_FINISHED" : "RUN_ERROR",
+    );
+    expect(events).not.toContain("not_connected");
+    expect(events).not.toContain("OWNED_MODEL_SYNTHETIC_OK");
+    expect(providerCalls).toBe(1);
+    expect((await rows()).every((row) => row.status !== "completed")).toBe(
+      true,
+    );
+  });
+}
+test("status follow-up still obeys the existing per-user daily quota", async () => {
+  await enableStatusTool(1);
+  behavior = "status-valid";
+  const response = await selectedRun([]);
+  const events = await response.text();
+  expect(events).toContain("RUN_ERROR");
+  expect(providerCalls).toBe(1);
+  expect(await rows()).toHaveLength(1);
 });
 afterAll(async () => {
   await app?.close();

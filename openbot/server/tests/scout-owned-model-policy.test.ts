@@ -62,6 +62,42 @@ afterAll(async () => {
     await rm(directory, { recursive: true, force: true });
 });
 describe("operator-owned model and context policy", () => {
+  test("status tools are an exact protected opt-in and leave absent policy fingerprints unchanged", () => {
+    const original = policy();
+    expect(parseModelPolicy(original, principal).fingerprint).toBe(
+      historyDigest(original),
+    );
+    expect(parseModelPolicy(original, principal)).not.toHaveProperty(
+      "allowedToolNames",
+    );
+    for (const allowedToolNames of [
+      [],
+      ["other_tool"],
+      ["scout_capabilities", "scout_capabilities"],
+      ["scout_capabilities", "other_tool"],
+    ]) {
+      const config = policy();
+      Object.assign(config.bindings[0], { allowedToolNames });
+      config.bindings[0].limits.maxCallsPerRun = 2;
+      expect(() => parseModelPolicy(config, principal)).toThrow(
+        "MODEL_NOT_CONFIGURED",
+      );
+    }
+    const enabled = policy();
+    Object.assign(enabled.bindings[0], {
+      allowedToolNames: ["scout_capabilities"],
+    });
+    expect(() => parseModelPolicy(enabled, principal)).toThrow(
+      "MODEL_NOT_CONFIGURED",
+    );
+    enabled.bindings[0].limits.maxCallsPerRun = 2;
+    expect(parseModelPolicy(enabled, principal).allowedToolNames).toEqual([
+      "scout_capabilities",
+    ]);
+    expect(parseModelPolicy(enabled, principal).fingerprint).not.toBe(
+      historyDigest(original),
+    );
+  });
   test("absent paid profile preserves the original fingerprint and exact free preferences", () => {
     const original = policy();
     const grant = parseModelPolicy(original, principal);

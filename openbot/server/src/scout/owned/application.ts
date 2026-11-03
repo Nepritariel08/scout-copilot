@@ -315,6 +315,12 @@ export async function createOwnedApplication(
             : {}),
         }
       : undefined;
+  const catalog = ownedCatalog({
+    odooSelectedTask: Boolean(recordContext),
+    delegatedDraft: Boolean(
+      config.scoutDelegatedDraftsEnabled && config.scoutQueueBindingsFile,
+    ),
+  });
   const agents =
     options.agents ??
     (config.scoutModelPolicyFile
@@ -328,6 +334,7 @@ export async function createOwnedApplication(
           scope,
           recordContext,
           contextHistory,
+          catalog,
         })
       : async (actor: AuthenticatedActor) =>
           Object.fromEntries(
@@ -342,12 +349,7 @@ export async function createOwnedApplication(
             ]),
           ));
   const handler = createOwnedRuntimeRoutes({
-    catalog: ownedCatalog({
-      odooSelectedTask: Boolean(recordContext),
-      delegatedDraft: Boolean(
-        config.scoutDelegatedDraftsEnabled && config.scoutQueueBindingsFile,
-      ),
-    }),
+    catalog,
     authority,
     engine: historyEngine,
     agents,

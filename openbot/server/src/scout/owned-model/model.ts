@@ -3,6 +3,10 @@ import type { PlanLanguageModel } from "../../agents/plan-model";
 import { HistoryError, historyDigest } from "../history/protocol";
 import { ScoutError } from "../types";
 import {
+  CAPABILITY_TOOL_NAME,
+  type OwnedCapabilityTool,
+} from "./capability-tool";
+import {
   type ModelGrant,
   ModelPolicyError,
   openRouterOwnedPreferences,
@@ -25,12 +29,17 @@ const safeError = (error: unknown) => {
   return new ModelPolicyError("MODEL_UNAVAILABLE");
 };
 
-function messagesFor(options: Options, trustedContext?: string) {
+function messagesFor(
+  options: Options,
+  trustedContext?: string,
+  tool?: OwnedCapabilityTool,
+) {
   if (
     options.prompt.length > 500 ||
     (options.responseFormat && options.responseFormat.type !== "text")
   )
     throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+  if (tool) return tool.messages(options, trustedContext);
   const messages = options.prompt.map((message) => {
     if (message.role === "system")
       return { role: message.role, content: message.content };
@@ -50,7 +59,7 @@ function messagesFor(options: Options, trustedContext?: string) {
     : messages;
 }
 
-/** Text-only first model port. No environment fallback, browser tools, files, retrieval or remote agent. */
+/** Protected model port. The optional server status tool cannot retrieve business data or execute work. */
 export class OwnedTextModel implements PlanLanguageModel {
   readonly specificationVersion = "v3" as const;
   readonly provider = "scout-owned";
@@ -66,6 +75,7 @@ export class OwnedTextModel implements PlanLanguageModel {
     private readonly runSignal: AbortSignal,
     private readonly transport: typeof fetch = fetch,
     private readonly trustedContext?: string,
+    private readonly capabilityTool?: OwnedCapabilityTool,
   ) {}
 
   private async currentGrant(fingerprint: string, signal: AbortSignal) {
@@ -102,6 +112,13 @@ export class OwnedTextModel implements PlanLanguageModel {
         if (item) item.text += part.delta;
       }
       if (part.type === "finish") finish = part;
+      if (part.type === "tool-call")
+        content.push({
+          type: "tool-call",
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          input: part.input,
+        });
       if (part.type === "error") throw safeError(part.error);
     }
     if (!finish) throw new ModelPolicyError("MODEL_UNAVAILABLE");
@@ -135,13 +152,22 @@ export class OwnedTextModel implements PlanLanguageModel {
       throw new ModelPolicyError("MODEL_ACCESS_DENIED");
     const paid =
       grant.route.provider === "openrouter" && !!grant.route.paidProfile;
-    // The public built-in agent advertises its own tools. This text-only port discards all
-    // definitions/selection rather than forwarding them; tool content and provider calls still deny.
+    const toolsEnabled = grant.allowedToolNames?.[0] === CAPABILITY_TOOL_NAME;
+    if (toolsEnabled !== Boolean(this.capabilityTool))
+      throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+    // Browser tools remain discarded. Only a separately authorized server status tool has a wire schema.
     const body = {
       model: grant.route.model,
-      messages: messagesFor(options, this.trustedContext),
+      messages: messagesFor(options, this.trustedContext, this.capabilityTool),
       stream: true,
       max_tokens: grant.limits.maxOutputTokens,
+      ...(this.capabilityTool
+        ? {
+            tools: this.capabilityTool.definitions(options),
+            tool_choice: "auto",
+            parallel_tool_calls: false,
+          }
+        : {}),
       ...(grant.route.provider === "openrouter"
         ? {
             stream_options: { include_usage: true },
@@ -183,7 +209,9 @@ export class OwnedTextModel implements PlanLanguageModel {
       reportedCostUsd: null,
       reportedModel: null,
     };
-    let providerFinishReason: "stop" | "length" | null = null;
+    let providerFinishReason: "stop" | "length" | "tool_calls" | null = null;
+    let rawTool: { id: string; name: string; input: string } | undefined;
+    let pendingTool: Extract<Part, { type: "tool-call" }> | undefined;
     let usageReceived = false;
     const fail = async (error: unknown) => {
       if (settled) return;
@@ -298,21 +326,73 @@ export class OwnedTextModel implements PlanLanguageModel {
                   ) {
                     if (
                       choice.finish_reason !== "stop" &&
-                      choice.finish_reason !== "length"
+                      choice.finish_reason !== "length" &&
+                      !(toolsEnabled && choice.finish_reason === "tool_calls")
                     )
                       throw new ModelPolicyError("MODEL_UNAVAILABLE");
                     providerFinishReason = choice.finish_reason;
                   }
-                  for (const part of [choice.delta, choice.message])
+                  for (const part of [choice.delta, choice.message]) {
+                    if (!part || typeof part !== "object") continue;
+                    if (part.function_call || part.audio || part.images)
+                      throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+                    if (part.tool_calls == null) continue;
                     if (
-                      part &&
-                      typeof part === "object" &&
-                      (part.tool_calls ||
-                        part.function_call ||
-                        part.audio ||
-                        part.images)
+                      !toolsEnabled ||
+                      part === choice.message ||
+                      !Array.isArray(part.tool_calls) ||
+                      part.tool_calls.length !== 1
                     )
                       throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+                    const tool = part.tool_calls[0];
+                    if (
+                      !tool ||
+                      typeof tool !== "object" ||
+                      tool.index !== 0 ||
+                      Object.keys(tool).some(
+                        (key) =>
+                          !["index", "id", "type", "function"].includes(key),
+                      ) ||
+                      (tool.type !== undefined && tool.type !== "function") ||
+                      !tool.function ||
+                      typeof tool.function !== "object" ||
+                      Object.keys(tool.function).some(
+                        (key) => !["name", "arguments"].includes(key),
+                      )
+                    )
+                      throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+                    rawTool ??= { id: "", name: "", input: "" };
+                    if (tool.id !== undefined) {
+                      if (rawTool.id || typeof tool.id !== "string")
+                        throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+                      rawTool.id = tool.id;
+                    }
+                    if (tool.function.name !== undefined) {
+                      if (typeof tool.function.name !== "string")
+                        throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+                      rawTool.name += tool.function.name;
+                      if (!CAPABILITY_TOOL_NAME.startsWith(rawTool.name))
+                        throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+                    }
+                    if (tool.function.arguments !== undefined) {
+                      if (typeof tool.function.arguments !== "string")
+                        throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+                      rawTool.input += tool.function.arguments;
+                      if (Buffer.byteLength(rawTool.input) > 256)
+                        throw new ModelPolicyError("MODEL_LIMIT");
+                    }
+                  }
+                  if (providerFinishReason === "tool_calls") {
+                    if (
+                      !this.capabilityTool ||
+                      !rawTool ||
+                      rawTool.name !== CAPABILITY_TOOL_NAME ||
+                      !/^[a-zA-Z0-9_-]{1,200}$/.test(rawTool.id)
+                    )
+                      throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+                    this.capabilityTool.assertArguments(rawTool.input);
+                  } else if (providerFinishReason && rawTool)
+                    throw new ModelPolicyError("MODEL_ACCESS_DENIED");
                 }
               if (hasUsage) {
                 usageReceived = true;
@@ -382,10 +462,11 @@ export class OwnedTextModel implements PlanLanguageModel {
                       if (providerFinishReason === null)
                         throw new ModelPolicyError("MODEL_UNAVAILABLE");
                       if (
-                        paid &&
+                        (paid || rawTool) &&
                         (usage.inputTokens === null ||
                           usage.outputTokens === null ||
-                          usage.reportedCostUsd === null)
+                          (grant.route.provider === "openrouter" &&
+                            usage.reportedCostUsd === null))
                       )
                         throw new ModelPolicyError("MODEL_UNAVAILABLE");
                       out.close();
@@ -417,13 +498,19 @@ export class OwnedTextModel implements PlanLanguageModel {
       const result = await model.doStream({
         ...options,
         abortSignal: signal,
-        tools: [],
+        tools: toolsEnabled
+          ? options.tools?.filter(
+              (tool) =>
+                tool.type === "function" && tool.name === CAPABILITY_TOOL_NAME,
+            )
+          : [],
         providerOptions: {},
         headers: {},
         includeRawChunks: false,
       });
       const reader = result.stream.getReader();
       const store = this.store;
+      const capabilityTool = this.capabilityTool;
       return {
         stream: new ReadableStream<Part>(
           {
@@ -444,6 +531,29 @@ export class OwnedTextModel implements PlanLanguageModel {
                   }
                   const part = item.value;
                   if (part.type === "error") throw safeError(part.error);
+                  if (part.type.startsWith("tool-input-") && capabilityTool)
+                    continue;
+                  if (part.type === "tool-call" && capabilityTool) {
+                    if (
+                      pendingTool ||
+                      !rawTool ||
+                      part.toolCallId !== rawTool.id ||
+                      part.toolName !== CAPABILITY_TOOL_NAME ||
+                      part.input !== rawTool.input ||
+                      part.providerExecuted ||
+                      part.dynamic
+                    )
+                      throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+                    capabilityTool.assertArguments(part.input);
+                    outputBytes +=
+                      Buffer.byteLength(part.input) +
+                      Buffer.byteLength(part.toolName) +
+                      Buffer.byteLength(part.toolCallId);
+                    if (outputBytes > grant.limits.maxOutputBytes)
+                      throw new ModelPolicyError("MODEL_LIMIT");
+                    pendingTool = part;
+                    continue;
+                  }
                   if (part.type.startsWith("tool-") || part.type === "file")
                     throw new ModelPolicyError("MODEL_ACCESS_DENIED");
                   if (
@@ -457,6 +567,11 @@ export class OwnedTextModel implements PlanLanguageModel {
                   if (part.type === "finish") {
                     if (providerFinishReason === null)
                       throw new ModelPolicyError("MODEL_UNAVAILABLE");
+                    if (
+                      (providerFinishReason === "tool_calls") !==
+                      Boolean(pendingTool)
+                    )
+                      throw new ModelPolicyError("MODEL_ACCESS_DENIED");
                     await store.finish(call, "completed", {
                       ...usage,
                       outputBytes,
@@ -467,6 +582,19 @@ export class OwnedTextModel implements PlanLanguageModel {
                     // A committed receipt remains counted even if authority changes while
                     // persistence awaits; it does not authorize a stale terminal response.
                     await revalidate();
+                    if (pendingTool && capabilityTool) {
+                      capabilityTool.register(
+                        pendingTool.toolCallId,
+                        pendingTool.toolName,
+                        pendingTool.input,
+                      );
+                      out.enqueue({
+                        type: "tool-call",
+                        toolCallId: pendingTool.toolCallId,
+                        toolName: pendingTool.toolName,
+                        input: pendingTool.input,
+                      });
+                    }
                     out.enqueue({
                       type: "finish",
                       finishReason: {
