@@ -616,7 +616,7 @@ export function ChannelChat({
   useEffect(() => {
     if (!isReady) return;
     let current = true;
-    const version = ++historyReadVersion.current;
+    let version = ++historyReadVersion.current;
     const readingController = new AbortController();
     // Registration can restart hydration within one channel. Cleanup releases
     // only its own gate; senders then wait for any replacement attempt.
@@ -716,6 +716,9 @@ export function ChannelChat({
          */
         if (live && current) {
           const following = follow.current({ first: live });
+          // This follow deliberately supersedes ordinary reads; its own authorized
+          // stand-in belongs to the new epoch until the replay reaches the live run.
+          version = historyReadVersion.current;
           releaseJoinGate();
           if (typeof runId === "string") {
             // Nothing is drawn until there is a whole transcript to draw: the stand-in, or the
