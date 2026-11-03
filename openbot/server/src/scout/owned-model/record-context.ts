@@ -79,6 +79,12 @@ export type ProjectTaskContextGrant = {
 
 export type ProjectTaskContextProvider = "openrouter" | "local";
 
+/** Server-created live qualification, kept outside the immutable grant/history digest. */
+export type ProjectTaskQualificationProof = {
+  grantDigest: string;
+  expiresAt: string;
+};
+
 /** Separate consent to release this exact data class to this protected provider route. */
 export type ProjectTaskContextReleaseGrant = {
   principal: ProjectTaskContextPrincipal;
@@ -119,6 +125,11 @@ export type ProjectTaskContextPort = {
     modelPolicyFingerprint: string,
   ): Promise<unknown>;
   getGrant(principal: ProjectTaskContextPrincipal): Promise<unknown>;
+  qualifyGrant?(
+    principal: ProjectTaskContextPrincipal,
+    grant: ProjectTaskContextGrant,
+    identityClass?: "customer",
+  ): Promise<ProjectTaskQualificationProof>;
   readProjectTask(request: ProjectTaskReadRequest): Promise<unknown>;
   /** Internal seam only: the protected admission wrapper selects this; browser input never does. */
   readCustomerProjectTask?(request: ProjectTaskReadRequest): Promise<unknown>;
@@ -187,17 +198,19 @@ function samePrincipal(
   );
 }
 
-function currentGrant(
+export function validateProjectTaskContextGrant(
   value: unknown,
   principal: ProjectTaskContextPrincipal,
   now: number,
+  requireInitialQualification = true,
 ): ProjectTaskContextGrant {
   const parsed = grantSchema.safeParse(value);
   if (
     !parsed.success ||
     !parsed.data.active ||
     Date.parse(parsed.data.expiresAt) <= now ||
-    Date.parse(parsed.data.sourceIdentity.qualificationExpiresAt) <= now ||
+    (requireInitialQualification &&
+      Date.parse(parsed.data.sourceIdentity.qualificationExpiresAt) <= now) ||
     !samePrincipal(parsed.data.principal, principal) ||
     parsed.data.sourceIdentity.uid === 1 ||
     parsed.data.sourceIdentity.role !== "user" ||
@@ -311,7 +324,12 @@ export async function resolveProjectTaskContext(
       modelPolicyFingerprint,
       now(),
     );
-    grant = currentGrant(await port.getGrant(principal), principal, now());
+    grant = validateProjectTaskContextGrant(
+      await port.getGrant(principal),
+      principal,
+      now(),
+      !port.qualifyGrant,
+    );
     if (grant.sourceIdentity.instanceId !== port.sourceInstanceId)
       return deny();
   } catch {
@@ -319,8 +337,22 @@ export async function resolveProjectTaskContext(
   }
   const releaseGrantSnapshot = safeJson(releaseGrant);
   const grantSnapshot = safeJson(grant);
+  const qualificationExpiry = async (current: ProjectTaskContextGrant) => {
+    if (!port.qualifyGrant)
+      return current.sourceIdentity.qualificationExpiresAt;
+    const proof = await port.qualifyGrant(principal, current);
+    if (
+      !proof ||
+      proof.grantDigest !== historyDigest(current) ||
+      !(Date.parse(proof.expiresAt) > now()) ||
+      Date.parse(proof.expiresAt) > Date.parse(current.expiresAt)
+    )
+      return deny();
+    return proof.expiresAt;
+  };
   const requestForGrant = (
     current: ProjectTaskContextGrant,
+    proofExpiresAt: string,
   ): ProjectTaskReadRequest => ({
     principal: { ...principal },
     sourceIdentity: {
@@ -328,7 +360,7 @@ export async function resolveProjectTaskContext(
       uid: current.sourceIdentity.uid,
       role: "user",
       qualification: "qualified",
-      qualificationExpiresAt: current.sourceIdentity.qualificationExpiresAt,
+      qualificationExpiresAt: proofExpiresAt,
       companyIds: [...current.sourceIdentity.companyIds],
       credentialRef: current.sourceIdentity.credentialRef,
     },
@@ -341,12 +373,18 @@ export async function resolveProjectTaskContext(
     limit: 1,
     maxBytes: MAX_RECORD_BYTES,
   });
-  const readSelectedTask = async (current: ProjectTaskContextGrant) =>
-    projectTaskRow(
-      await port.readProjectTask(requestForGrant(current)),
+  let effectiveQualificationExpiresAt =
+    grant.sourceIdentity.qualificationExpiresAt;
+  const readSelectedTask = async (current: ProjectTaskContextGrant) => {
+    effectiveQualificationExpiresAt = await qualificationExpiry(current);
+    return projectTaskRow(
+      await port.readProjectTask(
+        requestForGrant(current, effectiveQualificationExpiresAt),
+      ),
       recordId,
       current.sourceIdentity.companyIds,
     );
+  };
   let selected: ReturnType<typeof projectTaskRow>;
   try {
     selected = await readSelectedTask(grant);
@@ -398,10 +436,11 @@ export async function resolveProjectTaskContext(
         );
         if (safeJson(latestReleaseGrant) !== releaseGrantSnapshot)
           return deny();
-        const latest = currentGrant(
+        const latest = validateProjectTaskContextGrant(
           await port.getGrant(currentPrincipal),
           currentPrincipal,
           now(),
+          !port.qualifyGrant,
         );
         if (latest.sourceIdentity.instanceId !== port.sourceInstanceId)
           return deny();
@@ -423,15 +462,17 @@ export async function resolveProjectTaskContext(
           modelPolicyFingerprint,
           now(),
         );
-        const finalGrant = currentGrant(
+        const finalGrant = validateProjectTaskContextGrant(
           await port.getGrant(currentPrincipal),
           currentPrincipal,
           now(),
+          !port.qualifyGrant,
         );
         if (
           finalGrant.sourceIdentity.instanceId !== port.sourceInstanceId ||
           safeJson(finalGrant) !== grantSnapshot ||
-          safeJson(finalReleaseGrant) !== releaseGrantSnapshot
+          safeJson(finalReleaseGrant) !== releaseGrantSnapshot ||
+          !(Date.parse(effectiveQualificationExpiresAt) > now())
         )
           return deny();
       } catch {
