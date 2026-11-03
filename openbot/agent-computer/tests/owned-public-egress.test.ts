@@ -15,6 +15,7 @@ import {
   handleEgressPolicyRequest,
   parseEgressPolicy,
   setEgressPolicy,
+  setEgressResolver,
   setPublicSampleResolver,
   startEgressFilter,
   stopEgressFilter,
@@ -31,6 +32,7 @@ const public6 = "2606:4700::1111";
 const servers: Server[] = [];
 afterEach(async () => {
   await stopEgressFilter();
+  setEgressResolver(null);
   setPublicSampleResolver(null);
   await Promise.all(
     servers
@@ -281,12 +283,20 @@ describe("owned sample address and DNS admission", () => {
 });
 
 describe("strict filter refusal over real loopback sockets, without external DNS or connections", () => {
-  async function through(port: number, authority: string, plain = false) {
+  async function through(
+    port: number,
+    authority: string,
+    plain = false,
+    authenticated = true,
+  ) {
     const secret = egressFor("sample", {})?.password;
+    const authorization = authenticated
+      ? `Proxy-Authorization: Basic ${Buffer.from(`sample:${secret}`).toString("base64")}\r\n`
+      : "";
     return new Promise<string>((resolve, reject) => {
       const socket = connect(port, "127.0.0.1", () =>
         socket.write(
-          `${plain ? "GET" : "CONNECT"} ${authority} HTTP/1.1\r\nHost: ${authority}\r\nProxy-Authorization: Basic ${Buffer.from(`sample:${secret}`).toString("base64")}\r\nConnection: close\r\n\r\n`,
+          `${plain ? "GET" : "CONNECT"} ${authority} HTTP/1.1\r\nHost: ${authority}\r\n${authorization}Connection: close\r\n\r\n`,
         ),
       );
       let answer = "";
@@ -300,6 +310,114 @@ describe("strict filter refusal over real loopback sockets, without external DNS
       socket.on("error", reject);
     });
   }
+
+  test.each(["allow_all", "allowlist_only"] as const)(
+    "strict installation fences an outstanding old %s DNS answer for authenticated and credentialless combined policies",
+    async (mode) => {
+      for (const authenticated of [true, false]) {
+        let acceptedConnections = 0;
+        const origin = createTcpServer((socket) => {
+          acceptedConnections += 1;
+          socket.end("old destination reached");
+        });
+        servers.push(origin);
+        await new Promise<void>((resolve) =>
+          origin.listen(0, "127.0.0.1", resolve),
+        );
+        const originPort = (origin.address() as { port: number }).port;
+        let finish!: (addresses: string[]) => void;
+        let asked!: () => void;
+        const started = new Promise<void>((resolve) => {
+          asked = resolve;
+        });
+        setEgressResolver(() => {
+          asked();
+          return new Promise((resolve) => {
+            finish = resolve;
+          });
+        });
+        const filter = await startEgressFilter({ env: {} });
+        setEgressPolicy("sample", {
+          mode,
+          rules:
+            mode === "allowlist_only"
+              ? [{ type: "domain", value: "old.example.test" }]
+              : [],
+        });
+        if (!authenticated)
+          setEgressPolicy("another", { mode: "allow_all", rules: [] });
+        const pending = through(
+          filter.port,
+          `old.example.test:${originPort}`,
+          false,
+          authenticated,
+        );
+        await started;
+        // The request already captured its OLD policy and resolver. A newly strict policy must
+        // invalidate that snapshot, even when it is one of several credentialless policy inputs.
+        setEgressPolicy(authenticated ? "sample" : "another", policy);
+        finish(["127.0.0.1"]);
+        expect(await pending).toContain("403");
+        expect(acceptedConnections).toBe(0);
+        await stopEgressFilter();
+      }
+    },
+  );
+
+  test.each([true, false])(
+    "strict installation after the DNS check but before the awaited dial still refuses (authenticated=%s)",
+    async (authenticated) => {
+      for (const plain of [false, true]) {
+        let acceptedConnections = 0;
+        const origin = createTcpServer((socket) => {
+          acceptedConnections += 1;
+          socket.end(
+            "HTTP/1.1 200 OK\r\nContent-Length: 23\r\nConnection: close\r\n\r\nold destination reached",
+          );
+        });
+        servers.push(origin);
+        await new Promise<void>((resolve) =>
+          origin.listen(0, "127.0.0.1", resolve),
+        );
+        const originPort = (origin.address() as { port: number }).port;
+        let finish!: () => void;
+        let asked!: () => void;
+        const started = new Promise<void>((resolve) => {
+          asked = resolve;
+        });
+        setEgressResolver(() => {
+          asked();
+          return new Promise((resolve) => {
+            finish = () => {
+              resolve(["127.0.0.1"]);
+              // decide() resumes first. Its caller can dial only in a LATER microtask,
+              // so install strict mode in that exact gap, after the internal DNS fence.
+              queueMicrotask(() =>
+                setEgressPolicy(authenticated ? "sample" : "another", policy),
+              );
+            };
+          });
+        });
+        const filter = await startEgressFilter({ env: {} });
+        setEgressPolicy("sample", { mode: "allow_all", rules: [] });
+        if (!authenticated)
+          setEgressPolicy("another", { mode: "allow_all", rules: [] });
+        const pending = through(
+          filter.port,
+          plain
+            ? `http://old.example.test:${originPort}/`
+            : `old.example.test:${originPort}`,
+          plain,
+          authenticated,
+        );
+        await started;
+        finish();
+        expect(await pending).toContain("403");
+        expect(acceptedConnections).toBe(0);
+        await stopEgressFilter();
+      }
+    },
+  );
 
   test("the actual strict handler dials only the one validated DNS snapshot, never a rebound hostname", async () => {
     const origin = createTcpServer((socket) => socket.end("reached"));

@@ -578,6 +578,23 @@ function policiesFor(botId: string | undefined): EgressPolicy[] | "refuse" {
   return [...policies.values()];
 }
 
+/** Fence an in-flight transition involving strict mode; old-mode-only behavior is unchanged. */
+function strictPolicyChanged(
+  previous: EgressPolicy[] | "refuse",
+  current: EgressPolicy[] | "refuse",
+): boolean {
+  const includesStrict = (snapshot: EgressPolicy[] | "refuse") =>
+    snapshot !== "refuse" &&
+    snapshot.some((policy) => policy.mode === "owned_public_sample");
+  return (
+    (includesStrict(previous) || includesStrict(current)) &&
+    (previous === "refuse" ||
+      current === "refuse" ||
+      previous.length !== current.length ||
+      current.some((policy, index) => policy !== previous[index]))
+  );
+}
+
 async function decide(
   botId: string | undefined,
   host: string,
@@ -628,18 +645,11 @@ async function decide(
       return { allowed: false, reason: `${host} could not be resolved.` };
     }
   }
-  if (strict) {
-    const current = policiesFor(botId);
-    if (
-      current === "refuse" ||
-      current.length !== judging.length ||
-      current.some((policy, index) => policy !== judging[index])
-    )
-      return {
-        allowed: false,
-        reason: "The sample network policy changed during resolution.",
-      };
-  }
+  if (strictPolicyChanged(judging, policiesFor(botId)))
+    return {
+      allowed: false,
+      reason: "The sample network policy changed during resolution.",
+    };
   // Checked even with no policy to judge by, which EGRESS_POLICY_REQUIRED=0 allows.
   for (const policy of judging.length > 0
     ? judging
@@ -918,6 +928,7 @@ export async function startEgressFilter(
       request.headers["proxy-authorization"] as string | undefined,
       secret,
     );
+    const judging = policiesFor(botId);
     const port = Number(
       target.port || (target.protocol === "https:" ? 443 : 80),
     );
@@ -929,13 +940,17 @@ export async function startEgressFilter(
       !upstream,
       "plain",
     );
-    if (!decision.allowed) {
+    if (!decision.allowed || strictPolicyChanged(judging, policiesFor(botId))) {
       response
         .writeHead(403, {
           "content-type": "text/plain",
           "x-openbot-egress": "refused",
         })
-        .end(decision.reason);
+        .end(
+          decision.allowed
+            ? "The sample network policy changed before connection."
+            : decision.reason,
+        );
       return;
     }
     forwardPlain(request, response, target, upstream, decision.addresses);
@@ -969,8 +984,16 @@ export async function startEgressFilter(
       }
       const upstream = upstreamFor(botId ?? "", env);
       const decision = await decide(botId, host, port, !upstream, "connect");
-      if (!decision.allowed) {
-        refuse(client, decision.reason);
+      if (
+        !decision.allowed ||
+        strictPolicyChanged(judging, policiesFor(botId))
+      ) {
+        refuse(
+          client,
+          decision.allowed
+            ? "The sample network policy changed before connection."
+            : decision.reason,
+        );
         return;
       }
       tunnel(
