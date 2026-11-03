@@ -13,7 +13,13 @@ import { RunAgentInputSchema } from "@ag-ui/core/schemas";
 import { CopilotKitProvider } from "@copilotkit/react-core/v2";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ComponentProps, StrictMode } from "react";
 import { z } from "zod";
@@ -26,6 +32,7 @@ import {
   APPROVAL_WAITING_RESULT,
   forgetSeedClaims,
 } from "@/lib/channels/run-lifecycle";
+import * as ownedPresentation from "@/lib/owned-presentation";
 import { queryClient } from "@/query-client";
 
 /**
@@ -56,6 +63,10 @@ const busyRequestSchema = z.object({ busy: z.boolean(), runId: z.string() });
 type BusyRequest = z.infer<typeof busyRequestSchema>;
 let busyRequests: BusyRequest[] = [];
 let onBusy: (input: BusyRequest) => Response | Promise<Response>;
+/** Opt-in owned voice HTTP/media fixture; the channel and model providers remain real. */
+let ownedVoiceEnabled = false;
+let transcriptionRequests = 0;
+let onMessages: (() => Response | Promise<Response>) | undefined;
 
 function sse(events: unknown[]) {
   return new NativeResponse(
@@ -128,6 +139,37 @@ beforeAll(() => {
       );
       if (url.pathname === "/api/agents")
         return NativeResponse.json({ agents: [] });
+      if (ownedVoiceEnabled && url.pathname === "/api/capabilities")
+        return NativeResponse.json({
+          mode: "owned",
+          serverTurns: true,
+          generativeUi: false,
+          selfHostBanner: false,
+          localEvaluation: false,
+          transcription: true,
+          speechPlayback: true,
+          voice: false,
+        });
+      if (ownedVoiceEnabled && url.pathname === "/api/me")
+        return NativeResponse.json({
+          user: {
+            id: "synthetic-voice-owner",
+            email: "voice@example.invalid",
+            role: "user",
+            onboarding: null,
+          },
+        });
+      if (ownedVoiceEnabled && url.pathname === "/api/audio/transcriptions") {
+        transcriptionRequests++;
+        return NativeResponse.json({
+          text: "Synthetic voice request stopped before dispatch.",
+        });
+      }
+      if (
+        ownedVoiceEnabled &&
+        /\/agent\/[^/]+\/stop(?:\/|$)/.test(url.pathname)
+      )
+        return NativeResponse.json({ stopped: true });
       if (url.pathname.startsWith("/api/plugins/for/"))
         return NativeResponse.json({ skills: [], tools: [] });
       if (url.pathname === "/api/approvals") return NativeResponse.json(inbox);
@@ -168,7 +210,9 @@ beforeAll(() => {
       if (url.pathname === "/api/voice/sessions")
         return NativeResponse.json({ sessions: [], nextCursor: null });
       if (/\/threads\/[^/]+\/messages$/.test(url.pathname))
-        return NativeResponse.json({ messages: storedMessages });
+        return (
+          onMessages?.() ?? NativeResponse.json({ messages: storedMessages })
+        );
       throw new Error(`Unexpected fixture request: ${url.pathname}`);
     },
     { preconnect: originalFetch.preconnect },
@@ -224,6 +268,9 @@ function reset({
   inbox = emptyInbox;
   busyRequests = [];
   onBusy = () => new NativeResponse(null, { status: 204 });
+  ownedVoiceEnabled = false;
+  transcriptionRequests = 0;
+  onMessages = undefined;
   onConnect = join;
   onAsk = () => NativeResponse.json({ threadId: "t", joinToken: "token" });
   onRun = (input) =>
@@ -233,6 +280,228 @@ function reset({
       { type: "RUN_FINISHED", threadId: input.threadId, runId: input.runId },
     ]);
 }
+
+test("the default owned chat sends text without offering deferred voice controls", async () => {
+  const channel = freshChannel();
+  reset();
+  // The backend can offer speech while the owner pilot deliberately keeps its UI deferred.
+  ownedVoiceEnabled = true;
+  const view = render(tree(channel));
+  await view.findByRole("textbox", { name: "Message" });
+  expect(
+    view.queryByRole("button", { name: "Start hands-free voice" }),
+  ).toBeNull();
+  expect(view.queryByRole("button", { name: "Record message" })).toBeNull();
+  await type(view, "Synthetic core text request");
+  await view.findByText("Reply 1");
+  expect(runRequests).toHaveLength(1);
+  expect(transcriptionRequests).toBe(0);
+});
+
+test("continuous Stop during captured-target approval recovery prevents model dispatch and removes only its unsent turn", async () => {
+  const channel = freshChannel();
+  const priorUser = {
+    id: "voice-prior-user",
+    role: "user",
+    content: "Earlier synthetic request remains saved.",
+  } satisfies Message;
+  const prior: Message[] = [
+    priorUser,
+    {
+      id: "voice-prior-approval",
+      role: "assistant",
+      content: "Earlier synthetic approval request.",
+      toolCalls: [
+        {
+          id: "voice-prior-call",
+          type: "function",
+          function: { name: "synthetic_approval_tool", arguments: "{}" },
+        },
+      ],
+    },
+    {
+      id: "voice-prior-placeholder",
+      role: "tool",
+      toolCallId: "voice-prior-call",
+      content: APPROVAL_WAITING_RESULT,
+    },
+  ];
+  reset({ stored: prior, join: () => idleJoin(prior) });
+  ownedVoiceEnabled = true;
+  // No pending inbox card: the saved placeholder is stale, so deliver must await history after capture.
+  inbox = emptyInbox;
+  quiet();
+  const descriptors = new Map<PropertyKey, PropertyDescriptor | undefined>();
+  const replace = (key: PropertyKey, value: unknown) => {
+    descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, {
+      configurable: true,
+      writable: true,
+      value,
+    });
+  };
+  const mediaDescriptor = Object.getOwnPropertyDescriptor(
+    navigator,
+    "mediaDevices",
+  );
+  let microphoneStopped = 0,
+    analysed = 0,
+    quietFrames = false,
+    resumed = 0;
+  const microphone = {
+    getTracks: () => [
+      {
+        stop() {
+          microphoneStopped++;
+        },
+      },
+    ],
+  };
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: { getUserMedia: async () => microphone },
+  });
+  const node = () => ({ connect() {}, disconnect() {} });
+  replace(
+    "AudioContext",
+    class extends EventTarget {
+      state = "suspended";
+      sampleRate = 48_000;
+      destination = {};
+      async resume() {
+        resumed++;
+        this.state = "running";
+      }
+      async close() {
+        this.state = "closed";
+      }
+      createMediaStreamSource() {
+        return node();
+      }
+      createGain() {
+        return { ...node(), gain: { value: 0 } };
+      }
+      createAnalyser() {
+        return {
+          ...node(),
+          fftSize: 1024,
+          getFloatTimeDomainData(data: Float32Array) {
+            analysed++;
+            for (let index = 0; index < data.length; index++)
+              data[index] = quietFrames
+                ? 0
+                : Math.floor(index / 5) % 2 === 0
+                  ? 0.04
+                  : -0.04;
+          },
+        };
+      }
+    },
+  );
+  replace(
+    "MediaRecorder",
+    class {
+      static isTypeSupported(type: string) {
+        return type.startsWith("audio/webm");
+      }
+      state = "inactive";
+      mimeType: string;
+      ondataavailable: ((event: BlobEvent) => void) | null = null;
+      onstop: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      constructor(_stream: unknown, options: { mimeType: string }) {
+        this.mimeType = options.mimeType;
+      }
+      start() {
+        this.state = "recording";
+      }
+      stop() {
+        this.state = "inactive";
+        queueMicrotask(() => {
+          this.ondataavailable?.({
+            data: new Blob(["synthetic microphone bytes"], {
+              type: "audio/webm",
+            }),
+          } as BlobEvent);
+          this.onstop?.(new Event("stop"));
+        });
+      }
+    },
+  );
+  let hold = false,
+    heldReads = 0;
+  const held = Promise.withResolvers<Response>();
+  onMessages = () => {
+    if (hold) {
+      heldReads++;
+      return held.promise.then((response) => response.clone());
+    }
+    return NativeResponse.json({ messages: prior });
+  };
+  let view: ReturnType<typeof render> | undefined;
+  // Exercise the retained optional engine without enabling it in the owner's default UI.
+  const presentation = spyOn(
+    ownedPresentation,
+    "ownedVoiceUiAvailable",
+  ).mockReturnValue(true);
+  try {
+    view = render(tree(channel));
+    await view.findByText(priorUser.content);
+    const start = await view.findByRole("button", {
+      name: "Start hands-free voice",
+    });
+    await waitFor(() =>
+      expect((start as HTMLButtonElement).disabled).toBe(false),
+    );
+    hold = true;
+    fireEvent.click(start);
+    expect(resumed).toBe(1);
+    // The real browser adapter sees voiced energy/crossings for >350ms, then a >1s quiet tail.
+    await waitFor(() => expect(analysed).toBeGreaterThanOrEqual(10), {
+      timeout: 2000,
+    });
+    quietFrames = true;
+    await waitFor(() => expect(transcriptionRequests).toBe(1), {
+      timeout: 3000,
+    });
+    await waitFor(() => expect(heldReads).toBeGreaterThan(0));
+    // This bubble is added only after deliver's onTarget hook, before its held approval read.
+    await view.findByText("Synthetic voice request stopped before dispatch.");
+    expect(runRequests).toHaveLength(0);
+    expect(microphoneStopped).toBeGreaterThan(0);
+    fireEvent.click(view.getByRole("button", { name: "Stop voice" }));
+    hold = false;
+    await act(async () => {
+      held.resolve(NativeResponse.json({ messages: prior }));
+      await held.promise;
+    });
+    await waitFor(() =>
+      expect(busyRequests.some((request) => !request.busy)).toBe(true),
+    );
+    expect(runRequests.length).toBe(0);
+    await waitFor(() =>
+      expect(
+        view?.queryByText(
+          "Synthetic voice request stopped before dispatch.",
+        ) === null,
+      ).toBe(true),
+    );
+    expect(transcriptionRequests).toBe(1);
+    expect(view.getByText(priorUser.content)).toBeDefined();
+  } finally {
+    hold = false;
+    held.resolve(NativeResponse.json({ messages: prior }));
+    view?.unmount();
+    presentation.mockRestore();
+    for (const [key, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+    if (mediaDescriptor)
+      Object.defineProperty(navigator, "mediaDevices", mediaDescriptor);
+    else Reflect.deleteProperty(navigator, "mediaDevices");
+  }
+}, 15_000);
 
 function tree(
   channel: AgentChannel,

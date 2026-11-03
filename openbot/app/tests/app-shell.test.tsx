@@ -730,7 +730,7 @@ test.each(["drawer", "sidebar"])(
   },
 );
 
-test("New channel stays in reach under a long list of channels: only the channels scroll", async () => {
+test("a long channel list and management share the navigation scroll region", async () => {
   serving();
   const many = Array.from({ length: 30 }, (_, index) =>
     channel(`c-${index}`, `Channel ${index}`, null, {
@@ -746,11 +746,68 @@ test("New channel stays in reach under a long list of channels: only the channel
   const newChannel = await within(dialog).findByRole("button", {
     name: "New channel",
   });
-  const scroller = within(dialog).getByTestId("drawer-channels");
-  expect(scroller.className).toContain("overflow-y-auto");
-  expect(within(scroller).getAllByRole("link")).toHaveLength(30);
-  // Outside the part that scrolls, so it never moves below the fold with the channels.
-  expect(scroller.contains(newChannel)).toBe(false);
+  const channels = within(dialog).getByTestId("drawer-channels");
+  const navigation = within(dialog).getByRole("navigation", { name: "Menu" });
+  expect(within(channels).getAllByRole("link")).toHaveLength(30);
+  // Expanding management must not reserve fixed height that squeezes conversations out of view.
+  expect(navigation.contains(channels)).toBe(true);
+  expect(navigation.contains(newChannel)).toBe(true);
+  expect(navigation.contains(manageToggle(dialog))).toBe(true);
+});
+
+test("the owned drawer keeps conversations and supported setup reachable with Manage remembered open", async () => {
+  serving();
+  window.localStorage.setItem(MANAGE_STORAGE_KEY, "open");
+  const many = Array.from({ length: 30 }, (_, index) =>
+    channel(`c-${index}`, `Channel ${index}`, null, {
+      icon: "folder",
+      colour: "sky",
+    }),
+  );
+  let closed = false;
+  const view = draw(
+    <MenuSheet
+      onNewChannel={() => {}}
+      onOpenChange={() => {
+        closed = true;
+      }}
+      open
+    />,
+    (client) => {
+      seedMenu("admin", false, many)(client);
+      client.setQueryData(deploymentKeys.capabilities(), {
+        mode: "owned",
+        localEvaluation: false,
+      });
+    },
+  );
+  const dialog = await view.findByRole("dialog");
+  await within(dialog).findByRole("link", { name: "Channel 29" });
+  expect(
+    within(dialog)
+      .getByRole("link", { name: "Chat Talk with Scout" })
+      .getAttribute("href"),
+  ).toBe("/");
+  expect(
+    within(dialog).getAllByRole("link", { name: /^Channel \d+/ }),
+  ).toHaveLength(30);
+  for (const name of [
+    "Bots",
+    "Connections",
+    "Capabilities",
+    "Settings",
+    "Admin",
+  ]) {
+    expect(within(dialog).getByRole("link", { name })).toBeTruthy();
+  }
+  expect(within(dialog).queryByRole("link", { name: "Routines" })).toBeNull();
+  expect(
+    within(dialog).queryByRole("link", { name: "Approval rules" }),
+  ).toBeNull();
+  await userEvent
+    .setup({ document })
+    .click(within(dialog).getByRole("button", { name: "Close menu" }));
+  expect(closed).toBe(true);
 });
 
 test("with no channels yet the drawer is Everything and New channel, and no Archived", async () => {

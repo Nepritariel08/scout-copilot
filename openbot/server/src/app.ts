@@ -443,6 +443,8 @@ export function createApp(
     scoutOwned?: {
       requireTenant: MiddlewareHandler<{ Variables: AppVariables }>;
       delegatedDraftsEnabled?: boolean;
+      speechRoutes?: Hono<{ Variables: AppVariables }>;
+      computerRoutes?: Hono<{ Variables: AppVariables }>;
       scope?: TenantScope;
       requirePlatformAdmin?: (request: Request) => Promise<void>;
     };
@@ -513,6 +515,8 @@ export function createApp(
           ? ownedAuthAllowed(path, context.req.method)
           : ownedApiAllowed(path, context.req.method, {
               delegatedDrafts: coworker?.scoutOwned?.delegatedDraftsEnabled,
+              speech: Boolean(coworker?.scoutOwned?.speechRoutes),
+              computers: Boolean(coworker?.scoutOwned?.computerRoutes),
             }))
       )
         return context.json(
@@ -584,7 +588,12 @@ export function createApp(
        */
       localEvaluation: config.singleUser,
       transcription:
-        config.runtime.mode !== "owned" && Boolean(config.transcription),
+        config.runtime.mode === "owned"
+          ? Boolean(coworker?.scoutOwned?.speechRoutes)
+          : Boolean(config.transcription),
+      ...(config.runtime.mode === "owned"
+        ? { speechPlayback: Boolean(coworker?.scoutOwned?.speechRoutes) }
+        : {}),
       voice: config.runtime.mode !== "owned" && Boolean(config.voice),
       /*
        * Which identity providers this deployment can sign somebody in with.
@@ -745,6 +754,10 @@ export function createApp(
     if (!coworker?.scoutOwned)
       throw new Error("Owned runtime requires its native tenant guard.");
     app.use("/api/*", coworker.scoutOwned.requireTenant);
+    if (coworker.scoutOwned.speechRoutes)
+      app.route("/", coworker.scoutOwned.speechRoutes);
+    if (coworker.scoutOwned.computerRoutes)
+      app.route("/", coworker.scoutOwned.computerRoutes);
     // Auxiliary model routes need their own owned context/usage port before activation.
     app.all("/api/audio/*", (context) =>
       context.json({ code: "MODEL_ROUTE_UNAVAILABLE" }, 503),

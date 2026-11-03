@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { historyDigest } from "../history/protocol";
 import type { MembershipReader } from "../membership";
 import { ModelPolicyError, readProtectedModelFile } from "./policy";
-import type {
-  ProjectTaskContextPort,
-  ProjectTaskContextPrincipal,
+import {
+  type ProjectTaskContextGrant,
+  type ProjectTaskContextPort,
+  type ProjectTaskContextPrincipal,
+  type ProjectTaskQualificationProof,
+  validateProjectTaskContextGrant,
 } from "./record-context";
 
 const name = z.string().regex(/^[A-Za-z0-9_-]{1,100}$/);
@@ -187,6 +191,8 @@ export function bindOwnedOdooContext(
   port: ProjectTaskContextPort,
   admit: OdooAdmissionReader,
 ): ProjectTaskContextPort {
+  const qualifyGrant = port.qualifyGrant;
+  const assertQualification = port.assertQualification;
   const admitForSource = async (principal: ProjectTaskContextPrincipal) => {
     const admission = await admit(principal);
     if (admission.binding.sourceInstanceId !== port.sourceInstanceId)
@@ -205,6 +211,94 @@ export function bindOwnedOdooContext(
       await admission.assertCurrent();
       return normalize(value, principal);
     },
+    ...(qualifyGrant
+      ? {
+          async qualifyGrant(
+            principal: ProjectTaskContextPrincipal,
+            value: ProjectTaskContextGrant,
+          ) {
+            const grant = validateProjectTaskContextGrant(
+              value,
+              principal,
+              Date.now(),
+              false,
+            );
+            const admission = await admitForSource(principal);
+            if (
+              grant.sourceIdentity.instanceId !==
+                admission.binding.sourceInstanceId ||
+              grant.sourceIdentity.uid !== admission.binding.sourceUid ||
+              JSON.stringify(
+                [...grant.sourceIdentity.companyIds].sort((a, b) => a - b),
+              ) !== JSON.stringify(admission.binding.companyIds)
+            )
+              throw denied();
+            const inner = { ...grant, principal: admission.principal };
+            const proof = await qualifyGrant(
+              admission.principal,
+              inner,
+              admission.binding.identityClass,
+            );
+            await admission.assertCurrent();
+            if (
+              proof.grantDigest !== historyDigest(inner) ||
+              !(Date.parse(proof.expiresAt) > Date.now()) ||
+              Date.parse(proof.expiresAt) > Date.parse(grant.expiresAt)
+            )
+              throw denied();
+            return {
+              grantDigest: historyDigest(grant),
+              proofId: proof.proofId,
+              expiresAt: new Date(
+                Math.min(
+                  Date.parse(proof.expiresAt),
+                  Date.parse(admission.expiresAt),
+                ),
+              ).toISOString(),
+            };
+          },
+        }
+      : {}),
+    ...(assertQualification
+      ? {
+          async assertQualification(
+            principal: ProjectTaskContextPrincipal,
+            value: ProjectTaskContextGrant,
+            proof: ProjectTaskQualificationProof,
+          ) {
+            const grant = validateProjectTaskContextGrant(
+              value,
+              principal,
+              Date.now(),
+              false,
+            );
+            const admission = await admitForSource(principal);
+            if (
+              proof.grantDigest !== historyDigest(grant) ||
+              grant.sourceIdentity.instanceId !==
+                admission.binding.sourceInstanceId ||
+              grant.sourceIdentity.uid !== admission.binding.sourceUid ||
+              JSON.stringify(
+                [...grant.sourceIdentity.companyIds].sort((a, b) => a - b),
+              ) !== JSON.stringify(admission.binding.companyIds)
+            )
+              throw denied();
+            const inner = { ...grant, principal: admission.principal };
+            await assertQualification(
+              admission.principal,
+              inner,
+              { ...proof, grantDigest: historyDigest(inner) },
+              admission.binding.identityClass,
+            );
+            await admission.assertCurrent();
+            if (
+              !(Date.parse(proof.expiresAt) > Date.now()) ||
+              Date.parse(proof.expiresAt) > Date.parse(admission.expiresAt)
+            )
+              throw denied();
+          },
+        }
+      : {}),
     async getReleaseGrant(principal, provider, modelPolicyFingerprint) {
       const admission = await admitForSource(principal);
       const value = await port.getReleaseGrant(

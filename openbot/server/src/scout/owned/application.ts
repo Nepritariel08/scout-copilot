@@ -7,9 +7,12 @@ import { createApp } from "../../app";
 import { createAuditReader, createAuditStore } from "../../audit";
 import type { AuthenticatedActor, AuthService } from "../../auth/guards";
 import { createIdentityProviderStore } from "../../auth/identity-provider-store";
+import { createSameOriginGuard } from "../../auth/same-origin";
 import { createChannelEventHub } from "../../channels/events";
 import { createChannelStore } from "../../channels/routes";
 import { createThreadIdentity } from "../../channels/thread-identity";
+import { createPageFrameStore } from "../../computer/page-frames";
+import { createSnapshotStore } from "../../computer/snapshot-store";
 import type { OwnedDeploymentConfig } from "../../config";
 import {
   createCredentialAdminService,
@@ -42,6 +45,9 @@ import {
   createScoutMembershipReader,
   type MembershipReader,
 } from "../membership";
+import { createOwnedComputerConfigReader } from "../owned-computer/bindings";
+import { createOwnedComputerRoutes } from "../owned-computer/routes";
+import { createOwnedComputerService } from "../owned-computer/service";
 import { createOwnedModelAgents } from "../owned-model/agents";
 import {
   type ContextHistory,
@@ -60,10 +66,13 @@ import {
 import { createModelPolicyReader } from "../owned-model/policy";
 import type { ProjectTaskContextPort } from "../owned-model/record-context";
 import { createModelCallStore } from "../owned-model/store";
+import type { OwnedSpeechBackend } from "../owned-voice/backend";
+import { createOwnedSpeechRoutes } from "../owned-voice/routes";
 import { createScoutService } from "../service";
 import { createScoutStore } from "../store";
 import { ScoutError } from "../types";
 import { createOwnedAuthority } from "./authority";
+import { ownedCatalog } from "./catalog";
 import {
   assertOwnedNativeIdentityConfiguration,
   createOwnedNativeIdentity,
@@ -71,6 +80,7 @@ import {
 import { createOwnedQueueBindingReader } from "./queue-binding";
 import { createOwnedRuntimeRoutes } from "./routes";
 import { createTenantScope } from "./scope";
+import { readOwnedSpeechBackend } from "./speech-config";
 
 /** The existing Scout app with an owned composition; no vendor client or background work scheduler. */
 export async function createOwnedApplication(
@@ -92,6 +102,10 @@ export async function createOwnedApplication(
     odooFetch?: typeof fetch;
     /** Test-only record reader override. */
     recordContext?: ProjectTaskContextPort;
+    /** Synthetic speech transport seam. Production reads only the protected speech config. */
+    speechBackend?: OwnedSpeechBackend;
+    /** Synthetic supervisor/browser transport seam; production always uses its fixed loopback backend. */
+    computerFetch?: typeof fetch;
   } = {},
 ) {
   if (
@@ -301,6 +315,8 @@ export async function createOwnedApplication(
           verifyUserProjectScope: odooContextAdapters.verifyUserProjectScope,
           verifyCustomerProjectScope:
             odooContextAdapters.verifyCustomerProjectScope,
+          renewQualification: odooContextAdapters.renewQualification,
+          qualificationStatus: odooContextAdapters.qualificationStatus,
           ...odooGrantService,
           ...(readOdooModelPolicy
             ? {
@@ -314,6 +330,45 @@ export async function createOwnedApplication(
             : {}),
         }
       : undefined;
+  const speechBackend =
+    options.speechBackend ??
+    (config.scoutSpeechConfigFile
+      ? await readOwnedSpeechBackend(config.scoutSpeechConfigFile)
+      : undefined);
+  const speechRoutes = speechBackend
+    ? createOwnedSpeechRoutes({
+        authority,
+        originGuard: createSameOriginGuard(config),
+        history: (request) =>
+          historyEngine.bind(authority.forRequest(request)).history,
+        backend: speechBackend,
+      })
+    : undefined;
+  const computerService = config.scoutComputerBindingsFile
+    ? createOwnedComputerService({
+        authority,
+        config: createOwnedComputerConfigReader(
+          config.scoutComputerBindingsFile,
+          deploymentId,
+        ),
+        canUseAgent: async (actor, agentId) =>
+          Boolean(await profiles.get(actor, agentId)),
+        audit,
+        snapshots: createSnapshotStore(database),
+        frames: createPageFrameStore(database),
+        fetch: options.computerFetch,
+      })
+    : undefined;
+  const computerRoutes = computerService
+    ? createOwnedComputerRoutes(computerService, createSameOriginGuard(config))
+    : undefined;
+  const catalog = ownedCatalog({
+    odooSelectedTask: Boolean(recordContext),
+    delegatedDraft: Boolean(
+      config.scoutDelegatedDraftsEnabled && config.scoutQueueBindingsFile,
+    ),
+    speech: Boolean(speechRoutes),
+  });
   const agents =
     options.agents ??
     (config.scoutModelPolicyFile
@@ -327,6 +382,8 @@ export async function createOwnedApplication(
           scope,
           recordContext,
           contextHistory,
+          catalog,
+          computer: computerService,
         })
       : async (actor: AuthenticatedActor) =>
           Object.fromEntries(
@@ -341,6 +398,7 @@ export async function createOwnedApplication(
             ]),
           ));
   const handler = createOwnedRuntimeRoutes({
+    catalog,
     authority,
     engine: historyEngine,
     agents,
@@ -480,6 +538,8 @@ export async function createOwnedApplication(
       scout,
       scoutOwned: {
         requireTenant: authority.requireTenant,
+        ...(speechRoutes ? { speechRoutes } : {}),
+        ...(computerRoutes ? { computerRoutes } : {}),
         delegatedDraftsEnabled: config.scoutDelegatedDraftsEnabled,
         scope,
         requirePlatformAdmin: async (request) => {
@@ -504,6 +564,8 @@ export async function createOwnedApplication(
     historyStore,
     historyEngine,
     modelCalls,
+    computerService,
+    computerRoutes,
     productName: tenantPackage.productName,
     close: () => historyEngine.close(),
   };

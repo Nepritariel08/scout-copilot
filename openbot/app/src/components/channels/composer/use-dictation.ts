@@ -10,14 +10,16 @@ import {
   type DictationIntent,
   DictationSession,
 } from "@/lib/dictation/session";
+import { dictationUiAvailable } from "@/lib/owned-presentation";
 import { queryClient } from "@/query-client";
 
 export function useDictation(
   onTranscript: (text: string, intent: DictationIntent) => void,
   disabled: boolean,
+  enabled = true,
 ) {
   const { data } = useQuery(
-    { ...deploymentCapabilitiesQueryOptions(), enabled: !disabled },
+    { ...deploymentCapabilitiesQueryOptions(), enabled: !disabled && enabled },
     queryClient,
   );
   const onTranscriptRef = useRef(onTranscript);
@@ -35,7 +37,7 @@ export function useDictation(
     session.getSnapshot,
     session.getSnapshot,
   );
-  const available = data?.transcription === true;
+  const available = enabled && dictationUiAvailable(data);
   useEffect(() => {
     if (disabled || !available) session.cancel();
     return () => session.cancel();

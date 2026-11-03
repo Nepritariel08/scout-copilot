@@ -23,6 +23,166 @@ afterAll(async () => {
   GlobalRegistrator.unregister();
 });
 
+for (const compact of [false, true]) {
+  test(`owned ${compact ? "compact" : "default"} chat stays text-only while optional voice is deferred`, async () => {
+    queryClient.setQueryData(deploymentKeys.capabilities(), {
+      mode: "owned",
+      transcription: true,
+      speechPlayback: true,
+      voice: false,
+    });
+    const supported = spyOn(recording, "recordingSupported").mockReturnValue(
+      true,
+    );
+    const start = spyOn(recording, "startRecording");
+    const sent: string[] = [];
+    try {
+      const view = render(
+        <Composer
+          compact={compact}
+          glass
+          initialValue="Core chat still works"
+          onSubmit={(draft) => {
+            sent.push(draft.text);
+          }}
+        />,
+      );
+      expect(
+        view.queryByRole("button", {
+          name: /Speak a message|Dictate a message|Record message|Play latest answer/,
+        }),
+      ).toBeNull();
+      expect(view.queryByText(/Audio stays on our infrastructure/)).toBeNull();
+      fireEvent.submit(view.container.querySelector("form")!);
+      await waitFor(() => expect(sent).toEqual(["Core chat still works"]));
+      expect(start).not.toHaveBeenCalled();
+    } finally {
+      cleanup();
+      supported.mockRestore();
+      start.mockRestore();
+    }
+  });
+
+  test(`owned ${compact ? "compact" : "default"} speech preserves the draft and waits for explicit Send`, async () => {
+    queryClient.setQueryData(deploymentKeys.capabilities(), {
+      mode: "owned",
+      transcription: true,
+      speechPlayback: true,
+      voice: false,
+    });
+    const supported = spyOn(recording, "recordingSupported").mockReturnValue(
+      true,
+    );
+    const start = spyOn(recording, "startRecording").mockResolvedValue({
+      finish: async () => new Blob(["synthetic"], { type: "audio/webm" }),
+      cancel() {},
+    });
+    const result = Promise.withResolvers<string>();
+    const transcribe = spyOn(
+      recording,
+      "transcribeRecording",
+    ).mockImplementation(() => result.promise);
+    const sent: string[] = [];
+    try {
+      const view = render(
+        <Composer
+          compact={compact}
+          initialValue="Existing draft"
+          ownedSpeech={{ scopeKey: "native-owner:channel", disabled: false }}
+          onSubmit={(draft) => {
+            sent.push(draft.text);
+          }}
+        />,
+      );
+      expect(
+        view.queryByRole("button", { name: "Dictate a message" }),
+      ).toBeNull();
+      fireEvent.click(view.getByRole("button", { name: "Record message" }));
+      await waitFor(() =>
+        expect(view.getByRole("button", { name: /Stop \(/ })).toBeTruthy(),
+      );
+      const form = view.container.querySelector("form");
+      if (!form) throw new Error("Missing composer form");
+      expect(
+        view
+          .getByRole("button", { name: "Send message" })
+          .hasAttribute("disabled"),
+      ).toBe(true);
+      fireEvent.submit(form);
+      expect(sent).toEqual([]);
+      fireEvent.click(view.getByRole("button", { name: /Stop \(/ }));
+      await waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1));
+      fireEvent.submit(form);
+      expect(sent).toEqual([]);
+      await act(async () => {
+        result.resolve("reviewed words");
+        await result.promise;
+      });
+      await waitFor(() =>
+        expect(view.getByRole("textbox", { name: "Message" }).textContent).toBe(
+          "Existing draft reviewed words",
+        ),
+      );
+      expect(sent).toEqual([]);
+      fireEvent.submit(form);
+      await waitFor(() =>
+        expect(sent).toEqual(["Existing draft reviewed words"]),
+      );
+    } finally {
+      cleanup();
+      supported.mockRestore();
+      start.mockRestore();
+      transcribe.mockRestore();
+    }
+  });
+}
+
+test("an owned native-user/channel change discards late transcription", async () => {
+  const supported = spyOn(recording, "recordingSupported").mockReturnValue(
+    true,
+  );
+  const start = spyOn(recording, "startRecording").mockResolvedValue({
+    finish: async () => new Blob(["synthetic"], { type: "audio/webm" }),
+    cancel() {},
+  });
+  const result = Promise.withResolvers<string>();
+  const transcribe = spyOn(recording, "transcribeRecording").mockImplementation(
+    () => result.promise,
+  );
+  try {
+    const view = render(
+      <Composer
+        initialValue="Keep this draft"
+        ownedSpeech={{ scopeKey: "owner-a:channel-a", disabled: false }}
+      />,
+    );
+    fireEvent.click(view.getByRole("button", { name: "Record message" }));
+    await waitFor(() =>
+      expect(view.getByRole("button", { name: /Stop \(/ })).toBeTruthy(),
+    );
+    fireEvent.click(view.getByRole("button", { name: /Stop \(/ }));
+    await waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1));
+    view.rerender(
+      <Composer
+        initialValue="Keep this draft"
+        ownedSpeech={{ scopeKey: "owner-b:channel-b", disabled: true }}
+      />,
+    );
+    await act(async () => {
+      result.resolve("Discard these late words");
+      await result.promise;
+    });
+    expect(view.getByRole("textbox", { name: "Message" }).textContent).toBe(
+      "Keep this draft",
+    );
+  } finally {
+    cleanup();
+    supported.mockRestore();
+    start.mockRestore();
+    transcribe.mockRestore();
+  }
+});
+
 for (const variant of ["compact", "default"] as const) {
   for (const action of [
     "stop",

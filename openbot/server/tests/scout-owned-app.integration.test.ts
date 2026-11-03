@@ -5,6 +5,7 @@ import {
   beforeEach,
   describe,
   expect,
+  setSystemTime,
   test,
 } from "bun:test";
 import { randomUUID } from "node:crypto";
@@ -478,7 +479,9 @@ beforeEach(async () => {
   beforeModelDispatch = undefined;
   observedModelBodies = [];
   revokeOdooMapOnTaskRead = false;
-  membershipRevision = 1;
+  // Grants are intentionally append-only. A new native binding scope isolates
+  // each case without deleting another case's grant or encrypted credential.
+  membershipRevision++;
   odooMapRevision = 1;
   changeMembershipOnLookup = false;
   changeOdooMapOnLookup = false;
@@ -711,6 +714,53 @@ describe("owned composition through the actual Scout app", () => {
     }
   });
   test.skipIf(process.platform !== "linux")(
+    "authenticated status renews expired identity proof without reissuing the stored grant or credential",
+    async () => {
+      expect(
+        (
+          await requestConfiguredGrant(
+            "POST",
+            "/api/scout/odoo/context-grants",
+            { apiKey: "synthetic-proof-renewal-key" },
+          )
+        ).status,
+      ).toBe(201);
+      const grants = async () =>
+        JSON.stringify(
+          await database.execute(
+            sql`select id,revision,active,credential_ref,qualification_expires_at,expires_at,allowed_project_ids from public.scout_odoo_record_access_grants where native_user_id=${alice} order by revision`,
+          ),
+        );
+      const original = await grants();
+      const path = `/api/scout/odoo/context-grants?agentId=${encodeURIComponent(agentId)}`;
+      const first = await requestConfiguredGrant("GET", path);
+      expect(first.status).toBe(200);
+      expect((await first.json()).record.active).toBe(true);
+      const later = Date.now() + 16 * 60 * 1000;
+      try {
+        setSystemTime(new Date(later));
+        odooFixtureCalls = 0;
+        const response = await requestConfiguredGrant("GET", path);
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.record.active).toBe(true);
+        expect(body.qualification.current).toBe(true);
+        expect(Date.parse(body.qualification.expiresAt)).toBeGreaterThan(later);
+        expect(Date.parse(body.qualification.expiresAt)).toBeLessThanOrEqual(
+          Date.parse(body.record.expiresAt),
+        );
+        expect(odooFixtureCalls).toBeGreaterThan(0);
+        expect(await grants()).toBe(original);
+        expect(JSON.stringify(body)).not.toContain("proofId");
+        expect(JSON.stringify(body)).not.toContain(
+          "synthetic-proof-renewal-key",
+        );
+      } finally {
+        setSystemTime();
+      }
+    },
+  );
+  test.skipIf(process.platform !== "linux")(
     "same configured app admits protected customer task context only after qualification and explicit release, and stops on collaboration withdrawal",
     async () => {
       customerOdooIdentity = true;
@@ -788,6 +838,7 @@ describe("owned composition through the actual Scout app", () => {
         provider: "openrouter",
         record: null,
         release: null,
+        qualification: { renewable: false, current: false, expiresAt: null },
         route: {
           provider: "openrouter",
           model: "fixture-model",
@@ -863,6 +914,7 @@ describe("owned composition through the actual Scout app", () => {
       const before = await requestConfiguredGrant("GET", statusPath);
       expect(before.status).toBe(200);
       const beforeStatus = await before.json();
+      const originalMembershipRevision = membershipRevision;
       changeMembershipOnLookup = true;
       let response: Response;
       try {
@@ -873,7 +925,7 @@ describe("owned composition through the actual Scout app", () => {
         );
       } finally {
         changeMembershipOnLookup = false;
-        membershipRevision = 1;
+        membershipRevision = originalMembershipRevision;
       }
       expect(response.status).toBe(403);
       expect(odooFixtureCalls).toBeGreaterThan(0);

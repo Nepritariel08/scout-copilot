@@ -1,4 +1,11 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  expect,
+  test,
+} from "bun:test";
 import type { Message, RunAgentInput } from "@ag-ui/core";
 import { RunAgentInputSchema } from "@ag-ui/core/schemas";
 import { CopilotKitProvider, useCopilotKit } from "@copilotkit/react-core/v2";
@@ -10,6 +17,7 @@ import { z } from "zod";
 import { ChannelChat } from "@/components/channels/channel-chat";
 import { FIRST_DAY_PLAN } from "@/components/channels/first-day-greeting";
 import { stashFirstMessage } from "@/components/channels/transcript-messages";
+import { NewConversationContext } from "@/components/shell/new-conversation";
 import { authKeys } from "@/lib/auth/queries";
 import { frameFirstDay } from "@/lib/channels/first-day";
 import {
@@ -62,7 +70,11 @@ let originalFetch: typeof fetch;
 let history: (threadId: string) => Promise<Response>;
 let historyReads: string[];
 let historySignals: (AbortSignal | undefined)[];
-type CapabilityFixture = { mode?: "owned" | "intelligence"; voice?: boolean };
+type CapabilityFixture = {
+  mode?: "owned" | "intelligence";
+  voice?: boolean;
+  generativeUi?: boolean;
+};
 let deployment: CapabilityFixture | null;
 let voiceHistoryReads = 0;
 let voiceHistoryFails = false;
@@ -164,6 +176,11 @@ beforeAll(() => {
     },
   );
 });
+beforeEach(() => {
+  // The first case may inherit a prior file's indefinitely fresh capabilities.
+  // Clear before the test can seed its own auth/cache state, not inside mounting().
+  queryClient.clear();
+});
 afterEach(() => {
   cleanup();
   queryClient.clear();
@@ -219,6 +236,7 @@ function mounting(
   availability: {
     capabilities?: CapabilityFixture | null;
     voiceFailure?: boolean;
+    newConversation?: () => void;
   } = {},
 ) {
   historyReads = [];
@@ -238,8 +256,45 @@ function mounting(
   ];
   history = read;
   cacheChannel(channel, cachedActivity);
-  return render(tree(channel, a2uiEnabled));
+  return render(
+    availability.newConversation ? (
+      <NewConversationContext.Provider value={availability.newConversation}>
+        {tree(channel, a2uiEnabled)}
+      </NewConversationContext.Provider>
+    ) : (
+      tree(channel, a2uiEnabled)
+    ),
+  );
 }
+
+test("owned inaccessible history offers a read-only retry or blank conversation without replaying a model call", async () => {
+  let newConversationForms = 0;
+  const view = mounting(
+    async () => new NativeResponse(null, { status: 403 }),
+    [],
+    null,
+    false,
+    {
+      capabilities: { mode: "owned", voice: false },
+      newConversation: () => {
+        newConversationForms++;
+      },
+    },
+  );
+  await view.findByText(
+    /Earlier messages are unavailable under the current access or connection/,
+  );
+  expect(view.queryByText(unavailable)).toBeNull();
+  const user = userEvent.setup({ document: view.container.ownerDocument });
+  await user.click(view.getByRole("button", { name: "New conversation" }));
+  expect(newConversationForms).toBe(1);
+  expect(runRequests).toHaveLength(0);
+  history = async () => stored([fresh]);
+  await user.click(view.getByRole("button", { name: "Retry history" }));
+  await view.findByText(fresh.content);
+  expect(view.queryByRole("button", { name: "Retry history" })).toBeNull();
+  expect(runRequests).toHaveLength(0);
+});
 async function mounted() {
   const view = mounting();
   await view.findByText("Stored opening");
@@ -302,7 +357,15 @@ test("A2UI activity actions run the actual channel agent and thread with edited 
       ],
     },
   } satisfies Message;
-  const view = mounting(async () => stored([activity]), [activity], null, true);
+  const view = mounting(
+    async () => stored([activity]),
+    [activity],
+    null,
+    true,
+    {
+      capabilities: { mode: "intelligence", voice: true, generativeUi: true },
+    },
+  );
   const user = userEvent.setup({ document: view.container.ownerDocument });
   const destination = await view.findByRole("textbox", { name: "Destination" });
   await user.clear(destination);

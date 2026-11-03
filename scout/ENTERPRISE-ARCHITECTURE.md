@@ -1,6 +1,6 @@
 # Scout: owned AI for employees and customers
 
-Date: 2026-11-01, Asia/Shanghai. Status: architecture and implementation contract,
+Updated: 2026-11-03, Asia/Shanghai. Status: architecture and implementation contract,
 not a claim of deployed enterprise controls. Primary engineering tracker:
 [SSC AI Enablement #4](https://github.com/Nepritariel08/ssc-ai-enablement/issues/4#issuecomment-6547459663),
 under architecture #8. The active interface source is the owned
@@ -48,6 +48,91 @@ audio transcript was obtained. It guides the architecture, not authority.
    registration against that binding or imply that existing company isolation
    already proves customer isolation. This historical pilot is separate from
    deployment of the owned CopilotKit source described below.
+
+## Core product qualification comes first
+
+The owner's 2026-11-03 correction prioritizes a working integrated OpenDuet/Scout
+workspace before additional features. Preserve the useful interface and working
+components, connect them to the existing Odoo Community infrastructure, and test
+complete workflows. A navigation item or a source test is not a working feature.
+Computers and Connections showing failed reads are open integration defects.
+An accurate capability catalog is necessary, but does not complete those adapters.
+The primary Work Item and engineering issue above remain the outcome tracker.
+
+The intended product combines individual authenticated accounts, permitted Odoo
+and external knowledge, research, reviewed actions, persistent work context and
+event-driven assistance. Owner-private acceptance comes before staff/customer
+rollout. Retain both work-app/Odoo and browser/computer workflows; continuous
+hands-free voice is required, with review-before-Send push-to-talk as fallback.
+
+### Reuse and infrastructure decisions
+
+- Keep the CopilotKit/OpenDuet conversation, navigation, task/review and visual
+  components. Adapt their data ports for owned mode rather than building another
+  chat application or presenting unavailable vendor services as configured.
+- Odoo remains authoritative for business records, assignments, commitments,
+  deadlines, activities, timesheets and business permissions. Existing Odoo/DSH
+  work-item identities, durable intents and receipts remain authoritative for
+  delegated execution. No duplicate business tracker or scheduler is introduced.
+- **Odoo is the authoritative data-security layer, including meeting logs and
+  transcripts.** Resolve Microsoft identity to the existing Odoo user; enforce
+  that user's model ACLs, record rules, field groups, company scope and attachment
+  access. Scout cannot grant additional business access. Retrieval runs in that
+  user context, without a superuser or raw-SQL shortcut. Recheck current source
+  rights before model release, cached answers, downloads and history reads.
+  Fireflies/Teams ingestion may populate Odoo records with canonical provenance;
+  prompt-time access must use Odoo's permissions rather than a privileged direct
+  transcript account. Search/vector indexes are derived data, not an alternative
+  authorization source. Runtime authentication, tool approval and budget limits
+  complement these Odoo checks without becoming a parallel business-role system.
+- Use the existing Community Linode and PostgreSQL infrastructure. The current
+  dedicated owned-conversation database remains intact. Putting Scout into the
+  Odoo workspace does not require unreviewed writes to Odoo's SQL tables or moving
+  working chat history. If native Odoo conversation models are later selected,
+  qualify a persistence adapter, migration, export and restore before replacement.
+- **Odoo Community is the selected workspace; OpenDuet supplies the assistant
+  interface; Microsoft Entra remains the login provider.** Implement this as an
+  Odoo workspace integration that reuses the existing interface and chat engine.
+  Native Odoo business actions use the mapped user's ORM/API permissions. Preserve
+  existing accounts, data and the current authenticated Scout callbacks during
+  integration; qualify the workspace session/origin boundary and keep Microsoft
+  authentication top-level rather than embedding its sign-in screen.
+- External sources remain connected through source-specific adapters. Microsoft
+  sign-in alone grants no Outlook/Teams/SharePoint data access; installed ChatGPT
+  plugins do not transfer tokens, consent or tool availability into Scout.
+- A computer is an execution runtime, not a database feature. An isolated browser
+  worker, an owner desktop companion for selected folders, and a paired MatePad
+  are distinct providers behind one Computers interface. Never use the Community
+  host's unrestricted shell or Docker socket as an assistant tool.
+- Reuse public MIT computer gateway/policy and plugin code where compatible with
+  native identity, tenancy and approval. Preserve licensed Intelligence contracts;
+  no entitlement emulation is part of the owned replacement.
+
+### Minimum observable acceptance
+
+| Core surface | Required integrated behavior | Evidence before calling it usable |
+| --- | --- | --- |
+| Sign-in and conversations | Owner signs in, sends a bounded real model request, reopens saved history and stops a turn | Actual HTTPS response, saved/reopened messages and cancellation receipt; no false-success UI |
+| Odoo context | A mapped user selects permitted records; current context and business actions respect Odoo rights | Exact source match plus denial after rights or credential revocation |
+| Connections | Show actual per-user connection state and a working setup/revoke flow for each admitted source | A real authorized source read, another-user denial, revoke/readback and visible expired/unconfigured state |
+| Computers | List the configured provider and run one approved bounded browser/device workflow from Scout | Owner request, exact approval when required, execution, result/readback, cancellation and duplicate prevention |
+| Desktop folders | The real companion grants a selected folder for the current session and asks before edits/commands | Actual companion connection, granted-folder read and out-of-scope denial; a server browser is not folder access |
+| Skills and tools | Installed instructions describe tools that really exist and carry the user's current grants | Discover, invoke, audit and revoke one real supported tool; no prompt-granted authority |
+| Voice | Start, speak, receive one saved answer aloud, return to listening and Stop | Actual owner microphone/browser test without echo or a model request after Stop; fallback remains usable |
+| Delegated work | Existing DSH handles a reviewed request and exact-revision draft acceptance once | Durable source/idempotency identity, lease/result/acceptance receipts and no ambiguous retry |
+| Proactive assistance | Relevant events produce priorities or a reviewed end-of-day/timesheet draft | A real scoped trigger and traceable source-linked outcome; planned reminders are not live acceptance |
+
+Clock-in priorities and clock-out journaling/timesheet assistance should use
+existing Odoo events and work records. A later rollout must validate record
+accuracy, employee access and recovery; it must not silently turn a reminder
+into a new restriction on sign-out or an automatically accepted timesheet.
+
+The first computer acceptance is a non-business public navigation/readback task,
+followed by a permissioned real workflow. The first useful connection is the
+already scoped Odoo path; adding other work apps requires their actual delegated
+authorization and owned tool/result adapters. Fixing error text alone does not
+satisfy either acceptance. Record source, CI, staged, live and human-accepted
+states separately in the existing primary tracker.
 
 ## Product and trust boundaries
 
@@ -443,11 +528,13 @@ implementation inputs, not reasons to stop independent source qualification.
 
 ## Current evidence boundary
 
-The owned persistence, native runtime and protected model port have source and
-synthetic SDK/SQL checks recorded in their qualification receipts and draft PRs.
-This tenant-isolation change is another source candidate. None proves deployment,
-company SSO, live Odoo record rules, employee/customer acceptance, actual MatePad
-inference or native execution. The reel caption and initial visual were inspected
+The owner-private pilot has demonstrated live Entra sign-in, bounded model
+replies, durable conversation recovery, selected Odoo context and one explicitly
+accepted synthetic DSH draft. Later reliability, capability, proof-renewal and
+owned voice changes have separate source/qualification evidence; consult the
+primary tracker for their exact CI and deployment state. This does not establish
+working Computers, all external Connections, employee/customer acceptance,
+actual MatePad inference or complete native execution. The reel caption and initial visual were inspected
 in the earlier owner session; no complete audio transcript was obtained. Fresh
 reel/embed requests were throttled, so this update makes no new viewing claim.
 

@@ -4,7 +4,12 @@ import { createOdooJson2CredentialResolver } from "./odoo-credentials";
 import { createOdooJson2ProjectTaskReader } from "./odoo-json2";
 import { createOdooJson2CustomerTaskReader } from "./odoo-json2-customer";
 import { ModelPolicyError, readProtectedModelFile } from "./policy";
-import type { ProjectTaskContextPort } from "./record-context";
+import { createOdooQualificationProofs } from "./qualification-proof";
+import {
+  type ProjectTaskContextPort,
+  type ProjectTaskContextPrincipal,
+  validateProjectTaskContextGrant,
+} from "./record-context";
 import { createProjectTaskContextStore } from "./record-context-store";
 
 const instanceId = z.string().regex(/^[A-Za-z0-9_-]{1,100}$/);
@@ -84,16 +89,60 @@ export function createOwnedOdooContextAdapters(
   };
   const reader = createOdooJson2ProjectTaskReader(options);
   const customer = createOdooJson2CustomerTaskReader(options);
+  const store = createProjectTaskContextStore(
+    database,
+    source.sourceInstanceId,
+    {
+      readProjectTask: reader.readProjectTask,
+      readCustomerProjectTask: customer.readProjectTask,
+    },
+  );
+  const qualification = createOdooQualificationProofs({
+    sourceInstanceId: source.sourceInstanceId,
+    store,
+    credentials,
+    verifyUserProjectScope: reader.verifyUserProjectScope,
+    verifyCustomerProjectScope: customer.verifyUserProjectScope,
+  });
+  const savedGrant = async (principal: ProjectTaskContextPrincipal) =>
+    validateProjectTaskContextGrant(
+      await store.getGrant(principal),
+      principal,
+      Date.now(),
+      false,
+    );
   return {
     sourceInstanceId: source.sourceInstanceId,
-    recordContext: createProjectTaskContextStore(
-      database,
-      source.sourceInstanceId,
-      {
-        readProjectTask: reader.readProjectTask,
-        readCustomerProjectTask: customer.readProjectTask,
-      },
-    ),
+    recordContext: {
+      ...store,
+      qualifyGrant: qualification.qualifyGrant,
+      assertQualification: qualification.assertQualification,
+    },
+    // Internal composition callbacks. The authenticated route must admit/recheck
+    // the native mapping and pass its composite principal and identity class.
+    renewQualification: async (
+      principal: ProjectTaskContextPrincipal,
+      identityClass?: "customer",
+    ) =>
+      qualification.qualifyGrant(
+        principal,
+        await savedGrant(principal),
+        identityClass,
+      ),
+    qualificationStatus: async (
+      principal: ProjectTaskContextPrincipal,
+      identityClass?: "customer",
+    ) => {
+      try {
+        return await qualification.status(
+          principal,
+          await savedGrant(principal),
+          identityClass,
+        );
+      } catch {
+        return { renewable: false, current: false, expiresAt: null };
+      }
+    },
     verifyUserProjectScope: reader.verifyUserProjectScope,
     verifyCustomerProjectScope: customer.verifyUserProjectScope,
   };

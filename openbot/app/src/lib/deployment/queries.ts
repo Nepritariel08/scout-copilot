@@ -33,6 +33,7 @@ export type DeploymentCapabilities = {
    */
   localEvaluation: boolean;
   transcription?: boolean;
+  speechPlayback?: boolean;
   voice?: boolean;
 };
 
@@ -75,6 +76,7 @@ export function deploymentCapabilitiesQueryOptions() {
         selfHostBanner?: boolean;
         localEvaluation?: boolean;
         transcription?: boolean;
+        speechPlayback?: boolean;
         voice?: boolean;
       };
 
@@ -94,6 +96,7 @@ export function deploymentCapabilitiesQueryOptions() {
         selfHostBanner: body.selfHostBanner === true,
         localEvaluation: body.localEvaluation === true,
         transcription: body.transcription === true,
+        speechPlayback: body.speechPlayback === true,
         voice: body.voice === true,
       };
     },

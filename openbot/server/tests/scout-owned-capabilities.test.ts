@@ -5,9 +5,28 @@ import {
 } from "../src/scout/owned/capabilities";
 
 describe("owned private-pilot HTTP capability admission", () => {
+  test("speech opt-in admits only the two exact POST routes", () => {
+    for (const path of ["/api/audio/transcriptions", "/api/audio/speech"]) {
+      expect(ownedApiAllowed(path, "POST")).toBe(false);
+      expect(ownedApiAllowed(path, "POST", { speech: true })).toBe(true);
+      for (const method of ["GET", "HEAD", "PUT", "DELETE"])
+        expect(ownedApiAllowed(path, method, { speech: true })).toBe(false);
+    }
+    for (const path of [
+      "/api/audio/speech/",
+      "/api/audio/SPEECH",
+      "/api/audio/speech/extra",
+      "/api/audio/%73peech",
+      "/api/voice/sessions",
+      "/api/plugins",
+      "/api/agent-tools/call",
+    ])
+      expect(ownedApiAllowed(path, "POST", { speech: true })).toBe(false);
+  });
   test("preserves the qualified conversation, resource, native shell and platform administration routes", () => {
     const routes: [string, string][] = [
       ["GET", "/api/capabilities"],
+      ["GET", "/api/scout/capabilities"],
       ["GET", "/api/me"],
       ["POST", "/api/me/onboarding"],
       ["GET", "/api/settings/preferences"],

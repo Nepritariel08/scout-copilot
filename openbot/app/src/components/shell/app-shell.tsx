@@ -20,6 +20,7 @@ import {
 import { FinishedForYou } from "./finished-for-you";
 import { PageHeader, ShellHeader, useBack } from "./header";
 import { MenuSheet } from "./menu-sheet";
+import { NewConversationContext } from "./new-conversation";
 import { PageChromeProvider, usePageChromeState } from "./page-chrome";
 import { TabBar, tabForPath } from "./tab-bar";
 
@@ -54,49 +55,51 @@ export function AppShell({ children }: { children: ReactNode }) {
   const chatServerWork = useServerWork(chat.busy, chat.threadId);
 
   return (
-    <ChatPresenceProvider serverWork={chatServerWork}>
-      {/* `duet-touch`: every control drawn in the shell is a 44px target (styles.css). */}
-      <div className="duet-touch flex h-svh flex-col overflow-hidden bg-duet-surface">
-        <AttentionNotifier />
-        <FinishedForYou />
-        <SelfHostBanner />
-        {tab ? (
-          <TabColumn tab={tab}>
-            <ShellHeader
-              floating
-              menuOpen={menuOpen}
-              onMenu={() => setMenuOpen(true)}
-            />
-            <main className="flex min-h-0 flex-1 flex-col">{children}</main>
-          </TabColumn>
-        ) : (
-          <PageChromeProvider>
-            <PageColumn>{children}</PageColumn>
-          </PageChromeProvider>
-        )}
-        <MenuSheet
-          onNewChannel={() => {
-            setMenuOpen(false);
-            setNewChannel(true);
-          }}
-          onOpenChange={setMenuOpen}
-          open={menuOpen}
-        />
-        {newChannel && bot ? (
-          <ChannelSheet
-            botId={bot.id}
-            onClose={() => setNewChannel(false)}
-            onSaved={(channel) => {
-              setNewChannel(false);
-              void navigate({
-                to: "/channels/$channelId",
-                params: { channelId: channel.id },
-              });
+    <NewConversationContext.Provider value={() => setNewChannel(true)}>
+      <ChatPresenceProvider serverWork={chatServerWork}>
+        {/* `duet-touch`: every control drawn in the shell is a 44px target (styles.css). */}
+        <div className="duet-touch flex h-svh flex-col overflow-hidden bg-duet-surface">
+          <AttentionNotifier />
+          <FinishedForYou />
+          <SelfHostBanner />
+          {tab ? (
+            <TabColumn tab={tab}>
+              <ShellHeader
+                floating
+                menuOpen={menuOpen}
+                onMenu={() => setMenuOpen(true)}
+              />
+              <main className="flex min-h-0 flex-1 flex-col">{children}</main>
+            </TabColumn>
+          ) : (
+            <PageChromeProvider>
+              <PageColumn>{children}</PageColumn>
+            </PageChromeProvider>
+          )}
+          <MenuSheet
+            onNewChannel={() => {
+              setMenuOpen(false);
+              setNewChannel(true);
             }}
+            onOpenChange={setMenuOpen}
+            open={menuOpen}
           />
-        ) : null}
-      </div>
-    </ChatPresenceProvider>
+          {newChannel && bot ? (
+            <ChannelSheet
+              botId={bot.id}
+              onClose={() => setNewChannel(false)}
+              onSaved={(channel) => {
+                setNewChannel(false);
+                void navigate({
+                  to: "/channels/$channelId",
+                  params: { channelId: channel.id },
+                });
+              }}
+            />
+          ) : null}
+        </div>
+      </ChatPresenceProvider>
+    </NewConversationContext.Provider>
   );
 }
 

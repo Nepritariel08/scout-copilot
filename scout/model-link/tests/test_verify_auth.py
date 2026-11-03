@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import unittest
+from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -341,7 +342,10 @@ class ManagedRunTests(unittest.TestCase):
         self.assertEqual(fields["server_readiness_marker"], verify_auth.SERVER_READY_MARKER)
         self.assertEqual(fields["response_text"], verify_auth.SENTINEL)
         self.assertEqual(verify_auth.PROOF_TTL_SECONDS, 300)
-        self.assertAlmostEqual(float(fields["expires_epoch"]) - float(fields["created_epoch"]), expected_proof_ttl)
+        # Proof epochs are independently rounded to .3f; their difference can differ
+        # by one millisecond (e.g. 1793685600.0065 -> .007, +0.02 -> .026).
+        serialized_ttl = Decimal(fields["expires_epoch"]) - Decimal(fields["created_epoch"])
+        self.assertLessEqual(abs(serialized_ttl - Decimal(str(expected_proof_ttl))), Decimal("0.001"))
         self.assertNotIn(API_KEY, text)
 
     def test_auth_failure_never_starts_tunnel_or_preserves_proof(self):

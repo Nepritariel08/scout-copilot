@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "deploymentId": "synthetic-owned-pilot",
+  "supervisorUrl": "http://127.0.0.1:18790/",
+  "supervisorTokenFile": "/etc/scout-pilot/private/computer-supervisor.token",
+  "computerTokenFile": "/etc/scout-pilot/private/computer-backend.token",
+  "grants": [
+    {
+      "userId": "REPLACE_WITH_VERIFIED_NATIVE_USER_ID",
+      "tenantId": "REPLACE_WITH_VERIFIED_NATIVE_TENANT_ID",
+      "agentId": "REPLACE_WITH_VERIFIED_NATIVE_AGENT_ID",
+      "revision": 1,
+      "active": false,
+      "expiresAt": "2026-11-03T00:00:00.000Z"
+    }
+  ]
+}

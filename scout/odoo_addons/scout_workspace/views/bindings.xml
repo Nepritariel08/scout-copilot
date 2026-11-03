@@ -1,0 +1,14 @@
+<odoo>
+  <record id="identity_list" model="ir.ui.view">
+    <field name="name">scout.workspace.identity.list</field><field name="model">scout.workspace.identity</field>
+    <field name="arch" type="xml"><list><field name="user_id"/><field name="tenant_id"/><field name="object_id"/><field name="active"/></list></field>
+  </record>
+  <record id="identity_form" model="ir.ui.view">
+    <field name="name">scout.workspace.identity.form</field><field name="model">scout.workspace.identity</field>
+    <field name="arch" type="xml"><form><sheet><group><field name="user_id" options="{'no_create': True}"/><field name="tenant_id"/><field name="object_id"/><field name="active"/></group><p>Bind only a verified Microsoft tenant and object ID to this existing Odoo account. This does not grant business access.</p></sheet></form></field>
+  </record>
+  <record id="action_identity" model="ir.actions.act_window">
+    <field name="name">Scout Microsoft identities</field><field name="res_model">scout.workspace.identity</field><field name="view_mode">list,form</field>
+  </record>
+  <menuitem id="menu_identity" name="Scout Microsoft identities" parent="base.menu_users" action="action_identity" groups="base.group_system"/>
+</odoo>

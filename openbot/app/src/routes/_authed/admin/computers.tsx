@@ -8,6 +8,7 @@ import {
   PageShell,
 } from "@/components/layout/page-shell";
 import { StaggerItem } from "@/components/layout/stagger";
+import { OwnedComputersPage } from "@/components/scout/owned-computers-page";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -27,16 +28,17 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { useBotNames } from "@/lib/agents/bot-names";
 import { agentListQueryOptions } from "@/lib/agents/queries";
-import { setComputerStateMutationOptions } from "@/lib/computers/mutations";
 import {
+  type HostAccessPendingOperation,
+  type HostFolderGrant,
   hostAccessQueryOptions,
   requestHostFolderGrantMutationOptions,
   revokeHostFolderGrantMutationOptions,
   stopHostAccessMutationOptions,
-  type HostFolderGrant,
-  type HostAccessPendingOperation,
 } from "@/lib/computers/host-access";
+import { setComputerStateMutationOptions } from "@/lib/computers/mutations";
 import { computerFleetQueryOptions } from "@/lib/computers/queries";
+import { deploymentCapabilitiesQueryOptions } from "@/lib/deployment/queries";
 import { appConfig } from "@/lib/generated/application-config";
 
 export const Route = createFileRoute("/_authed/admin/computers")({
@@ -44,6 +46,32 @@ export const Route = createFileRoute("/_authed/admin/computers")({
 });
 
 function ComputersPage() {
+  const capabilities = useQuery(deploymentCapabilitiesQueryOptions());
+  if (capabilities.isPending)
+    return (
+      <PageShell title="Computers">
+        <p role="status">Checking computer capabilities…</p>
+      </PageShell>
+    );
+  if (capabilities.isError)
+    return (
+      <PageShell title="Computers">
+        <div role="alert" className="space-y-3">
+          <p>Computer capabilities could not be checked.</p>
+          <Button variant="outline" onClick={() => void capabilities.refetch()}>
+            Retry capability check
+          </Button>
+        </div>
+      </PageShell>
+    );
+  return capabilities.data?.mode === "owned" ? (
+    <OwnedComputersPage />
+  ) : (
+    <LicensedComputersPage />
+  );
+}
+
+function LicensedComputersPage() {
   /** Bot id currently running a stop/reset request. */
   const [busy, setBusy] = useState<string | null>(null);
   /** Reset deletes the browser profile, so it requires confirmation. */

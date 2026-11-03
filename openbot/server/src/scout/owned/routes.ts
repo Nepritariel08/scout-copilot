@@ -20,6 +20,7 @@ import type {
 } from "../owned-model/record-context";
 import { ScoutError } from "../types";
 import type { createOwnedAuthority } from "./authority";
+import type { OwnedCatalog } from "./catalog";
 
 const mintInput = z.strictObject({
   agentId: z.string().trim().min(1).max(200),
@@ -75,6 +76,18 @@ type OwnedOdooGrants = {
     provider: ProjectTaskContextProvider,
     modelPolicyFingerprint: string,
   ): Promise<unknown>;
+  renewQualification?(
+    principal: ProjectTaskContextPrincipal,
+    identityClass?: "customer",
+  ): Promise<unknown>;
+  qualificationStatus?(
+    principal: ProjectTaskContextPrincipal,
+    identityClass?: "customer",
+  ): Promise<{
+    renewable: boolean;
+    current: boolean;
+    expiresAt: string | null;
+  }>;
   revokeAll(
     principal: ProjectTaskContextPrincipal,
     options?: { allBindingRevisions?: boolean; releasesOnly?: boolean },
@@ -129,6 +142,7 @@ export function createOwnedRuntimeRoutes(deps: {
   generativeUi: boolean;
   modelReceipts?: (request: Request, threadId: string) => Promise<unknown>;
   odooGrants?: OwnedOdooGrants;
+  catalog?: OwnedCatalog;
 }) {
   const app = new Hono<{ Variables: AppVariables }>();
   app.use("*", async (context, next) => {
@@ -177,6 +191,7 @@ export function createOwnedRuntimeRoutes(deps: {
   app.use("/api/threads/*", bodyLimit({ maxSize: 4000 }));
   app.use("/api/copilotkit/*", deps.authority.requireTenant);
   app.use("/api/scout/model/*", deps.authority.requireTenant);
+  app.use("/api/scout/capabilities", deps.authority.requireTenant);
   app.use("/api/scout/odoo/context-grants", deps.authority.requireTenant);
   app.use("/api/scout/odoo/context-grants/*", deps.authority.requireTenant);
   app.use("/api/scout/odoo/context-grants", bodyLimit({ maxSize: 8192 }));
@@ -197,6 +212,14 @@ export function createOwnedRuntimeRoutes(deps: {
             : 503,
       );
     return context.json({ code: "HISTORY_UNAVAILABLE" }, 503);
+  });
+  app.get("/api/scout/capabilities", async (context) => {
+    const before = await deps.authority.binding(context.req.raw);
+    const catalog = deps.catalog;
+    if (!catalog) return context.json({ code: "MODEL_NOT_CONFIGURED" }, 503);
+    return context.json(
+      await withCurrentMembership(context.req.raw, before, async () => catalog),
+    );
   });
   app.post("/api/scout/odoo/context-grants", async (context) => {
     const depsGrants = deps.odooGrants;
@@ -353,12 +376,58 @@ export function createOwnedRuntimeRoutes(deps: {
       context.req.raw,
       before,
       admission,
-      () =>
-        depsGrants.status(
+      async () => {
+        if (!depsGrants.qualificationStatus)
+          return depsGrants.status(
+            admission.principal,
+            model.route.provider,
+            model.fingerprint,
+          );
+        let qualification = await depsGrants.qualificationStatus(
+          admission.principal,
+          admission.binding.identityClass,
+        );
+        if (
+          qualification.renewable &&
+          !qualification.current &&
+          depsGrants.renewQualification
+        ) {
+          // Recheck existing identity evidence; never issue or extend a data grant here.
+          await depsGrants
+            .renewQualification(
+              admission.principal,
+              admission.binding.identityClass,
+            )
+            .catch(() => undefined);
+        }
+        const current = await depsGrants.status(
           admission.principal,
           model.route.provider,
           model.fingerprint,
-        ),
+        );
+        qualification = await depsGrants.qualificationStatus(
+          admission.principal,
+          admission.binding.identityClass,
+        );
+        if (!current || typeof current !== "object")
+          throw new ModelPolicyError("MODEL_ACCESS_DENIED");
+        const record = "record" in current ? current.record : null;
+        return Object.assign({}, current, {
+          qualification,
+          record:
+            record && typeof record === "object"
+              ? Object.assign({}, record, {
+                  active:
+                    qualification.current &&
+                    "credentialStored" in record &&
+                    record.credentialStored === true &&
+                    "expiresAt" in record &&
+                    typeof record.expiresAt === "string" &&
+                    Date.parse(record.expiresAt) > Date.now(),
+                })
+              : null,
+        });
+      },
     );
     // A stale status cannot mint consent, but do not knowingly display a route
     // that changed while its scoped grant status was being read either.

@@ -12,6 +12,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -19,6 +20,7 @@ import { attachmentModality } from "@/components/channels/chat-messages";
 import { toAgentOptions } from "@/components/channels/composer";
 import type { ComposerDraft } from "@/components/channels/composer/draft";
 import { ConversationView } from "@/components/channels/conversation-view";
+import { OwnedVoiceConversation } from "@/components/channels/owned-voice-conversation";
 import {
   seedMessage,
   takeFirstMessage,
@@ -29,8 +31,11 @@ import { HandoffResumeNotice } from "@/components/computer/handoff-resume-notice
 import { Topic } from "@/components/duet/kit";
 import { ScoutDrafts } from "@/components/scout/drafts";
 import { ScoutOdooContext } from "@/components/scout/odoo-context";
+import { useNewConversation } from "@/components/shell/new-conversation";
+import { Button } from "@/components/ui/button";
 import { agentListQueryOptions } from "@/lib/agents/queries";
 import { type ApprovalInboxData, approvalInboxOptions } from "@/lib/approvals";
+import { currentUserQueryOptions } from "@/lib/auth/queries";
 import { attachmentUrl } from "@/lib/channels/attachments";
 import { readFirstDay } from "@/lib/channels/first-day";
 import {
@@ -77,6 +82,7 @@ import { stoppedReason } from "@/lib/copilot/stopped-turn";
 import { readThreadMessages } from "@/lib/copilot/thread-messages";
 import { deploymentCapabilitiesQueryOptions } from "@/lib/deployment/queries";
 import { appConfig } from "@/lib/generated/application-config";
+import { ownedVoiceUiAvailable } from "@/lib/owned-presentation";
 import { useSkillCommands } from "@/lib/plugins/skill-commands";
 import { withOdooTaskSelection } from "@/lib/scout-odoo";
 import {
@@ -92,6 +98,7 @@ import {
   voiceArchiveContext,
   withVoiceChats,
 } from "@/lib/voice/archive";
+import { createOwnedChannelVoiceTurn } from "@/lib/voice/owned-channel-turn";
 import { useVoiceCall } from "@/lib/voice/use-voice-call";
 import { queryClient } from "@/query-client";
 import { newId } from "../../lib/new-id";
@@ -562,6 +569,31 @@ export function ChannelChat({
   const agentRef = useRef(agent);
   agentRef.current = agent;
   const capabilities = useQuery(deploymentCapabilitiesQueryOptions());
+  const newConversation = useNewConversation();
+  const ownedSpeechAvailable = ownedVoiceUiAvailable(capabilities.data);
+  const speechOwner = useQuery({
+    ...currentUserQueryOptions(),
+    enabled: ownedSpeechAvailable,
+  });
+  const speechIdentity = `${speechOwner.data?.id ?? "pending"}:${scopeKey}`;
+  const currentSpeechIdentity = useRef(speechIdentity);
+  currentSpeechIdentity.current = speechIdentity;
+  const [ownedVoiceState, setOwnedVoiceState] = useState({
+    identity: speechIdentity,
+    busy: false,
+  });
+  const ownedVoiceStateRef = useRef(ownedVoiceState);
+  const ownedVoiceBusy =
+    ownedVoiceState.identity === speechIdentity && ownedVoiceState.busy;
+  const ownedVoiceBusyChanged = useCallback(
+    (busy: boolean) => {
+      if (currentSpeechIdentity.current === speechIdentity) {
+        ownedVoiceStateRef.current = { identity: speechIdentity, busy };
+        setOwnedVoiceState({ identity: speechIdentity, busy });
+      }
+    },
+    [speechIdentity],
+  );
   // Licensed deployments retain their archive even when new calls are disabled.
   // Unknown/old capabilities never imply an owned archive endpoint exists.
   const voiceHistoryAvailable =
@@ -1115,6 +1147,7 @@ export function ChannelChat({
     attachments: Attachment[],
     skipIf?: () => boolean,
     odooTaskId?: string,
+    onTarget?: (target: typeof agent) => void,
   ) => {
     // Wait briefly for the runtime agent instance before adding the message.
     if (!isReadyRef.current) {
@@ -1169,6 +1202,7 @@ export function ChannelChat({
       : [];
     if (!alive.current || currentScope.current !== scopeKey) return "";
     const target = agentRef.current;
+    onTarget?.(target);
     const existingMessageIds = new Set(
       target.messages.map((message) => message.id),
     );
@@ -1319,6 +1353,7 @@ export function ChannelChat({
      * and sending the words again drew a second copy beside it.
      */
     let serverStarted = false;
+    let stoppedBeforeDispatch = false;
     const startWatch = target.subscribe({
       onRunInitialized: () => {
         started = true;
@@ -1334,8 +1369,26 @@ export function ChannelChat({
         target.agentId,
         odooTaskId ?? null,
         () =>
-          withVoiceContext(copilotkit, target.agentId, voiceHistory, () =>
-            copilotkit.runAgent({ agent: target }),
+          withVoiceContext(
+            copilotkit,
+            target.agentId,
+            voiceHistory,
+            async () => {
+              // Approval recovery can await after the initial scope check. Stop
+              // must still prevent the first model dispatch when it settles.
+              if (
+                onTarget &&
+                (!alive.current ||
+                  currentScope.current !== scopeKey ||
+                  skipIf?.())
+              ) {
+                stoppedBeforeDispatch = true;
+                const kept = withoutMessages(target.messages, added);
+                if (kept !== target.messages) target.setMessages([...kept]);
+                return;
+              }
+              await copilotkit.runAgent({ agent: target });
+            },
           ),
       );
     } finally {
@@ -1344,6 +1397,7 @@ export function ChannelChat({
       awaitingReply.current = false;
       setRunsInFlight((count) => count - 1);
     }
+    if (stoppedBeforeDispatch) return "";
 
     /*
      * ANOTHER RUN HAD THE THREAD: the server continuing after Allow once, another tab, another
@@ -1430,9 +1484,20 @@ export function ChannelChat({
     {
       skipIf,
       odooTaskId,
-    }: { skipIf?: () => boolean; odooTaskId?: string } = {},
+      onTarget,
+    }: {
+      skipIf?: () => boolean;
+      odooTaskId?: string;
+      onTarget?: (target: typeof agent) => void;
+    } = {},
   ) => {
     const trimmed = text.trim();
+    if (
+      !onTarget &&
+      ownedVoiceStateRef.current.identity === currentSpeechIdentity.current &&
+      ownedVoiceStateRef.current.busy
+    )
+      throw new Error("Stop voice before sending a typed message.");
     // A pasted screenshot with no caption is still a message to send: `canSendDraft` already
     // unlocks the button for exactly this case, so refusing it here would leave the button
     // enabled and inert.
@@ -1464,6 +1529,7 @@ export function ChannelChat({
         attachments,
         skipIf,
         odooTaskId,
+        onTarget,
       );
     } finally {
       turnsRef.current -= 1;
@@ -1529,6 +1595,46 @@ export function ChannelChat({
   /** Stable reference for effects and component callbacks. */
   const sayRef = useRef(say);
   sayRef.current = say;
+  const ownedVoiceTurn = useMemo(
+    () =>
+      createOwnedChannelVoiceTurn<typeof agent>({
+        threadId: channel.threadId,
+        isCurrent: () =>
+          alive.current &&
+          currentScope.current === scopeKey &&
+          currentSpeechIdentity.current === speechIdentity,
+        send: async (text, hooks) => {
+          const odooTaskId = selectedOdooTaskIdRef.current ?? undefined;
+          if (odooTaskId) {
+            selectedOdooTaskIdRef.current = null;
+            setSelectedOdooTaskId(null);
+            setContextOdooTaskId(odooTaskId);
+          }
+          try {
+            return await sayRef.current(text, [], [], { ...hooks, odooTaskId });
+          } finally {
+            if (currentSpeechIdentity.current === speechIdentity)
+              setContextOdooTaskId(null);
+          }
+        },
+        assistantIds: (target) =>
+          new Set(
+            target.messages
+              .filter((message) => message.role === "assistant")
+              .map((message) => message.id),
+          ),
+        replyId: (target) =>
+          target.messages.findLast((message) => message.role === "assistant")
+            ?.id,
+        read: (signal) =>
+          readThreadMessages(channel.threadId, runtimeAgentId, { signal }),
+        cancel: (target) => {
+          copilotkit.stopAgent({ agent: target });
+          freshConnectionAfterStop(target);
+        },
+      }),
+    [channel.threadId, runtimeAgentId, scopeKey, speechIdentity, copilotkit],
+  );
   const stopEpoch = useRef(0);
 
   const call = useVoiceCall({
@@ -1759,6 +1865,16 @@ export function ChannelChat({
     ...messages.map((message) => message.id),
     ...(task?.queued ?? []).map((reply) => reply.messageId),
   ]);
+  const latestAssistant = messages.findLast(
+    (message) => message.role === "assistant",
+  );
+  const speechMessage =
+    latestAssistant &&
+    typeof latestAssistant.content === "string" &&
+    latestAssistant.content.trim() &&
+    !latestAssistant.toolCalls?.length
+      ? { threadId: channel.threadId, messageId: latestAssistant.id }
+      : undefined;
 
   /*
    * The failed turn's sentence from before a reload, while nothing has happened since: read only
@@ -1792,6 +1908,27 @@ export function ChannelChat({
           {appConfig.brand.tenantId === "scout" && channel.active ? (
             <ScoutDrafts channelId={channel.id} />
           ) : null}
+          {ownedSpeechAvailable && !task?.send ? (
+            <OwnedVoiceConversation
+              key={speechIdentity}
+              enabled
+              identityKey={speechIdentity}
+              blocked={
+                !speechOwner.data?.id ||
+                !isReady ||
+                restoring ||
+                !channel.active ||
+                historyAvailability !== "ready" ||
+                following ||
+                taskBusy ||
+                (!ownedVoiceTurn.isAsking() &&
+                  (agent.isRunning || runsInFlight > 0 || turnsInFlight > 0))
+              }
+              ask={ownedVoiceTurn.ask}
+              cancelOwnTurn={ownedVoiceTurn.cancel}
+              onBusyChange={ownedVoiceBusyChanged}
+            />
+          ) : null}
           {appConfig.brand.tenantId === "scout" &&
           channel.active &&
           !task?.send ? (
@@ -1800,7 +1937,12 @@ export function ChannelChat({
               selectedTaskId={selectedOdooTaskId}
               contextTaskId={contextOdooTaskId}
               onSelectTaskId={selectOdooTask}
-              busy={agent.isRunning || turnsInFlight > 0 || following}
+              busy={
+                ownedVoiceBusy ||
+                agent.isRunning ||
+                turnsInFlight > 0 ||
+                following
+              }
             />
           ) : null}
           <ConversationView
@@ -1824,6 +1966,23 @@ export function ChannelChat({
                   }
                 : undefined
             }
+            ownedSpeech={
+              ownedSpeechAvailable
+                ? {
+                    scopeKey: `${speechOwner.data?.id ?? "pending"}:${channel.id}:${channel.threadId}`,
+                    disabled:
+                      !speechOwner.data?.id ||
+                      restoring ||
+                      !channel.active ||
+                      historyAvailability !== "ready" ||
+                      agent.isRunning ||
+                      runsInFlight > 0 ||
+                      turnsInFlight > 0 ||
+                      following,
+                    message: speechMessage,
+                  }
+                : undefined
+            }
             agents={toAgentOptions(agentProfiles, channel.agentIds)}
             // Failed-task retries carry words only; ordinary durable replies retain composer features.
             channelId={task?.send && !task.durable ? undefined : channel.id}
@@ -1836,8 +1995,8 @@ export function ChannelChat({
             busy={agent.isRunning || turnsInFlight > 0 || following || taskBusy}
             // The `/` menu exposes only skills granted to this Bot.
             commands={task?.send && !task.durable ? undefined : skillCommands}
-            // Readiness is handled by `say`; deletion is the only disabled-chat state.
-            disabled={!channel.active}
+            // Voice owns the input until Stop; readiness remains handled by `say`.
+            disabled={!channel.active || ownedVoiceBusy}
             /*
              * NOTHING WHILE HISTORY IS RESTORING, then all of it at once. A join replays the thread
              * turn by turn, and the transcript scrolls each new turn to the top as it lands: on a
@@ -1863,7 +2022,9 @@ export function ChannelChat({
                 <HandoffResumeNotice
                   botId={runtimeAgentId}
                   agent={agent}
-                  ready={isReady && !restoring && channel.active}
+                  ready={
+                    isReady && !restoring && channel.active && !ownedVoiceBusy
+                  }
                   run={async () => {
                     setRunsInFlight((count) => count + 1);
                     try {
@@ -1886,7 +2047,46 @@ export function ChannelChat({
                     {voiceContextNotice}
                   </p>
                 )}
-                {historyNotice ? (
+                {historyNotice &&
+                capabilities.data?.mode === "owned" &&
+                historyAvailability === "unavailable" ? (
+                  <div
+                    className="space-y-2 pb-2 text-muted-foreground text-sm"
+                    role="status"
+                  >
+                    <p>
+                      Earlier messages are unavailable under the current access
+                      or connection. Retry the read, or start a new
+                      conversation.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={
+                          agent.isRunning || turnsInFlight > 0 || following
+                        }
+                        onClick={() => pullRef.current()}
+                      >
+                        Retry history
+                      </Button>
+                      {newConversation ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={
+                            agent.isRunning || turnsInFlight > 0 || following
+                          }
+                          onClick={newConversation}
+                        >
+                          New conversation
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : historyNotice ? (
                   <p
                     className="pb-2 text-sm text-muted-foreground"
                     role="status"

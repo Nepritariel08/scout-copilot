@@ -1,0 +1,8 @@
+# CPU-only direct runtime pins verified against PyPI on 2026-11-03.
+# Target Python 3.12.14. This is NOT a qualified platform wheel/transitive lock:
+# produce/hash that lock on the target before activation; never add the gpu extra.
+faster-whisper==1.2.1
+kokoro-onnx==0.6.1
+onnxruntime==1.31.1
+av==19.0.2
+numpy==2.5.4

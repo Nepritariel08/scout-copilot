@@ -20,6 +20,7 @@ import { scoutModelCalls as calls } from "../src/db/schema/scout-model";
 import { createHistoryStore } from "../src/scout/history/store";
 import { parseScoutMembership } from "../src/scout/membership";
 import { createOwnedApplication } from "../src/scout/owned/application";
+import { privateComputerId } from "../src/scout/owned-computer/bindings";
 import { OwnedTextModel } from "../src/scout/owned-model/model";
 import {
   createModelPolicyReader,
@@ -55,6 +56,13 @@ let active = true;
 let aliceMembershipRevision = 1;
 let behavior = "normal";
 let providerCalls = 0;
+let speechCalls = 0;
+let spokenText = "";
+let afterSynthesize: (() => void) | undefined;
+let computerNavigations = 0;
+let computerAfterNavigate: (() => Promise<void>) | undefined;
+let computerUrl = "about:blank";
+let computerUnavailable = false;
 let contextGrantEnabled = false;
 let contextReleaseGrantEnabled = false;
 let contextGrantReads = 0;
@@ -263,12 +271,18 @@ function model(
 ) {
   return new OwnedTextModel(scope, grant, authorize, store, signal, transport);
 }
-function request(path: string, body?: unknown, userId = alice) {
+function request(
+  path: string,
+  body?: unknown,
+  userId = alice,
+  extra: Record<string, string> = {},
+) {
   return app.app.request(path, {
     method: body === undefined ? "GET" : "POST",
     headers: {
       "content-type": "application/json",
       "x-synthetic-session": userId,
+      ...extra,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -296,8 +310,26 @@ beforeAll(async () => {
         headers: request.headers,
         body: (await request.json()) as Record<string, unknown>,
       };
+      const statusCall =
+        (behavior.startsWith("status-") || behavior.startsWith("computer-")) &&
+        !(captured.body.messages as { role: string }[]).some(
+          (message) => message.role === "tool",
+        );
+      if (behavior === "status-revoked" && statusCall) {
+        const revoked = configuration();
+        revoked.bindings[0].active = false;
+        await writeFile(policyFile, JSON.stringify(revoked));
+      }
       const ledger = await rows();
       expect(ledger.some((row) => row.status === "dispatched")).toBe(true);
+      if (behavior === "status-cancel" && statusCall) {
+        const current = ledger.find((row) => row.status === "dispatched")!;
+        await history.stop(
+          { userId: alice, tenantId: "tenant-a" },
+          current.threadId,
+          current.runId,
+        );
+      }
       if (behavior === "membership-change") aliceMembershipRevision = 2;
       if (behavior === "error")
         return new Response("synthetic-owned-provider-key", { status: 502 });
@@ -310,14 +342,25 @@ beforeAll(async () => {
           ? "x".repeat(6000)
           : "OWNED_MODEL_SYNTHETIC_OK";
       const delta =
-        behavior === "tool"
+        behavior === "tool" || statusCall
           ? {
               tool_calls: [
                 {
                   index: 0,
-                  id: "unexpected",
+                  id: statusCall ? "status_call" : "unexpected",
                   type: "function",
-                  function: { name: "browser_secret_action", arguments: "{}" },
+                  function: {
+                    name:
+                      statusCall && behavior !== "status-unknown"
+                        ? behavior.startsWith("computer-")
+                          ? "scout_computer_read_public"
+                          : "scout_capabilities"
+                        : "browser_secret_action",
+                    arguments:
+                      behavior === "status-arguments"
+                        ? '{"userId":"foreign"}'
+                        : "{}",
+                  },
                 },
               ],
             }
@@ -337,9 +380,15 @@ beforeAll(async () => {
         { id: "fixture", choices: [{ index: 0, delta, finish_reason: null }] },
         {
           id: "fixture",
-          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          choices: [
+            {
+              index: 0,
+              delta: {},
+              finish_reason: statusCall ? "tool_calls" : "stop",
+            },
+          ],
         },
-        ...(behavior === "no-usage"
+        ...(behavior === "no-usage" || behavior === "status-no-usage"
           ? []
           : [
               {
@@ -378,6 +427,30 @@ beforeAll(async () => {
   );
   await writeFile(policyFile, JSON.stringify(configuration()), { mode: 0o600 });
   await chmod(policyFile, 0o600);
+  const computerBindingsFile = join(directory, "synthetic-computer.json");
+  const computerTokenFile = join(directory, "synthetic-computer-token");
+  await writeFile(computerTokenFile, "s".repeat(32), { mode: 0o600 });
+  await writeFile(
+    computerBindingsFile,
+    JSON.stringify({
+      version: 1,
+      deploymentId: prefix,
+      supervisorUrl: "http://127.0.0.1:18089/",
+      supervisorTokenFile: computerTokenFile,
+      computerTokenFile,
+      grants: [
+        {
+          userId: alice,
+          tenantId: "tenant-a",
+          agentId,
+          active: true,
+          revision: 1,
+          expiresAt: "2099-01-01T00:00:00Z",
+        },
+      ],
+    }),
+    { mode: 0o600 },
+  );
   app = await createOwnedApplication(
     loadOwnedConfig({
       DATABASE_URL: testDatabaseUrl(),
@@ -387,8 +460,10 @@ beforeAll(async () => {
       OPENBOT_ORGANIZATION_AUTH_URL: "https://identity.fixture.example",
       SCOUT_MEMBERSHIPS_FILE: join(directory, "unused-membership-policy"),
       SCOUT_MODEL_POLICY_FILE: policyFile,
+      SCOUT_COMPUTER_BINDINGS_FILE: computerBindingsFile,
       TENANT_PACKAGE_DIR: directory,
       OPENBOT_HOST: "127.0.0.1",
+      OPENBOT_PUBLIC_URL: "https://scout.fixture.example",
       OPENBOT_GENERATIVE_UI: "false",
     }),
     database,
@@ -407,6 +482,62 @@ beforeAll(async () => {
       membership: async (actor) =>
         parseScoutMembership(bindings(), actor, prefix),
       recordContext,
+      speechBackend: {
+        async transcribe() {
+          return "Synthetic reviewed transcript";
+        },
+        async synthesize(text) {
+          speechCalls++;
+          spokenText = text;
+          afterSynthesize?.();
+          return new Uint8Array([82, 73, 70, 70, 1, 2, 3]);
+        },
+      },
+      computerFetch: Object.assign(
+        async (input: string | URL | Request, init?: RequestInit) => {
+          const path = new URL(input instanceof Request ? input.url : input)
+            .pathname;
+          const id = privateComputerId(prefix, "tenant-a", alice, agentId);
+          const entry = {
+            botId: id,
+            status: "running",
+            port: 18090,
+            startedAt: "2026-11-03T00:00:00.000Z",
+          };
+          if (path === "/computers")
+            return Response.json({ computers: [entry] });
+          if (path === `/computers/${id}/ensure`) return Response.json(entry);
+          if (path === "/egress-policy") return Response.json({});
+          if (path === "/navigate") {
+            expect(JSON.parse(String(init?.body)).url).toBe(
+              "https://example.org/",
+            );
+            computerNavigations++;
+            if (computerUnavailable) return Response.json({}, { status: 503 });
+            computerUrl = "https://example.org/";
+            await computerAfterNavigate?.();
+          }
+          if (path === "/navigate" || path === "/read")
+            return Response.json({
+              url: computerUrl,
+              title: "Example Domain",
+              text: "Synthetic sample page",
+              truncated: false,
+              elapsedMs: 1,
+            });
+          if (path === "/screenshot")
+            return Response.json({
+              base64:
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK1cAAAAASUVORK5CYII=",
+              width: 1,
+              height: 1,
+              capturedAt: "2026-11-03T00:00:00.000Z",
+              url: computerUrl,
+            });
+          throw new Error("Unexpected synthetic computer path");
+        },
+        { preconnect: fetch.preconnect },
+      ),
     },
   );
 });
@@ -415,6 +546,13 @@ beforeEach(async () => {
   aliceMembershipRevision = 1;
   behavior = "normal";
   providerCalls = 0;
+  speechCalls = 0;
+  spokenText = "";
+  afterSynthesize = undefined;
+  computerNavigations = 0;
+  computerAfterNavigate = undefined;
+  computerUrl = "about:blank";
+  computerUnavailable = false;
   captured = undefined;
   contextGrantEnabled = false;
   contextReleaseGrantEnabled = false;
@@ -432,6 +570,376 @@ beforeEach(async () => {
   await database.delete(calls).where(eq(calls.deploymentId, prefix));
   await writeFile(policyFile, JSON.stringify(configuration()));
 });
+async function savedSpeechMessage(selected = false) {
+  if (selected) {
+    contextGrantEnabled = true;
+    contextReleaseGrantEnabled = true;
+    contextRecordRows = [
+      {
+        id: 700,
+        name: "Synthetic selected task",
+        stage_id: [9, "Synthetic stage"],
+        date_deadline: "2026-12-15",
+        company_id: [1, "Synthetic company"],
+      },
+    ];
+  }
+  const minted = await request("/api/threads/mint", { agentId });
+  expect(minted.status).toBe(200);
+  const { threadId } = await minted.json();
+  const ran = await request(`/api/copilotkit/agent/${agentId}/run`, {
+    ...input(threadId),
+    ...(selected
+      ? {
+          context: [
+            { description: PROJECT_TASK_SELECTION_MARKER, value: "700" },
+          ],
+        }
+      : {}),
+  });
+  expect(await ran.text()).toContain("OWNED_MODEL_SYNTHETIC_OK");
+  const stored = await request(
+    `/api/copilotkit/threads/${threadId}/messages?agentId=${agentId}`,
+  );
+  expect(stored.status).toBe(200);
+  const body = await stored.json();
+  const message = body.messages.findLast(
+    (value: { role: string }) => value.role === "assistant",
+  );
+  expect(message?.id).toBeTruthy();
+  return { threadId, messageId: message.id };
+}
+
+const speechHeaders = {
+  "x-openbot-dictation": "1",
+  origin: "https://scout.fixture.example",
+};
+
+test("composed owned speech speaks only the owner's actual saved SDK/SQL answer behind HTTPS", async () => {
+  expect(await (await request("/api/capabilities")).json()).toMatchObject({
+    mode: "owned",
+    transcription: true,
+    speechPlayback: true,
+    voice: false,
+  });
+  const message = await savedSpeechMessage();
+  expect(
+    (await request("/api/audio/speech", message, bob, speechHeaders)).status,
+  ).toBe(403);
+  expect(
+    (
+      await request("/api/audio/speech", message, alice, {
+        ...speechHeaders,
+        origin: "https://foreign.invalid",
+      })
+    ).status,
+  ).toBe(403);
+  expect(speechCalls).toBe(0);
+  const response = await request(
+    "/api/audio/speech",
+    message,
+    alice,
+    speechHeaders,
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("content-type")).toBe("audio/wav");
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(spokenText).toBe("OWNED_MODEL_SYNTHETIC_OK");
+  expect(speechCalls).toBe(1);
+  expect(providerCalls).toBe(1);
+});
+
+test("native membership withdrawal during composed synthesis releases no audio", async () => {
+  const message = await savedSpeechMessage();
+  afterSynthesize = () => {
+    aliceMembershipRevision++;
+  };
+  const response = await request(
+    "/api/audio/speech",
+    message,
+    alice,
+    speechHeaders,
+  );
+  expect(response.status).toBe(403);
+  expect(response.headers.get("content-type")).not.toBe("audio/wav");
+  expect(speechCalls).toBe(1);
+  expect(providerCalls).toBe(1);
+});
+
+test.each(["before", "during"] as const)(
+  "Odoo context withdrawal %s composed speech releases no audio",
+  async (when) => {
+    const message = await savedSpeechMessage(true);
+    if (when === "before") contextGrantEnabled = false;
+    else
+      afterSynthesize = () => {
+        contextGrantEnabled = false;
+      };
+    const response = await request(
+      "/api/audio/speech",
+      message,
+      alice,
+      speechHeaders,
+    );
+    expect(response.status).toBe(403);
+    expect(response.headers.get("content-type")).not.toBe("audio/wav");
+    expect(speechCalls).toBe(when === "before" ? 0 : 1);
+    expect(providerCalls).toBe(1);
+  },
+);
+
+test("composed transcription returns an editable transcript without starting a model turn", async () => {
+  const form = new FormData();
+  form.append(
+    "file",
+    new File(["synthetic-codec-fixture"], "recording.wav", {
+      type: "audio/wav",
+    }),
+  );
+  const response = await app.app.request("/api/audio/transcriptions", {
+    method: "POST",
+    headers: { "x-synthetic-session": alice, ...speechHeaders },
+    body: form,
+  });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({
+    text: "Synthetic reviewed transcript",
+  });
+  expect(providerCalls).toBe(0);
+  expect(speechCalls).toBe(0);
+});
+
+test("capability catalog is authenticated, native-scoped and does not imply a connected work app", async () => {
+  const response = await request("/api/scout/capabilities");
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const catalog = await response.json();
+  expect(catalog.skills.odooSelectedTask).toBe("requires_authorization");
+  expect(catalog.skills.delegatedDraft).toBe("unavailable");
+  expect(catalog.integrations.teams).toBe("not_connected");
+  expect(JSON.stringify(catalog)).not.toContain(alice);
+  expect(providerCalls).toBe(0);
+  expect(
+    (await request("/api/scout/capabilities", undefined, "unknown-session"))
+      .status,
+  ).toBe(401);
+  active = false;
+  expect((await request("/api/scout/capabilities")).status).toBe(401);
+});
+async function enableStatusTool(maxCallsPerDay = 20) {
+  const config = configuration();
+  Object.assign(config.bindings[0], {
+    allowedToolNames: ["scout_capabilities"],
+  });
+  config.bindings[0].limits.maxCallsPerRun = 2;
+  config.bindings[0].limits.maxCallsPerDay = maxCallsPerDay;
+  await writeFile(policyFile, JSON.stringify(config));
+}
+
+async function enableComputerTool() {
+  const config = configuration();
+  Object.assign(config.bindings[0], {
+    allowedToolNames: ["scout_computer_read_public"],
+  });
+  config.bindings[0].limits.maxCallsPerRun = 2;
+  await writeFile(policyFile, JSON.stringify(config));
+}
+
+test("composed owned SDK runs the fixed computer tool once and accounts its model follow-up", async () => {
+  await enableComputerTool();
+  behavior = "computer-valid";
+  const response = await selectedRun([]);
+  const events = await response.text();
+  expect(events).toContain("OWNED_MODEL_SYNTHETIC_OK");
+  expect(events).toContain("scout_computer_read_public");
+  expect(events).not.toContain('"type":"RUN_ERROR"');
+  expect(computerNavigations).toBe(1);
+  expect(providerCalls).toBe(2);
+  expect((await rows()).every((row) => row.status === "completed")).toBe(true);
+  const result = (
+    captured!.body.messages as { role: string; content: string }[]
+  ).find((message) => message.role === "tool");
+  expect(JSON.parse(result!.content)).toMatchObject({
+    kind: "scout.computer.public_read.v1",
+    url: "https://example.org/",
+    text: "Synthetic sample page",
+    computerId: agentId,
+  });
+});
+
+test("model policy revocation during computer navigation withholds tool result and follow-up", async () => {
+  await enableComputerTool();
+  behavior = "computer-valid";
+  computerAfterNavigate = async () => {
+    const revoked = configuration();
+    revoked.bindings[0].active = false;
+    await writeFile(policyFile, JSON.stringify(revoked));
+  };
+  const response = await selectedRun([]);
+  const events = await response.text();
+  expect(events).toContain('"type":"RUN_ERROR"');
+  expect(events).not.toContain("Synthetic sample page");
+  expect(events).not.toContain("OWNED_MODEL_SYNTHETIC_OK");
+  expect(computerNavigations).toBe(1);
+  expect(providerCalls).toBe(1);
+});
+
+test("failed computer execution remains in history without blocking a later text turn or retrying navigation", async () => {
+  await enableComputerTool();
+  behavior = "computer-valid";
+  computerUnavailable = true;
+  const minted = await request("/api/threads/mint", { agentId });
+  const { threadId } = await minted.json();
+  const failed = await request(
+    `/api/copilotkit/agent/${agentId}/run`,
+    input(threadId),
+  );
+  const failedEvents = await failed.text();
+  expect(failedEvents).toContain('"type":"RUN_ERROR"');
+  expect(computerNavigations).toBe(1);
+  expect(providerCalls).toBe(1);
+  behavior = "normal";
+  computerUnavailable = false;
+  const continued = await request(`/api/copilotkit/agent/${agentId}/run`, {
+    ...input(threadId),
+    messages: [
+      { id: randomUUID(), role: "user", content: "Continue with text only" },
+    ],
+  });
+  const events = await continued.text();
+  expect(events).toContain("OWNED_MODEL_SYNTHETIC_OK");
+  expect(events).not.toContain('"type":"RUN_ERROR"');
+  expect(computerNavigations).toBe(1);
+  expect(providerCalls).toBe(2);
+  expect(
+    (captured!.body.messages as { role: string }[]).some(
+      (message) => message.role === "tool",
+    ),
+  ).toBe(false);
+});
+
+test("owned application mounts only its admitted HTTP computer surface", async () => {
+  expect((await request("/api/computers/fleet")).status).toBe(200);
+  expect(
+    (await request("/api/computers/fleet", undefined, "unknown-session"))
+      .status,
+  ).toBe(401);
+  const result = await request(`/api/computers/${agentId}/read-public`, {});
+  expect(result.status).toBe(200);
+  const body = await result.json();
+  expect(body.url).toBe("https://example.org/");
+  expect(typeof body.pageFrameId).toBe("string");
+  expect(
+    (await request(`/api/computers/${agentId}/page-frame/${body.pageFrameId}`))
+      .status,
+  ).toBe(200);
+  expect(
+    (await request(`/api/computers/${agentId}/type`, { text: "synthetic" }))
+      .status,
+  ).toBe(503);
+  expect(computerNavigations).toBe(1);
+  expect(providerCalls).toBe(0);
+});
+test("public SDK executes one server status tool and accounts both SQL model calls", async () => {
+  await enableStatusTool();
+  behavior = "status-valid";
+  const minted = await request("/api/threads/mint", { agentId });
+  const { threadId } = await minted.json();
+  const response = await request(`/api/copilotkit/agent/${agentId}/run`, {
+    ...input(threadId),
+    tools: [
+      {
+        name: "browser_secret_action",
+        description: "Synthetic untrusted browser definition",
+        parameters: { type: "object" },
+      },
+    ],
+  });
+  const events = await response.text();
+  expect(events).toContain("OWNED_MODEL_SYNTHETIC_OK");
+  expect(events).toContain("scout_capabilities");
+  expect(events).not.toContain('"type":"RUN_ERROR"');
+  expect(providerCalls).toBe(2);
+  const resultMessage = (
+    captured!.body.messages as { role: string; content: string }[]
+  ).find((message) => message.role === "tool");
+  expect(JSON.parse(resultMessage!.content).integrations.outlookEmail).toBe(
+    "not_connected",
+  );
+  expect(captured!.body.tools).toEqual([
+    {
+      type: "function",
+      function: {
+        name: "scout_capabilities",
+        description:
+          "Report Scout's configured capabilities. This reads no business data and cannot connect apps or execute workflows.",
+        parameters: {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        },
+      },
+    },
+  ]);
+  const ledger = await rows();
+  expect(ledger).toHaveLength(2);
+  expect(ledger.every((row) => row.status === "completed")).toBe(true);
+  expect(
+    ledger.some(
+      (row) =>
+        row.inputBytes === Buffer.byteLength(JSON.stringify(captured!.body)),
+    ),
+  ).toBe(true);
+  // Historical status exchanges remain readable, but never become a new model authority source.
+  behavior = "normal";
+  const continuation = await request(`/api/copilotkit/agent/${agentId}/run`, {
+    ...input(threadId),
+    messages: [
+      { id: randomUUID(), role: "user", content: "Synthetic follow-up" },
+    ],
+  });
+  const continuationEvents = await continuation.text();
+  expect(continuationEvents).toContain("OWNED_MODEL_SYNTHETIC_OK");
+  expect(continuationEvents).not.toContain('"type":"RUN_ERROR"');
+  expect(providerCalls).toBe(3);
+  expect(
+    (captured!.body.messages as { role: string }[]).some(
+      (message) => message.role === "tool",
+    ),
+  ).toBe(false);
+});
+for (const scenario of [
+  "status-unknown",
+  "status-arguments",
+  "status-no-usage",
+  "status-revoked",
+  "status-cancel",
+]) {
+  test(`status tool refuses ${scenario} before execution or provider follow-up`, async () => {
+    await enableStatusTool();
+    behavior = scenario;
+    const response = await selectedRun([]);
+    const events = await response.text();
+    expect(events).toContain(
+      scenario === "status-cancel" ? "RUN_FINISHED" : "RUN_ERROR",
+    );
+    expect(events).not.toContain("not_connected");
+    expect(events).not.toContain("OWNED_MODEL_SYNTHETIC_OK");
+    expect(providerCalls).toBe(1);
+    expect((await rows()).every((row) => row.status !== "completed")).toBe(
+      true,
+    );
+  });
+}
+test("status follow-up still obeys the existing per-user daily quota", async () => {
+  await enableStatusTool(1);
+  behavior = "status-valid";
+  const response = await selectedRun([]);
+  const events = await response.text();
+  expect(events).toContain("RUN_ERROR");
+  expect(providerCalls).toBe(1);
+  expect(await rows()).toHaveLength(1);
+});
 afterAll(async () => {
   await app?.close();
   provider?.stop(true);
@@ -446,20 +954,18 @@ afterAll(async () => {
 });
 
 describe("owned model: real SQL and SDK chat-completions", () => {
-  test("unadapted audio and voice endpoints cannot bypass owned model admission", async () => {
-    for (const path of [
-      "/api/audio/transcriptions",
-      "/api/voice/calls",
-      "/api/voice/sessions",
-    ]) {
+  test("unadapted voice routes and unmarked speech requests cannot bypass owned admission", async () => {
+    for (const path of ["/api/voice/calls", "/api/voice/sessions"]) {
       const response = await request(path, {});
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({
         code: "MODEL_ROUTE_UNAVAILABLE",
       });
     }
+    expect((await request("/api/audio/transcriptions", {})).status).toBe(403);
     const capabilities = await (await request("/api/capabilities")).json();
-    expect(capabilities.transcription).toBe(false);
+    expect(capabilities.transcription).toBe(true);
+    expect(capabilities.speechPlayback).toBe(true);
     expect(capabilities.voice).toBe(false);
     expect(providerCalls).toBe(0);
     expect(await rows()).toHaveLength(0);

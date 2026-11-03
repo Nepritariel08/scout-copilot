@@ -19,6 +19,7 @@ import {
 import { cleanup, render, waitFor } from "@testing-library/react";
 import type { ComponentType } from "react";
 import { EditSkill } from "@/components/skills/edit-skill";
+import { deploymentKeys } from "@/lib/deployment/queries";
 import { type PluginsPage, pluginKeys } from "@/lib/plugins/queries";
 import { Route as SkillsRoute } from "@/routes/_authed/_app/capabilities.skills";
 import { Route as AdminSkillsRoute } from "@/routes/_authed/admin/skills";
@@ -77,7 +78,11 @@ afterEach(() => {
 
 /** A client the failing query settles on in one attempt, so no test waits on a retry. */
 function failingQueryClient() {
-  return new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  client.setQueryData(deploymentKeys.capabilities(), { mode: "intelligence" });
+  return client;
 }
 
 /** A client already holding a plugins page with no skills in it: the honest empty answer. */
