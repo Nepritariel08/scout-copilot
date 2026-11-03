@@ -348,6 +348,12 @@ function fixture(useActualSupervisor = false) {
 }
 
 describe("owned computer admission and real gateway composition", () => {
+  test("the owned runtime pushes strict public-sample egress rather than a domain-only allowance", () => {
+    expect(OWNED_COMPUTER_EGRESS).toEqual({
+      mode: "owned_public_sample",
+      rules: [],
+    });
+  });
   test("is opt-in and refuses every unqualified action even when computers are enabled", () => {
     expect(ownedApiAllowed("/api/computers/scout/read", "GET")).toBe(false);
     expect(

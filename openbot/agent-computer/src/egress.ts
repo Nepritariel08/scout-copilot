@@ -14,7 +14,7 @@
  */
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { lookup } from "node:dns/promises";
+import { Resolver as DnsResolver, lookup } from "node:dns/promises";
 import {
   createServer,
   request as httpRequest,
@@ -22,6 +22,11 @@ import {
   type Server,
 } from "node:http";
 import { BlockList, connect, isIP, type Socket } from "node:net";
+import {
+  isPublicSampleAddress,
+  PUBLIC_SAMPLE_MAX_ADDRESSES,
+  resolvePublicSampleAddresses,
+} from "./public-address";
 
 /** A proxy as Playwright wants it: credentials separated from the URL. */
 export type Egress = {
@@ -187,7 +192,8 @@ export type EgressMode =
   | "allow_all"
   | "defaults_plus_allowlist"
   | "allowlist_only"
-  | "deny_all";
+  | "deny_all"
+  | "owned_public_sample";
 
 export type EgressPolicy = { mode: EgressMode; rules: EgressRule[] };
 
@@ -196,6 +202,7 @@ export const EGRESS_MODES: readonly EgressMode[] = [
   "defaults_plus_allowlist",
   "allowlist_only",
   "deny_all",
+  "owned_public_sample",
 ];
 
 /**
@@ -326,6 +333,18 @@ export function parseEgressPolicy(
       error: `mode must be one of ${EGRESS_MODES.join(", ")}.`,
     };
   }
+  if (candidate.mode === "owned_public_sample") {
+    if (
+      Object.keys(candidate).some((key) => key !== "mode" && key !== "rules") ||
+      !Array.isArray(candidate.rules) ||
+      candidate.rules.length !== 0
+    )
+      return {
+        ok: false,
+        error: "The owned public sample accepts only empty rules.",
+      };
+    return { ok: true, policy: { mode: "owned_public_sample", rules: [] } };
+  }
   const rules = parseEgressRules(candidate.rules ?? []);
   if (!rules.ok) return rules;
   return {
@@ -424,6 +443,21 @@ export function egressDecision(
   resolved: readonly string[] = [],
 ): EgressDecision {
   const host = normalizeHost(hostInput);
+  if (policy.mode === "owned_public_sample") {
+    const allowed =
+      policy.rules.length === 0 &&
+      host === "example.org" &&
+      port === 443 &&
+      resolved.length > 0 &&
+      resolved.length <= PUBLIC_SAMPLE_MAX_ADDRESSES &&
+      resolved.every(isPublicSampleAddress);
+    return {
+      allowed,
+      reason: allowed
+        ? "The owned sample destination resolved only to permitted public addresses."
+        : "The owned sample requires example.org:443 and verified public addresses only.",
+    };
+  }
   const denied = [host, ...resolved].find(isAlwaysDenied);
   if (denied !== undefined) {
     return {
@@ -481,7 +515,8 @@ export function needsResolution(policy: EgressPolicy, host: string): boolean {
     isIP(normalizeHost(host)) === 0 &&
     policy.mode !== "allow_all" &&
     policy.mode !== "deny_all" &&
-    policy.rules.some((rule) => rule.type === "cidr")
+    (policy.mode === "owned_public_sample" ||
+      policy.rules.some((rule) => rule.type === "cidr"))
   );
 }
 
@@ -496,10 +531,21 @@ type Resolver = (host: string) => Promise<string[]>;
 const systemResolver: Resolver = async (host) =>
   (await lookup(host, { all: true })).map((entry) => entry.address);
 let resolver: Resolver = systemResolver;
+const sampleResolver: Resolver = (host) =>
+  resolvePublicSampleAddresses(
+    host,
+    new DnsResolver({ timeout: 1_000, tries: 1 }),
+  );
+let strictResolver: Resolver = sampleResolver;
 
 /** For tests: answer name lookups without DNS. Null puts the system resolver back. */
 export function setEgressResolver(next: Resolver | null) {
   resolver = next ?? systemResolver;
+}
+
+/** For offline strict-mode tests only; the normal modes retain their existing resolver. */
+export function setPublicSampleResolver(next: Resolver | null) {
+  strictResolver = next ?? sampleResolver;
 }
 
 /** Install (or with null, remove) the policy one Bot's connections are judged by. */
@@ -537,6 +583,7 @@ async function decide(
   host: string,
   port: number,
   direct: boolean,
+  transport: "plain" | "connect",
 ): Promise<EgressDecision & { addresses?: string[] }> {
   const judging = policiesFor(botId);
   if (judging === "refuse") {
@@ -546,6 +593,21 @@ async function decide(
         "No network policy has reached this computer yet, so nothing may leave it.",
     };
   }
+  const strict = judging.some(
+    (policy) => policy.mode === "owned_public_sample",
+  );
+  if (
+    strict &&
+    (!direct ||
+      transport !== "connect" ||
+      normalizeHost(host) !== "example.org" ||
+      port !== 443)
+  )
+    return {
+      allowed: false,
+      reason:
+        "The owned sample requires direct filtered CONNECT to example.org:443.",
+    };
   let resolved: string[] = [];
   /*
    * Resolved whenever this filter makes the connection itself, so the address checked is the
@@ -559,10 +621,24 @@ async function decide(
     (direct || judging.some((policy) => needsResolution(policy, host)))
   ) {
     try {
-      resolved = await resolver(normalizeHost(host));
+      resolved = await (strict ? strictResolver : resolver)(
+        normalizeHost(host),
+      );
     } catch {
       return { allowed: false, reason: `${host} could not be resolved.` };
     }
+  }
+  if (strict) {
+    const current = policiesFor(botId);
+    if (
+      current === "refuse" ||
+      current.length !== judging.length ||
+      current.some((policy, index) => policy !== judging[index])
+    )
+      return {
+        allowed: false,
+        reason: "The sample network policy changed during resolution.",
+      };
   }
   // Checked even with no policy to judge by, which EGRESS_POLICY_REQUIRED=0 allows.
   for (const policy of judging.length > 0
@@ -622,6 +698,7 @@ export function connectInTurn(
   onReady: (socket: Socket) => void,
   onError: (error: Error) => void,
   attemptTimeoutMs = CONNECT_ATTEMPT_TIMEOUT_MS,
+  connectImpl: (options: { host: string; port: number }) => Socket = connect,
 ): void {
   const queue = target.addresses?.length
     ? connectOrder(target.addresses)
@@ -634,7 +711,7 @@ export function connectInTurn(
       return;
     }
     let settled = false;
-    const socket = connect({ host: address, port: target.port });
+    const socket = connectImpl({ host: address, port: target.port });
     const moveOn = (error: Error) => {
       if (settled) return;
       settled = true;
@@ -733,9 +810,16 @@ function tunnel(
   upstream: Egress | null,
   onReady: (socket: Socket) => void,
   onError: (error: Error) => void,
+  connectImpl: (options: { host: string; port: number }) => Socket = connect,
 ) {
   if (!upstream) {
-    connectInTurn(target, onReady, onError);
+    connectInTurn(
+      target,
+      onReady,
+      onError,
+      CONNECT_ATTEMPT_TIMEOUT_MS,
+      connectImpl,
+    );
     return;
   }
   const via = upstreamAddress(upstream);
@@ -772,6 +856,8 @@ export type EgressFilterOptions = {
   port?: number;
   /** Point the shell's commands at the filter (see `egressShellEnvironment`). */
   forShell?: boolean;
+  /** Offline qualification captures strict-mode dials; never read from HTTP or environment. */
+  publicSampleConnect?: (options: { host: string; port: number }) => Socket;
 };
 
 /*
@@ -836,7 +922,13 @@ export async function startEgressFilter(
       target.port || (target.protocol === "https:" ? 443 : 80),
     );
     const upstream = upstreamFor(botId ?? "", env);
-    const decision = await decide(botId, target.hostname, port, !upstream);
+    const decision = await decide(
+      botId,
+      target.hostname,
+      port,
+      !upstream,
+      "plain",
+    );
     if (!decision.allowed) {
       response
         .writeHead(403, {
@@ -859,12 +951,24 @@ export async function startEgressFilter(
         secret,
       );
       client.on("error", () => undefined);
+      const judging = policiesFor(botId);
+      if (
+        judging !== "refuse" &&
+        judging.some((policy) => policy.mode === "owned_public_sample") &&
+        !/^example\.org\.?:443$/i.test(request.url ?? "")
+      ) {
+        refuse(
+          client,
+          "The owned sample requires an explicit example.org:443 authority.",
+        );
+        return;
+      }
       if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
         refuse(client, "A CONNECT names host:port.");
         return;
       }
       const upstream = upstreamFor(botId ?? "", env);
-      const decision = await decide(botId, host, port, !upstream);
+      const decision = await decide(botId, host, port, !upstream, "connect");
       if (!decision.allowed) {
         refuse(client, decision.reason);
         return;
@@ -886,6 +990,10 @@ export async function startEgressFilter(
         () => {
           client.end("HTTP/1.1 502 Bad Gateway\r\n\r\n");
         },
+        judging !== "refuse" &&
+          judging.some((policy) => policy.mode === "owned_public_sample")
+          ? options.publicSampleConnect
+          : undefined,
       );
     },
   );

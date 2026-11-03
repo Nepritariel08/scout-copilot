@@ -12,8 +12,8 @@ export const OWNED_COMPUTER_POLICY: ActionPolicy = {
   ],
 };
 export const OWNED_COMPUTER_EGRESS: EgressPolicy = {
-  mode: "allowlist_only",
-  rules: [{ type: "domain", value: "example.org" }],
+  mode: "owned_public_sample",
+  rules: [],
 };
 export function publicComputerUrl(value: unknown, allowBlank = false): string {
   if (allowBlank && value === "about:blank") return "about:blank";
