@@ -62,6 +62,33 @@ afterAll(async () => {
     await rm(directory, { recursive: true, force: true });
 });
 describe("operator-owned model and context policy", () => {
+  test("fixed public computer tools require explicit unique names and a budgeted follow-up", () => {
+    for (const allowedToolNames of [
+      ["scout_computer_read_public"],
+      ["scout_capabilities", "scout_computer_read_public"],
+    ]) {
+      const config = policy();
+      Object.assign(config.bindings[0], { allowedToolNames });
+      expect(() => parseModelPolicy(config, principal)).toThrow(
+        "MODEL_NOT_CONFIGURED",
+      );
+      config.bindings[0].limits.maxCallsPerRun = 2;
+      expect(parseModelPolicy(config, principal).allowedToolNames).toEqual(
+        allowedToolNames,
+      );
+    }
+    for (const allowedToolNames of [
+      ["scout_computer_read_public", "scout_computer_read_public"],
+      ["scout_computer_read_public", "computer_navigate"],
+    ]) {
+      const config = policy();
+      Object.assign(config.bindings[0], { allowedToolNames });
+      config.bindings[0].limits.maxCallsPerRun = 2;
+      expect(() => parseModelPolicy(config, principal)).toThrow(
+        "MODEL_NOT_CONFIGURED",
+      );
+    }
+  });
   test("status tools are an exact protected opt-in and leave absent policy fingerprints unchanged", () => {
     const original = policy();
     expect(parseModelPolicy(original, principal).fingerprint).toBe(

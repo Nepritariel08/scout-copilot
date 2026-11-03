@@ -104,6 +104,8 @@ export async function createOwnedApplication(
     recordContext?: ProjectTaskContextPort;
     /** Synthetic speech transport seam. Production reads only the protected speech config. */
     speechBackend?: OwnedSpeechBackend;
+    /** Synthetic supervisor/browser transport seam; production always uses its fixed loopback backend. */
+    computerFetch?: typeof fetch;
   } = {},
 ) {
   if (
@@ -354,6 +356,7 @@ export async function createOwnedApplication(
         audit,
         snapshots: createSnapshotStore(database),
         frames: createPageFrameStore(database),
+        fetch: options.computerFetch,
       })
     : undefined;
   const computerRoutes = computerService
@@ -380,6 +383,7 @@ export async function createOwnedApplication(
           recordContext,
           contextHistory,
           catalog,
+          computer: computerService,
         })
       : async (actor: AuthenticatedActor) =>
           Object.fromEntries(
@@ -535,6 +539,7 @@ export async function createOwnedApplication(
       scoutOwned: {
         requireTenant: authority.requireTenant,
         ...(speechRoutes ? { speechRoutes } : {}),
+        ...(computerRoutes ? { computerRoutes } : {}),
         delegatedDraftsEnabled: config.scoutDelegatedDraftsEnabled,
         scope,
         requirePlatformAdmin: async (request) => {

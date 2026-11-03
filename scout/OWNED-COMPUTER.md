@@ -32,7 +32,7 @@ new user onto another user's provider through config. Browser aliases never expo
 that provider ID or supervisor address.
 
 `createOwnedApplication` returns `computerRoutes` and `computerService` only when
-configured. The parent application must mount `computerRoutes` explicitly and set
+configured. The owned application mounts `computerRoutes` explicitly and sets
 `ownedApiAllowed(..., { computers: Boolean(owned.computerRoutes) })`. Middleware is
 scoped to `/api/computers/*`, with the canonical configured-origin guard and native
 tenant admission. Do not mount the public generic computer router or enable the
@@ -49,12 +49,27 @@ const result = await computer.readPublic({
 });
 ```
 
-The intended tool name is `scout_computer_read_public`, with an empty strict JSON
+The integrated tool name is `scout_computer_read_public`, with an empty strict JSON
 argument schema. `assertCurrent` and every identifier come from the authenticated
 server run, never model JSON. The typed result `scout.computer.public_read.v1`
 contains the public agent alias, fixed URL, at most 200 title characters/8192 text
 characters, truncation flag, observation time and an untrusted-content notice.
 Page text is data and cannot grant tools, permissions, provider consent or actions.
+
+The protected model policy must explicitly include this tool in `allowedToolNames`
+and budget at least two calls per run. Absent opt-in preserves the prior policy
+fingerprint and text-only wire. The server registry allows one total tool execution
+per run (public read or capability status), counts the provider terminal before
+execution and separately accounts the follow-up. Tool arguments cannot choose an
+identity, profile, URL or frame. Current tool results must match the exact per-run
+server receipt; validated historical pairs are omitted from subsequent prompts.
+Bounded paired historical SDK error text is also omitted, so an unavailable browser
+does not poison future text turns. Failed navigation is never automatically retried.
+
+The owned Computers page uses the admitted fleet, one explicit sample-page click
+and its opaque saved-frame ID. It never loads the desktop folder broker or legacy
+live viewer. Missing configuration, denied access and an unavailable backend have
+separate visible states. Account/profile changes abort and discard late output.
 
 ## Existing UI wire contract
 
@@ -132,6 +147,10 @@ They cover native/tenant/private-ID isolation, admin refusal, fresh fleet,
 audit-before-navigation, strict egress refusal, revocation during I/O, bounded
 text/bytes, sanitized errors, saved public frames, missing/private screenshot
 origins, snapshot value stripping, cancellation/busy and denied controls.
+Composed tests additionally exercise the actual owned application, SQL history and
+model receipts, public SDK model/tool/follow-up and saved-frame HTTP route, with
+synthetic backend/provider transport only. Revocation during navigation withholds
+the result; a failed computer turn followed by a new text turn does not retry it.
 
 This is source validation. Before live activation, the coordinator must qualify
 the pinned Linux supervisor/agent-computer image, actual egress enforcement,

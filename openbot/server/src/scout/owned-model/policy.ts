@@ -73,7 +73,12 @@ const member = z
     agentIds: z.array(identifier).min(1).max(50),
     allowConversationContext: z.literal(true),
     allowPersonalInstructions: z.boolean(),
-    allowedToolNames: z.tuple([z.literal("scout_capabilities")]).optional(),
+    allowedToolNames: z
+      .array(z.enum(["scout_capabilities", "scout_computer_read_public"]))
+      .min(1)
+      .max(2)
+      .refine((names) => new Set(names).size === names.length)
+      .optional(),
     route,
     limits: z.strictObject({
       maxInputBytes: z.number().int().min(1024).max(262144),

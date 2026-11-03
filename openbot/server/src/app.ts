@@ -444,6 +444,7 @@ export function createApp(
       requireTenant: MiddlewareHandler<{ Variables: AppVariables }>;
       delegatedDraftsEnabled?: boolean;
       speechRoutes?: Hono<{ Variables: AppVariables }>;
+      computerRoutes?: Hono<{ Variables: AppVariables }>;
       scope?: TenantScope;
       requirePlatformAdmin?: (request: Request) => Promise<void>;
     };
@@ -515,6 +516,7 @@ export function createApp(
           : ownedApiAllowed(path, context.req.method, {
               delegatedDrafts: coworker?.scoutOwned?.delegatedDraftsEnabled,
               speech: Boolean(coworker?.scoutOwned?.speechRoutes),
+              computers: Boolean(coworker?.scoutOwned?.computerRoutes),
             }))
       )
         return context.json(
@@ -754,6 +756,8 @@ export function createApp(
     app.use("/api/*", coworker.scoutOwned.requireTenant);
     if (coworker.scoutOwned.speechRoutes)
       app.route("/", coworker.scoutOwned.speechRoutes);
+    if (coworker.scoutOwned.computerRoutes)
+      app.route("/", coworker.scoutOwned.computerRoutes);
     // Auxiliary model routes need their own owned context/usage port before activation.
     app.all("/api/audio/*", (context) =>
       context.json({ code: "MODEL_ROUTE_UNAVAILABLE" }, 503),

@@ -2,10 +2,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import type { PlanLanguageModel } from "../../agents/plan-model";
 import { HistoryError, historyDigest } from "../history/protocol";
 import { ScoutError } from "../types";
-import {
-  CAPABILITY_TOOL_NAME,
-  type OwnedCapabilityTool,
-} from "./capability-tool";
+import type { OwnedCapabilityTool } from "./capability-tool";
 import {
   type ModelGrant,
   ModelPolicyError,
@@ -59,7 +56,7 @@ function messagesFor(
     : messages;
 }
 
-/** Protected model port. The optional server status tool cannot retrieve business data or execute work. */
+/** Protected model port. Only explicitly admitted server tools have a wire schema. */
 export class OwnedTextModel implements PlanLanguageModel {
   readonly specificationVersion = "v3" as const;
   readonly provider = "scout-owned";
@@ -152,10 +149,10 @@ export class OwnedTextModel implements PlanLanguageModel {
       throw new ModelPolicyError("MODEL_ACCESS_DENIED");
     const paid =
       grant.route.provider === "openrouter" && !!grant.route.paidProfile;
-    const toolsEnabled = grant.allowedToolNames?.[0] === CAPABILITY_TOOL_NAME;
+    const toolsEnabled = Boolean(grant.allowedToolNames?.length);
     if (toolsEnabled !== Boolean(this.capabilityTool))
       throw new ModelPolicyError("MODEL_ACCESS_DENIED");
-    // Browser tools remain discarded. Only a separately authorized server status tool has a wire schema.
+    // Client-supplied tools remain discarded; the server owns every admitted wire schema.
     const body = {
       model: grant.route.model,
       messages: messagesFor(options, this.trustedContext, this.capabilityTool),
@@ -371,7 +368,7 @@ export class OwnedTextModel implements PlanLanguageModel {
                       if (typeof tool.function.name !== "string")
                         throw new ModelPolicyError("MODEL_ACCESS_DENIED");
                       rawTool.name += tool.function.name;
-                      if (!CAPABILITY_TOOL_NAME.startsWith(rawTool.name))
+                      if (!this.capabilityTool?.matchesPrefix(rawTool.name))
                         throw new ModelPolicyError("MODEL_ACCESS_DENIED");
                     }
                     if (tool.function.arguments !== undefined) {
@@ -386,7 +383,7 @@ export class OwnedTextModel implements PlanLanguageModel {
                     if (
                       !this.capabilityTool ||
                       !rawTool ||
-                      rawTool.name !== CAPABILITY_TOOL_NAME ||
+                      !this.capabilityTool.allows(rawTool.name) ||
                       !/^[a-zA-Z0-9_-]{1,200}$/.test(rawTool.id)
                     )
                       throw new ModelPolicyError("MODEL_ACCESS_DENIED");
@@ -501,7 +498,8 @@ export class OwnedTextModel implements PlanLanguageModel {
         tools: toolsEnabled
           ? options.tools?.filter(
               (tool) =>
-                tool.type === "function" && tool.name === CAPABILITY_TOOL_NAME,
+                tool.type === "function" &&
+                this.capabilityTool?.allows(tool.name),
             )
           : [],
         providerOptions: {},
@@ -538,7 +536,8 @@ export class OwnedTextModel implements PlanLanguageModel {
                       pendingTool ||
                       !rawTool ||
                       part.toolCallId !== rawTool.id ||
-                      part.toolName !== CAPABILITY_TOOL_NAME ||
+                      part.toolName !== rawTool.name ||
+                      !capabilityTool.allows(part.toolName) ||
                       part.input !== rawTool.input ||
                       part.providerExecuted ||
                       part.dynamic

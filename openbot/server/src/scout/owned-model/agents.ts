@@ -13,6 +13,7 @@ import type { HistoryStore } from "../history/store";
 import type { createOwnedAuthority } from "../owned/authority";
 import type { OwnedCatalog } from "../owned/catalog";
 import type { TenantScope } from "../owned/scope";
+import type { OwnedComputerService } from "../owned-computer/service";
 import { OwnedCapabilityTool } from "./capability-tool";
 import type { ContextHistory } from "./context-history";
 import { OwnedTextModel } from "./model";
@@ -67,6 +68,7 @@ export function createOwnedModelAgents(deps: {
   recordContext?: ProjectTaskContextPort;
   contextHistory: ContextHistory;
   catalog?: OwnedCatalog;
+  computer?: OwnedComputerService;
 }) {
   const load = createRuntimeAgentLoader(
     deps.database,
@@ -202,6 +204,7 @@ export function createOwnedModelAgents(deps: {
                 return grant;
               };
               const grant = await authorize();
+              const computerService = deps.computer;
               const capabilityTool =
                 grant.allowedToolNames && deps.catalog
                   ? new OwnedCapabilityTool(
@@ -209,6 +212,19 @@ export function createOwnedModelAgents(deps: {
                       grant,
                       authorize,
                       signal,
+                      computerService
+                        ? async (context) => {
+                            const computer = await computerService.forRequest(
+                              request,
+                              registered.id,
+                            );
+                            return computer.readPublic({
+                              ...context,
+                              threadId: input.threadId,
+                              runId: input.runId,
+                            });
+                          }
+                        : undefined,
                     )
                   : undefined;
               const model = new OwnedTextModel(
@@ -245,7 +261,7 @@ export function createOwnedModelAgents(deps: {
                         (userId: string) => async (botId: string) => {
                           if (userId !== actor.id || botId !== registered.id)
                             throw new ModelPolicyError("MODEL_ACCESS_DENIED");
-                          return [capabilityTool.grantedTool()];
+                          return capabilityTool.grantedTools();
                         },
                     }
                   : {}),
