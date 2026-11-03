@@ -348,6 +348,7 @@ test("continuous Stop during captured-target approval recovery prevents model di
     "AudioContext",
     class extends EventTarget {
       state = "suspended";
+      sampleRate = 48_000;
       destination = {};
       async resume() {
         resumed++;

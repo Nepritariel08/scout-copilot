@@ -70,7 +70,11 @@ let originalFetch: typeof fetch;
 let history: (threadId: string) => Promise<Response>;
 let historyReads: string[];
 let historySignals: (AbortSignal | undefined)[];
-type CapabilityFixture = { mode?: "owned" | "intelligence"; voice?: boolean };
+type CapabilityFixture = {
+  mode?: "owned" | "intelligence";
+  voice?: boolean;
+  generativeUi?: boolean;
+};
 let deployment: CapabilityFixture | null;
 let voiceHistoryReads = 0;
 let voiceHistoryFails = false;
@@ -353,7 +357,15 @@ test("A2UI activity actions run the actual channel agent and thread with edited 
       ],
     },
   } satisfies Message;
-  const view = mounting(async () => stored([activity]), [activity], null, true);
+  const view = mounting(
+    async () => stored([activity]),
+    [activity],
+    null,
+    true,
+    {
+      capabilities: { mode: "intelligence", voice: true, generativeUi: true },
+    },
+  );
   const user = userEvent.setup({ document: view.container.ownerDocument });
   const destination = await view.findByRole("textbox", { name: "Destination" });
   await user.clear(destination);
