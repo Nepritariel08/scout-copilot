@@ -1371,20 +1371,27 @@ export function ChannelChat({
         target.agentId,
         odooTaskId ?? null,
         () =>
-          withVoiceContext(copilotkit, target.agentId, voiceHistory, async () => {
-            // Approval recovery can await after the initial scope check. Stop
-            // must still prevent the first model dispatch when it settles.
-            if (
-              onTarget &&
-              (!alive.current || currentScope.current !== scopeKey || skipIf?.())
-            ) {
-              stoppedBeforeDispatch = true;
-              const kept = withoutMessages(target.messages, added);
-              if (kept !== target.messages) target.setMessages([...kept]);
-              return;
-            }
-            await copilotkit.runAgent({ agent: target });
-          }),
+          withVoiceContext(
+            copilotkit,
+            target.agentId,
+            voiceHistory,
+            async () => {
+              // Approval recovery can await after the initial scope check. Stop
+              // must still prevent the first model dispatch when it settles.
+              if (
+                onTarget &&
+                (!alive.current ||
+                  currentScope.current !== scopeKey ||
+                  skipIf?.())
+              ) {
+                stoppedBeforeDispatch = true;
+                const kept = withoutMessages(target.messages, added);
+                if (kept !== target.messages) target.setMessages([...kept]);
+                return;
+              }
+              await copilotkit.runAgent({ agent: target });
+            },
+          ),
       );
     } finally {
       startWatch.unsubscribe();
