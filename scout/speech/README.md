@@ -10,47 +10,32 @@ Send -> existing approved chat -> Play latest saved answer. Text is saved only
 when the user sends the normal message. Audio is not archived. Transcription and
 speech synthesis have no chat inference or hidden summary call.
 
-## Root integration seams (separate assigned file owners)
+## Owned application configuration
 
-No shared application, owned admission list or channel-chat file is changed here.
-After independent review, the coordinator can compose:
+Speech stays off unless the operator sets `SCOUT_SPEECH_CONFIG_FILE` to an
+absolute protected file after qualifying the separate CPU service. Its schema is:
 
-```ts
-// An absent backend keeps speech unavailable. Populate this only after the exact
-// CPU runtime, root-controlled model inventory and protected token are qualified.
-const backend = createOwnedSpeechBackend({
-  baseUrl: "http://127.0.0.1:18083/v1",
-  token: protectedSpeechToken,
-});
-const speech = createOwnedSpeechRoutes({
-  authority,
-  history: request => engine.bind(authority.forRequest(request)).history,
-  backend,
-});
-// Mount once, before the existing owned /api/audio/* refusal.
-app.route("/", speech);
+```json
+{
+  "version": 1,
+  "baseUrl": "http://127.0.0.1:18083/v1",
+  "tokenFile": "/etc/scout-pilot/speech-token"
+}
 ```
 
-Allow only POST `/api/audio/transcriptions` and POST `/api/audio/speech` in the
-owned API admission list. Advertise `transcription: true` and a separate owned
-playback capability only when this qualified composition exists. Keep realtime
-`voice: false` and the legacy voice archive disabled. Do not remove either route
-family's remaining hard refusal or enable the default auxiliary model paths.
+The owned composition mounts only POST `/api/audio/transcriptions` and POST
+`/api/audio/speech`; other auxiliary routes retain their refusal. The browser
+receives `transcription` and `speechPlayback` availability, while realtime
+`voice` stays false and the unsupported voice archive stays disabled. Speech
+middleware is scoped to the audio namespace and uses the application's configured
+origins, including HTTPS behind the loopback reverse proxy.
 
-`OwnedVoiceControls` is a separate optional UI component. Mount it with a key
-containing the verified native user and current channel; pass the qualified
-capability, `onTranscript` into the ordinary editable composer, and the latest
-saved assistant `{threadId, messageId}` after the normal run has settled. Do not
-pass unsaved streaming messages. Disable it during a chat run/identity transition.
-Wire `onBusyChange` to block ordinary Send during requesting/recording/transcribing;
-notifications follow the session synchronously and reset false on cleanup/cancel.
-It reuses the existing recorder and DictationSession but stops at 30 seconds;
-the old composer's 120-second limit must not silently become the owned limit.
-The server independently enforces decoded duration. An ineligible/old message
-fails closed rather than becoming a client text-to-speech proxy.
-Suppress the old composer microphone when mounting this owned strip, or separately
-adapt its duration limit under its assigned owner; do not expose two inconsistent
-recording controls merely by turning the global transcription capability on.
+The composer mounts one 30-second recording/playback control, keyed to the native
+user and channel, and suppresses the legacy microphone. Stop appends a transcript
+to the editable draft; only the user's explicit Send invokes the normal chat
+route. Send is blocked during recording/transcription, and navigation, identity
+changes and cancellation discard late transcripts. Playback sends saved message
+IDs only; the server determines eligibility rather than accepting client text.
 
 TTS reads current authorized saved history and original completion events before
 and after synthesis. It only speaks the latest assistant text, no tool calls,
@@ -66,8 +51,7 @@ history authority. Routine source proof renewal must preserve that contract.
 one separately spawned native process at a time. Only the two fixed speech paths
 exist. No cloud fallback, generic proxy, UI, model download/upload API, diarization,
 Piper, realtime model or GPU extra is included. Install the five direct CPU pins
-from `requirements.txt` in an isolated Python 3.12.14 environment **only in the
-separately assigned runtime qualification lane**. These direct pins were checked
+from `requirements.txt` in an isolated Python 3.12.14 environment. These direct pins were checked
 against PyPI; they are not a complete hashed transitive/wheel lock or a measured
 runtime qualification. Produce that lock/SBOM for the exact Linux/Windows target
 before activation, including codec/eSpeak dependency licenses.

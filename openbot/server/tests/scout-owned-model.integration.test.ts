@@ -55,6 +55,9 @@ let active = true;
 let aliceMembershipRevision = 1;
 let behavior = "normal";
 let providerCalls = 0;
+let speechCalls = 0;
+let spokenText = "";
+let afterSynthesize: (() => void) | undefined;
 let contextGrantEnabled = false;
 let contextReleaseGrantEnabled = false;
 let contextGrantReads = 0;
@@ -263,12 +266,18 @@ function model(
 ) {
   return new OwnedTextModel(scope, grant, authorize, store, signal, transport);
 }
-function request(path: string, body?: unknown, userId = alice) {
+function request(
+  path: string,
+  body?: unknown,
+  userId = alice,
+  extra: Record<string, string> = {},
+) {
   return app.app.request(path, {
     method: body === undefined ? "GET" : "POST",
     headers: {
       "content-type": "application/json",
       "x-synthetic-session": userId,
+      ...extra,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -422,6 +431,7 @@ beforeAll(async () => {
       SCOUT_MODEL_POLICY_FILE: policyFile,
       TENANT_PACKAGE_DIR: directory,
       OPENBOT_HOST: "127.0.0.1",
+      OPENBOT_PUBLIC_URL: "https://scout.fixture.example",
       OPENBOT_GENERATIVE_UI: "false",
     }),
     database,
@@ -440,6 +450,17 @@ beforeAll(async () => {
       membership: async (actor) =>
         parseScoutMembership(bindings(), actor, prefix),
       recordContext,
+      speechBackend: {
+        async transcribe() {
+          return "Synthetic reviewed transcript";
+        },
+        async synthesize(text) {
+          speechCalls++;
+          spokenText = text;
+          afterSynthesize?.();
+          return new Uint8Array([82, 73, 70, 70, 1, 2, 3]);
+        },
+      },
     },
   );
 });
@@ -448,6 +469,9 @@ beforeEach(async () => {
   aliceMembershipRevision = 1;
   behavior = "normal";
   providerCalls = 0;
+  speechCalls = 0;
+  spokenText = "";
+  afterSynthesize = undefined;
   captured = undefined;
   contextGrantEnabled = false;
   contextReleaseGrantEnabled = false;
@@ -465,6 +489,145 @@ beforeEach(async () => {
   await database.delete(calls).where(eq(calls.deploymentId, prefix));
   await writeFile(policyFile, JSON.stringify(configuration()));
 });
+async function savedSpeechMessage(selected = false) {
+  if (selected) {
+    contextGrantEnabled = true;
+    contextReleaseGrantEnabled = true;
+    contextRecordRows = [
+      {
+        id: 700,
+        name: "Synthetic selected task",
+        stage_id: [9, "Synthetic stage"],
+        date_deadline: "2026-12-15",
+        company_id: [1, "Synthetic company"],
+      },
+    ];
+  }
+  const minted = await request("/api/threads/mint", { agentId });
+  expect(minted.status).toBe(200);
+  const { threadId } = await minted.json();
+  const ran = await request(`/api/copilotkit/agent/${agentId}/run`, {
+    ...input(threadId),
+    ...(selected
+      ? {
+          context: [
+            { description: PROJECT_TASK_SELECTION_MARKER, value: "700" },
+          ],
+        }
+      : {}),
+  });
+  expect(await ran.text()).toContain("OWNED_MODEL_SYNTHETIC_OK");
+  const stored = await request(
+    `/api/copilotkit/threads/${threadId}/messages?agentId=${agentId}`,
+  );
+  expect(stored.status).toBe(200);
+  const body = await stored.json();
+  const message = body.messages.findLast(
+    (value: { role: string }) => value.role === "assistant",
+  );
+  expect(message?.id).toBeTruthy();
+  return { threadId, messageId: message.id };
+}
+
+const speechHeaders = {
+  "x-openbot-dictation": "1",
+  origin: "https://scout.fixture.example",
+};
+
+test("composed owned speech speaks only the owner's actual saved SDK/SQL answer behind HTTPS", async () => {
+  expect(await (await request("/api/capabilities")).json()).toMatchObject({
+    mode: "owned",
+    transcription: true,
+    speechPlayback: true,
+    voice: false,
+  });
+  const message = await savedSpeechMessage();
+  expect(
+    (await request("/api/audio/speech", message, bob, speechHeaders)).status,
+  ).toBe(403);
+  expect(
+    (
+      await request("/api/audio/speech", message, alice, {
+        ...speechHeaders,
+        origin: "https://foreign.invalid",
+      })
+    ).status,
+  ).toBe(403);
+  expect(speechCalls).toBe(0);
+  const response = await request(
+    "/api/audio/speech",
+    message,
+    alice,
+    speechHeaders,
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("content-type")).toBe("audio/wav");
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(spokenText).toBe("OWNED_MODEL_SYNTHETIC_OK");
+  expect(speechCalls).toBe(1);
+  expect(providerCalls).toBe(1);
+});
+
+test("native membership withdrawal during composed synthesis releases no audio", async () => {
+  const message = await savedSpeechMessage();
+  afterSynthesize = () => {
+    aliceMembershipRevision++;
+  };
+  const response = await request(
+    "/api/audio/speech",
+    message,
+    alice,
+    speechHeaders,
+  );
+  expect(response.status).toBe(403);
+  expect(response.headers.get("content-type")).not.toBe("audio/wav");
+  expect(speechCalls).toBe(1);
+  expect(providerCalls).toBe(1);
+});
+
+test.each(["before", "during"] as const)(
+  "Odoo context withdrawal %s composed speech releases no audio",
+  async (when) => {
+    const message = await savedSpeechMessage(true);
+    if (when === "before") contextGrantEnabled = false;
+    else
+      afterSynthesize = () => {
+        contextGrantEnabled = false;
+      };
+    const response = await request(
+      "/api/audio/speech",
+      message,
+      alice,
+      speechHeaders,
+    );
+    expect(response.status).toBe(403);
+    expect(response.headers.get("content-type")).not.toBe("audio/wav");
+    expect(speechCalls).toBe(when === "before" ? 0 : 1);
+    expect(providerCalls).toBe(1);
+  },
+);
+
+test("composed transcription returns an editable transcript without starting a model turn", async () => {
+  const form = new FormData();
+  form.append(
+    "file",
+    new File(["synthetic-codec-fixture"], "recording.wav", {
+      type: "audio/wav",
+    }),
+  );
+  const response = await app.app.request("/api/audio/transcriptions", {
+    method: "POST",
+    headers: { "x-synthetic-session": alice, ...speechHeaders },
+    body: form,
+  });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({
+    text: "Synthetic reviewed transcript",
+  });
+  expect(providerCalls).toBe(0);
+  expect(speechCalls).toBe(0);
+});
+
 test("capability catalog is authenticated, native-scoped and does not imply a connected work app", async () => {
   const response = await request("/api/scout/capabilities");
   expect(response.status).toBe(200);
@@ -605,20 +768,18 @@ afterAll(async () => {
 });
 
 describe("owned model: real SQL and SDK chat-completions", () => {
-  test("unadapted audio and voice endpoints cannot bypass owned model admission", async () => {
-    for (const path of [
-      "/api/audio/transcriptions",
-      "/api/voice/calls",
-      "/api/voice/sessions",
-    ]) {
+  test("unadapted voice routes and unmarked speech requests cannot bypass owned admission", async () => {
+    for (const path of ["/api/voice/calls", "/api/voice/sessions"]) {
       const response = await request(path, {});
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({
         code: "MODEL_ROUTE_UNAVAILABLE",
       });
     }
+    expect((await request("/api/audio/transcriptions", {})).status).toBe(403);
     const capabilities = await (await request("/api/capabilities")).json();
-    expect(capabilities.transcription).toBe(false);
+    expect(capabilities.transcription).toBe(true);
+    expect(capabilities.speechPlayback).toBe(true);
     expect(capabilities.voice).toBe(false);
     expect(providerCalls).toBe(0);
     expect(await rows()).toHaveLength(0);

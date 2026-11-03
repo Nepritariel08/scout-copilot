@@ -1454,6 +1454,8 @@ export type OwnedDeploymentConfig =
     /** Protected native tenant admission, independent of every source/model/queue grant. */
     scoutMembershipsFile: string;
     scoutModelPolicyFile?: string;
+    /** Optional protected loopback speech service configuration, independently qualified. */
+    scoutSpeechConfigFile?: string;
     /** Optional protected fixed-source settings for the read-only Odoo context adapter. */
     scoutOdooContextSourceFile?: string;
     /** Optional independent native-user to fixed Odoo source identity policy. */
@@ -1507,6 +1509,14 @@ export function loadOwnedConfig(
   if (scoutModelPolicyFile && !isAbsolute(scoutModelPolicyFile))
     throw new Error(
       "SCOUT_MODEL_POLICY_FILE must be an absolute protected file path.",
+    );
+  const scoutSpeechConfigFile = optional(
+    environment,
+    "SCOUT_SPEECH_CONFIG_FILE",
+  );
+  if (scoutSpeechConfigFile && !isAbsolute(scoutSpeechConfigFile))
+    throw new Error(
+      "SCOUT_SPEECH_CONFIG_FILE must be an absolute protected file path.",
     );
   const scoutOdooContextSourceFile = optional(
     environment,
@@ -1566,6 +1576,7 @@ export function loadOwnedConfig(
     selfHostBanner: false,
     scoutMembershipsFile,
     ...(scoutModelPolicyFile ? { scoutModelPolicyFile } : {}),
+    ...(scoutSpeechConfigFile ? { scoutSpeechConfigFile } : {}),
     ...(scoutOdooContextSourceFile ? { scoutOdooContextSourceFile } : {}),
     ...(scoutOdooBindingsFile ? { scoutOdooBindingsFile } : {}),
     scoutPlatformOwnerIds,

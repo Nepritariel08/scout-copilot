@@ -20,6 +20,7 @@ import {
   type QueuedMessage,
   reduceQueue,
 } from "@/components/channels/composer";
+import type { ComposerProps } from "@/components/channels/composer/composer";
 import { toDraft } from "@/components/channels/composer/draft";
 import {
   type ConversationSend,
@@ -59,6 +60,7 @@ export function ConversationView({
   prepareDraft,
   onStop,
   voiceCall,
+  ownedSpeech,
   inShell = false,
   approvals,
   placeholder,
@@ -129,6 +131,7 @@ export function ConversationView({
   /** Stop the Bot mid-answer; forwarded to turn the send button into a stop button. */
   onStop?: () => void;
   voiceCall?: { active: boolean; supported: boolean; onStart(): void };
+  ownedSpeech?: ComposerProps["ownedSpeech"];
   /**
    * Drawn in the app shell's Chat tab: the transcript runs under the floating header and the
    * composer sits on the tab bar, behind a fade, as the launch film lays them out.
@@ -667,6 +670,7 @@ export function ConversationView({
           compact
           glass={inShell}
           voiceCall={voiceCall}
+          ownedSpeech={ownedSpeech}
           disabled={disabled}
           droppedAttachments={droppedAttachments}
           onQueue={

@@ -17,7 +17,7 @@ export const ownedCatalogSchema = z.strictObject({
     github: z.literal("not_connected"),
     fireflies: z.literal("not_connected"),
   }),
-  voice: z.literal("unavailable"),
+  voice: z.enum(["unavailable", "push_to_talk"]),
   modelTools: z.literal("protected_policy_opt_in"),
 });
 export type OwnedCatalog = z.infer<typeof ownedCatalogSchema>;
@@ -26,6 +26,7 @@ export type OwnedCatalog = z.infer<typeof ownedCatalogSchema>;
 export function ownedCatalog(options: {
   odooSelectedTask: boolean;
   delegatedDraft: boolean;
+  speech?: boolean;
 }): OwnedCatalog {
   return {
     version: 1,
@@ -47,7 +48,7 @@ export function ownedCatalog(options: {
       github: "not_connected",
       fireflies: "not_connected",
     },
-    voice: "unavailable",
+    voice: options.speech === true ? "push_to_talk" : "unavailable",
     modelTools: "protected_policy_opt_in",
   };
 }

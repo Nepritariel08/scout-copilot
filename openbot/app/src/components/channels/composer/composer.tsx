@@ -3,6 +3,7 @@ import {
   type AttachmentsConfig,
   useAttachments,
 } from "@copilotkit/react-core/v2";
+import type { OwnedSpeechMessage } from "@openbot/shared/owned-voice";
 import {
   IconArrowUp,
   IconPlayerStopFilled,
@@ -29,6 +30,7 @@ import {
   useState,
 } from "react";
 import { attachmentModality } from "@/components/channels/chat-messages";
+import { OwnedVoiceControls } from "@/components/channels/owned-voice-controls";
 import { DuetIcon } from "@/components/duet/icons";
 import { IconWaveform } from "@/components/icons/waveform";
 import {
@@ -142,6 +144,11 @@ export type ComposerProps = {
    */
   glass?: boolean;
   voiceCall?: { active: boolean; supported: boolean; onStart(): void };
+  ownedSpeech?: {
+    scopeKey: string;
+    disabled: boolean;
+    message?: OwnedSpeechMessage;
+  };
   /** Agents that `@` can address. Empty means the mention menu reports an empty channel. */
   agents?: readonly AgentOption[];
   commands?: readonly CommandOption[];
@@ -334,6 +341,7 @@ export function Composer({
   compact = false,
   glass = false,
   voiceCall,
+  ownedSpeech,
   agents = [],
   commands = PLACEHOLDER_COMMANDS,
   onSubmit,
@@ -382,6 +390,12 @@ export function Composer({
   const [voiceSheet, setVoiceSheet] = useState(false);
   /** "Type instead" handed the words over to be edited, so the caret goes with them. */
   const editAfterSheet = useRef(false);
+  const ownedSpeechBusy = useRef(false);
+  const [speechRecording, setSpeechRecording] = useState(false);
+  const speechBusyChanged = useCallback((busy: boolean) => {
+    ownedSpeechBusy.current = busy;
+    setSpeechRecording(busy);
+  }, []);
   const dictation = useDictation(
     (transcript, intent) => {
       setValue((current) => appendDictation(current, transcript));
@@ -390,6 +404,7 @@ export function Composer({
       if (voiceSheet && intent === "draft") editAfterSheet.current = true;
     },
     disabled || voiceCall?.active === true,
+    ownedSpeech === undefined,
   );
   if (voiceSheet && !dictation.busy) setVoiceSheet(false);
   /** `autoFocus` has been honoured once, and is not owed again for the life of this composer. */
@@ -1141,6 +1156,7 @@ export function Composer({
         !canSendDraft(submitted) ||
         overCap(submitted) ||
         disabled ||
+        ownedSpeechBusy.current ||
         dictation.session.getSnapshot().phase !== "idle"
       ) {
         return;
@@ -1354,7 +1370,11 @@ export function Composer({
   /** Something to send, mid-turn, with a queue to put it in. */
   const parking = canQueue && sendable;
   const canSend =
-    !disabled && !dictation.busy && sendable && (!isBusy || canQueue);
+    !disabled &&
+    !dictation.busy &&
+    !speechRecording &&
+    sendable &&
+    (!isBusy || canQueue);
   const canSendRecording =
     !disabled &&
     !tooManyStaged &&
@@ -1541,6 +1561,21 @@ export function Composer({
     />
   ) : null;
 
+  const ownedControls = ownedSpeech ? (
+    <OwnedVoiceControls
+      key={ownedSpeech.scopeKey}
+      enabled
+      disabled={disabled || isBusy || ownedSpeech.disabled}
+      message={ownedSpeech.message}
+      onBusyChange={speechBusyChanged}
+      onTranscript={(transcript) => {
+        if (disabled || ownedSpeech.disabled) return;
+        setValue((current) => appendDictation(current, transcript));
+        wantsFocus.current = true;
+      }}
+    />
+  ) : null;
+
   /**
    * WHY SEND IS SHUT WITH A FULL STRIP IN FRONT OF IT — drawn wherever the refusals are, because it
    * is the same kind of sentence and answers the same question.
@@ -1580,6 +1615,7 @@ export function Composer({
          * a file dropped on the composer.
          */}
         <div className="flex flex-col" ref={containerRef} {...dropZone}>
+          {ownedControls}
           <RejectedFiles onDismiss={dismissRejections} rejected={rejected} />
           {tooManyStagedNotice}
           <form
@@ -1709,6 +1745,7 @@ export function Composer({
     >
       <RejectedFiles onDismiss={dismissRejections} rejected={rejected} />
       {tooManyStagedNotice}
+      {ownedControls}
       <form
         aria-busy={isBusy}
         className="overflow-hidden rounded-2xl border border-border bg-card"

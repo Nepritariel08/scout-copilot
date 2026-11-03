@@ -29,8 +29,11 @@ import { HandoffResumeNotice } from "@/components/computer/handoff-resume-notice
 import { Topic } from "@/components/duet/kit";
 import { ScoutDrafts } from "@/components/scout/drafts";
 import { ScoutOdooContext } from "@/components/scout/odoo-context";
+import { useNewConversation } from "@/components/shell/new-conversation";
+import { Button } from "@/components/ui/button";
 import { agentListQueryOptions } from "@/lib/agents/queries";
 import { type ApprovalInboxData, approvalInboxOptions } from "@/lib/approvals";
+import { currentUserQueryOptions } from "@/lib/auth/queries";
 import { attachmentUrl } from "@/lib/channels/attachments";
 import { readFirstDay } from "@/lib/channels/first-day";
 import {
@@ -562,6 +565,15 @@ export function ChannelChat({
   const agentRef = useRef(agent);
   agentRef.current = agent;
   const capabilities = useQuery(deploymentCapabilitiesQueryOptions());
+  const newConversation = useNewConversation();
+  const ownedSpeechAvailable =
+    capabilities.data?.mode === "owned" &&
+    capabilities.data.transcription === true &&
+    capabilities.data.speechPlayback === true;
+  const speechOwner = useQuery({
+    ...currentUserQueryOptions(),
+    enabled: ownedSpeechAvailable,
+  });
   // Licensed deployments retain their archive even when new calls are disabled.
   // Unknown/old capabilities never imply an owned archive endpoint exists.
   const voiceHistoryAvailable =
@@ -1756,6 +1768,16 @@ export function ChannelChat({
     ...messages.map((message) => message.id),
     ...(task?.queued ?? []).map((reply) => reply.messageId),
   ]);
+  const latestAssistant = messages.findLast(
+    (message) => message.role === "assistant",
+  );
+  const speechMessage =
+    latestAssistant &&
+    typeof latestAssistant.content === "string" &&
+    latestAssistant.content.trim() &&
+    !latestAssistant.toolCalls?.length
+      ? { threadId: channel.threadId, messageId: latestAssistant.id }
+      : undefined;
 
   /*
    * The failed turn's sentence from before a reload, while nothing has happened since: read only
@@ -1821,6 +1843,23 @@ export function ChannelChat({
                   }
                 : undefined
             }
+            ownedSpeech={
+              ownedSpeechAvailable
+                ? {
+                    scopeKey: `${speechOwner.data?.id ?? "pending"}:${channel.id}:${channel.threadId}`,
+                    disabled:
+                      !speechOwner.data?.id ||
+                      restoring ||
+                      !channel.active ||
+                      historyAvailability !== "ready" ||
+                      agent.isRunning ||
+                      runsInFlight > 0 ||
+                      turnsInFlight > 0 ||
+                      following,
+                    message: speechMessage,
+                  }
+                : undefined
+            }
             agents={toAgentOptions(agentProfiles, channel.agentIds)}
             // Failed-task retries carry words only; ordinary durable replies retain composer features.
             channelId={task?.send && !task.durable ? undefined : channel.id}
@@ -1883,7 +1922,46 @@ export function ChannelChat({
                     {voiceContextNotice}
                   </p>
                 )}
-                {historyNotice ? (
+                {historyNotice &&
+                capabilities.data?.mode === "owned" &&
+                historyAvailability === "unavailable" ? (
+                  <div
+                    className="space-y-2 pb-2 text-muted-foreground text-sm"
+                    role="status"
+                  >
+                    <p>
+                      Earlier messages are unavailable under the current access
+                      or connection. Retry the read, or start a new
+                      conversation.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={
+                          agent.isRunning || turnsInFlight > 0 || following
+                        }
+                        onClick={() => pullRef.current()}
+                      >
+                        Retry history
+                      </Button>
+                      {newConversation ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={
+                            agent.isRunning || turnsInFlight > 0 || following
+                          }
+                          onClick={newConversation}
+                        >
+                          New conversation
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : historyNotice ? (
                   <p
                     className="pb-2 text-sm text-muted-foreground"
                     role="status"

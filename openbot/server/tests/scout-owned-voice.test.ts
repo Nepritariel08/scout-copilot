@@ -3,6 +3,7 @@ import { type BaseEvent, EventType } from "@ag-ui/client";
 import { OWNED_SPEECH } from "@openbot/shared/owned-voice";
 import { Hono } from "hono";
 import type { AppVariables } from "../src/auth/guards";
+import { createSameOriginGuard } from "../src/auth/same-origin";
 import { HistoryError } from "../src/scout/history/protocol";
 import { createOwnedSpeechBackend } from "../src/scout/owned-voice/backend";
 import { createOwnedSpeechRoutes } from "../src/scout/owned-voice/routes";
@@ -11,7 +12,7 @@ const saved = {
   threadId: "thread-synthetic",
   messageId: "assistant-synthetic",
 };
-function fixture() {
+function fixture(originGuard?: import("hono").MiddlewareHandler) {
   let revoked = false;
   let fingerprint = "synthetic-binding";
   let role: "assistant" | "user" = "assistant";
@@ -95,6 +96,7 @@ function fixture() {
     "/",
     createOwnedSpeechRoutes({
       authority,
+      originGuard,
       history: () => history,
       backend: {
         synthesize: async (text) => {
@@ -155,6 +157,18 @@ function fixture() {
 }
 
 describe("owned speech admission and saved-message playback", () => {
+  test("configured HTTPS origins work through a loopback reverse proxy while foreign origins still deny", async () => {
+    const f = fixture(
+      createSameOriginGuard({ publicUrl: "https://scout.fixture.example" }),
+    );
+    expect(
+      (await f.request(saved, { origin: "https://scout.fixture.example" }))
+        .status,
+    ).toBe(200);
+    expect(
+      (await f.request(saved, { origin: "https://foreign.invalid" })).status,
+    ).toBe(403);
+  });
   test("only exact latest completed saved assistant text is sent; no-store", async () => {
     const f = fixture();
     const response = await f.request();

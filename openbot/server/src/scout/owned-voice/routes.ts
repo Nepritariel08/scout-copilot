@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { AppVariables } from "../../auth/guards";
+import { createSameOriginGuard } from "../../auth/same-origin";
 import { HistoryError, historyDigest } from "../history/protocol";
 import type { BoundHistory } from "../history/service";
 import type { OwnedSpeechBackend } from "./backend";
@@ -118,17 +119,15 @@ export function createOwnedSpeechRoutes(deps: {
   authority: SpeechAuthority;
   history(request: Request): SpeechHistory;
   backend?: OwnedSpeechBackend;
+  originGuard?: MiddlewareHandler;
 }) {
   const app = new Hono<{ Variables: AppVariables }>();
   let active = false;
-  app.use("*", deps.authority.requireTenant);
-  app.use("*", async (context, next) => {
+  app.use("/api/audio/*", deps.originGuard ?? createSameOriginGuard({}));
+  app.use("/api/audio/*", deps.authority.requireTenant);
+  app.use("/api/audio/*", async (context, next) => {
     context.header("Cache-Control", "no-store");
-    const origin = context.req.header("origin");
-    if (
-      context.req.header("x-openbot-dictation") !== "1" ||
-      (origin && origin !== new URL(context.req.url).origin)
-    )
+    if (context.req.header("x-openbot-dictation") !== "1")
       return context.json({ code: "SPEECH_ACCESS_DENIED" }, 403);
     if (!deps.backend) return context.json({ code: "SPEECH_UNAVAILABLE" }, 503);
     if (active) return context.json({ code: "SPEECH_BUSY" }, 429);
