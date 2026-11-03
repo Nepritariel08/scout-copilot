@@ -10,6 +10,7 @@ import {
   type DictationIntent,
   DictationSession,
 } from "@/lib/dictation/session";
+import { dictationUiAvailable } from "@/lib/owned-presentation";
 import { queryClient } from "@/query-client";
 
 export function useDictation(
@@ -36,7 +37,7 @@ export function useDictation(
     session.getSnapshot,
     session.getSnapshot,
   );
-  const available = enabled && data?.transcription === true;
+  const available = enabled && dictationUiAvailable(data);
   useEffect(() => {
     if (disabled || !available) session.cancel();
     return () => session.cancel();

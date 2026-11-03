@@ -82,6 +82,7 @@ import { stoppedReason } from "@/lib/copilot/stopped-turn";
 import { readThreadMessages } from "@/lib/copilot/thread-messages";
 import { deploymentCapabilitiesQueryOptions } from "@/lib/deployment/queries";
 import { appConfig } from "@/lib/generated/application-config";
+import { ownedVoiceUiAvailable } from "@/lib/owned-presentation";
 import { useSkillCommands } from "@/lib/plugins/skill-commands";
 import { withOdooTaskSelection } from "@/lib/scout-odoo";
 import {
@@ -569,10 +570,7 @@ export function ChannelChat({
   agentRef.current = agent;
   const capabilities = useQuery(deploymentCapabilitiesQueryOptions());
   const newConversation = useNewConversation();
-  const ownedSpeechAvailable =
-    capabilities.data?.mode === "owned" &&
-    capabilities.data.transcription === true &&
-    capabilities.data.speechPlayback === true;
+  const ownedSpeechAvailable = ownedVoiceUiAvailable(capabilities.data);
   const speechOwner = useQuery({
     ...currentUserQueryOptions(),
     enabled: ownedSpeechAvailable,

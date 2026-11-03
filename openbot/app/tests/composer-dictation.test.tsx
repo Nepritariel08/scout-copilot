@@ -24,6 +24,45 @@ afterAll(async () => {
 });
 
 for (const compact of [false, true]) {
+  test(`owned ${compact ? "compact" : "default"} chat stays text-only while optional voice is deferred`, async () => {
+    queryClient.setQueryData(deploymentKeys.capabilities(), {
+      mode: "owned",
+      transcription: true,
+      speechPlayback: true,
+      voice: false,
+    });
+    const supported = spyOn(recording, "recordingSupported").mockReturnValue(
+      true,
+    );
+    const start = spyOn(recording, "startRecording");
+    const sent: string[] = [];
+    try {
+      const view = render(
+        <Composer
+          compact={compact}
+          glass
+          initialValue="Core chat still works"
+          onSubmit={(draft) => {
+            sent.push(draft.text);
+          }}
+        />,
+      );
+      expect(
+        view.queryByRole("button", {
+          name: /Speak a message|Dictate a message|Record message|Play latest answer/,
+        }),
+      ).toBeNull();
+      expect(view.queryByText(/Audio stays on our infrastructure/)).toBeNull();
+      fireEvent.submit(view.container.querySelector("form")!);
+      await waitFor(() => expect(sent).toEqual(["Core chat still works"]));
+      expect(start).not.toHaveBeenCalled();
+    } finally {
+      cleanup();
+      supported.mockRestore();
+      start.mockRestore();
+    }
+  });
+
   test(`owned ${compact ? "compact" : "default"} speech preserves the draft and waits for explicit Send`, async () => {
     queryClient.setQueryData(deploymentKeys.capabilities(), {
       mode: "owned",

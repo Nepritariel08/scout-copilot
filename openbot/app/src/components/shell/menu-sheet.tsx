@@ -1,4 +1,9 @@
-import { IconArchive, IconChevronRight, IconStack2 } from "@tabler/icons-react";
+import {
+  IconArchive,
+  IconChevronRight,
+  IconStack2,
+  IconX,
+} from "@tabler/icons-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, type LinkOptions, useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useId, useRef, useState } from "react";
@@ -110,8 +115,8 @@ const TALL_ROW =
  * disc in its colour, its name and its purpose; New channel; and Archived, folded. The pages that set
  * things up sit under Manage at the foot, closed by default, with Settings on its own under it.
  *
- * The channels take whatever height is left and scroll by themselves, so the rows above and below
- * stay put. New channel is the shell's to open (`onNewChannel`), so its sheet stands on its own
+ * The navigation scrolls as one region, so expanding Manage cannot squeeze channel rows out of
+ * view on a short phone screen. New channel is the shell's to open (`onNewChannel`), so its sheet stands on its own
  * rather than over this one. Admin only for admins; Sign out only where signing out means something.
  */
 export function MenuSheet({
@@ -127,6 +132,12 @@ export function MenuSheet({
   const navigate = useNavigate();
   const { data: user } = useQuery(currentUserQueryOptions());
   const { data: capabilities } = useQuery(deploymentCapabilitiesQueryOptions());
+  const owned = capabilities?.mode === "owned";
+  const managePages = owned
+    ? MANAGE_PAGES.filter(
+        (page) => page.to !== "/routines" && page.to !== "/settings/approvals",
+      )
+    : MANAGE_PAGES;
   const signOut = useMutation(signOutMutationOptions(queryClient));
   const manage = useRememberedGroup(MANAGE_STORAGE_KEY);
   const archived = useRememberedGroup(ARCHIVED_STORAGE_KEY);
@@ -165,11 +176,11 @@ export function MenuSheet({
        * Escape, and on choosing a row. The X it had was a 26px target.
        */}
       <SheetContent
-        className="duet-face w-[340px] gap-0 bg-duet-surface p-0 sm:max-w-[340px]"
+        className="duet-face gap-0 overflow-hidden bg-duet-surface p-0 data-[side=left]:h-dvh data-[side=left]:w-[min(340px,calc(100vw-24px))] data-[side=left]:sm:max-w-[340px]"
         showCloseButton={false}
         side="left"
       >
-        <SheetHeader className="px-5 pt-5 pb-3">
+        <SheetHeader className="shrink-0 px-5 pt-5 pr-16 pb-3">
           <SheetTitle className="type-display font-semibold text-duet-ink">
             {appConfig.brand.productName}
           </SheetTitle>
@@ -177,9 +188,20 @@ export function MenuSheet({
             {user?.name || user?.email}
           </SheetDescription>
         </SheetHeader>
+        {owned ? (
+          <button
+            aria-label="Close menu"
+            className="absolute top-4 right-3 grid size-11 place-items-center rounded-full text-duet-ink-2 hover:bg-duet-tile focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-duet-accent/40"
+            onClick={close}
+            type="button"
+          >
+            <IconX aria-hidden size={22} />
+          </button>
+        ) : null}
         <nav
           aria-label="Menu"
-          className="flex min-h-0 flex-1 flex-col px-3 pb-4"
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-[max(env(safe-area-inset-bottom),16px)]"
+          data-testid="drawer-navigation"
         >
           {/* Exact, as on the tab bar, so Everything is marked current on Chat alone. */}
           <Link
@@ -195,18 +217,18 @@ export function MenuSheet({
             >
               <IconStack2 size={24} stroke={1.9} />
             </span>
-            <RowText line={EVERYTHING_LINE} name="Everything" wrap />
+            <RowText
+              line={owned ? "Talk with Scout" : EVERYTHING_LINE}
+              name={owned ? "Chat" : "Everything"}
+              wrap
+            />
           </Link>
           {/*
-           * Only the channels scroll (parity-spec 1.1), and Archived's rows once it is open. New
-           * channel and Archived stay put right under the channels however many there are, so New
-           * channel is never pushed out of reach below a long list.
+           * Keep channel and management rows in the same scroll flow. Independent shrinking lists
+           * let an expanded management group consume the entire phone viewport.
            */}
-          <div className="mt-1 flex min-h-0 flex-1 flex-col">
-            <div
-              className="min-h-0 shrink overflow-y-auto overscroll-contain"
-              data-testid="drawer-channels"
-            >
+          <div className="mt-1">
+            <div data-testid="drawer-channels">
               {bot === undefined || list.isPending ? null : list.error ? (
                 <p className="type-sub px-3 py-2 text-duet-red" role="alert">
                   Couldn't load your channels. Reload the page.
@@ -259,11 +281,7 @@ export function MenuSheet({
                     />
                   </button>
                 </h2>
-                <div
-                  className="min-h-0 shrink overflow-y-auto overscroll-contain"
-                  hidden={!archived.open}
-                  id={archived.id}
-                >
+                <div hidden={!archived.open} id={archived.id}>
                   <ul aria-label="Archived channels" className="flex flex-col">
                     {away.map((channel) => (
                       <li className="flex items-center gap-1" key={channel.id}>
@@ -348,7 +366,7 @@ export function MenuSheet({
               </button>
             </h2>
             <div className="flex flex-col" hidden={!manage.open} id={manage.id}>
-              {MANAGE_PAGES.map((page) => (
+              {managePages.map((page) => (
                 <Link
                   activeProps={{ className: "bg-duet-tile" }}
                   className={ROW}

@@ -82,6 +82,16 @@ test("owned Skills uses the authorized catalog without querying unavailable plug
   expect(requested).toEqual(["GET /api/scout/capabilities"]);
 });
 
+test("an installed speech backend does not advertise deferred voice as available", async () => {
+  const { view } = screen(SkillsRoute, () =>
+    json({ ...catalog, voice: "push_to_talk" }),
+  );
+  await view.findByText("Voice");
+  expect(view.getByText("Deferred")).toBeTruthy();
+  expect(view.queryByText("Hands-free voice and read aloud")).toBeNull();
+  expect(view.getByText("Saved conversations")).toBeTruthy();
+});
+
 test("owned Connections offers Odoo setup while seven other accounts remain disconnected", async () => {
   const { view, requested } = screen(ConnectionsRoute, () => json(catalog));
   await view.findByText("Microsoft Teams");
