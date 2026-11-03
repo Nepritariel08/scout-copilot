@@ -1,0 +1,22 @@
+<odoo>
+  <template id="login" inherit_id="web.login">
+    <xpath expr="//div[hasclass('oe_login_buttons')]" position="inside">
+      <a t-if="scout_microsoft_available" class="btn btn-outline-primary mt-2" href="/scout_sso/microsoft/start" target="_top">Sign in with Microsoft</a>
+      <p t-if="request.params.get('scout_sso_error')" class="alert alert-warning mt-2" role="alert">Microsoft sign-in could not be completed. Start a new sign-in or use your existing login.</p>
+    </xpath>
+  </template>
+  <template id="workspace" name="Scout workspace entry">
+    <t t-call="web.layout">
+      <main class="container py-5">
+        <h1>Scout</h1>
+        <p>Open your Scout conversations in a new tab.</p>
+        <a class="btn btn-primary" href="https://scout.somethingsomewhere.ph/" target="_blank" rel="noopener noreferrer">Open Scout</a>
+        <a class="btn btn-link" href="/odoo" target="_top">Return to Odoo</a>
+      </main>
+    </t>
+  </template>
+  <record id="action_workspace" model="ir.actions.act_url">
+    <field name="name">Scout</field><field name="url">/scout/workspace</field><field name="target">self</field>
+  </record>
+  <menuitem id="menu_workspace" name="Scout" action="action_workspace" sequence="90" groups="base.group_user"/>
+</odoo>
