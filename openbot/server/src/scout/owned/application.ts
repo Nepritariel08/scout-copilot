@@ -11,6 +11,8 @@ import { createSameOriginGuard } from "../../auth/same-origin";
 import { createChannelEventHub } from "../../channels/events";
 import { createChannelStore } from "../../channels/routes";
 import { createThreadIdentity } from "../../channels/thread-identity";
+import { createPageFrameStore } from "../../computer/page-frames";
+import { createSnapshotStore } from "../../computer/snapshot-store";
 import type { OwnedDeploymentConfig } from "../../config";
 import {
   createCredentialAdminService,
@@ -43,6 +45,9 @@ import {
   createScoutMembershipReader,
   type MembershipReader,
 } from "../membership";
+import { createOwnedComputerConfigReader } from "../owned-computer/bindings";
+import { createOwnedComputerRoutes } from "../owned-computer/routes";
+import { createOwnedComputerService } from "../owned-computer/service";
 import { createOwnedModelAgents } from "../owned-model/agents";
 import {
   type ContextHistory,
@@ -337,6 +342,23 @@ export async function createOwnedApplication(
         backend: speechBackend,
       })
     : undefined;
+  const computerService = config.scoutComputerBindingsFile
+    ? createOwnedComputerService({
+        authority,
+        config: createOwnedComputerConfigReader(
+          config.scoutComputerBindingsFile,
+          deploymentId,
+        ),
+        canUseAgent: async (actor, agentId) =>
+          Boolean(await profiles.get(actor, agentId)),
+        audit,
+        snapshots: createSnapshotStore(database),
+        frames: createPageFrameStore(database),
+      })
+    : undefined;
+  const computerRoutes = computerService
+    ? createOwnedComputerRoutes(computerService, createSameOriginGuard(config))
+    : undefined;
   const catalog = ownedCatalog({
     odooSelectedTask: Boolean(recordContext),
     delegatedDraft: Boolean(
@@ -537,6 +559,8 @@ export async function createOwnedApplication(
     historyStore,
     historyEngine,
     modelCalls,
+    computerService,
+    computerRoutes,
     productName: tenantPackage.productName,
     close: () => historyEngine.close(),
   };

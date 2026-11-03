@@ -124,6 +124,15 @@ const API: readonly Route[] = [
   route("GET", /^\/api\/admin\/enterprise\/me$/),
 ];
 
+const COMPUTERS: readonly Route[] = [
+  route("GET", /^\/api\/computers\/(?:fleet|policy)$/),
+  route(
+    "GET",
+    /^\/api\/computers\/[^/]+\/(?:status|screenshot|read|page-frame\/[^/]+)$/,
+  ),
+  route("POST", /^\/api\/computers\/[^/]+\/(?:snapshot|read-public)$/),
+];
+
 const DELEGATED_DRAFTS: readonly Route[] = [
   route("GET POST", /^\/api\/scout\/tasks$/),
   route("POST", /^\/api\/scout\/tasks\/[^/]+$/),
@@ -178,11 +187,16 @@ function allowed(
 export const ownedApiAllowed = (
   pathname: string,
   method: string,
-  options: { delegatedDrafts?: boolean; speech?: boolean } = {},
+  options: {
+    delegatedDrafts?: boolean;
+    speech?: boolean;
+    computers?: boolean;
+  } = {},
 ): boolean =>
   allowed(API, pathname, method) ||
   (options.delegatedDrafts === true &&
     allowed(DELEGATED_DRAFTS, pathname, method)) ||
-  (options.speech === true && allowed(SPEECH, pathname, method));
+  (options.speech === true && allowed(SPEECH, pathname, method)) ||
+  (options.computers === true && allowed(COMPUTERS, pathname, method));
 export const ownedAuthAllowed = (pathname: string, method: string): boolean =>
   allowed(AUTH, pathname, method);
