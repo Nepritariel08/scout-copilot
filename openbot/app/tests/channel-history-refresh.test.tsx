@@ -61,6 +61,11 @@ const oneHole =
 let originalFetch: typeof fetch;
 let history: (threadId: string) => Promise<Response>;
 let historyReads: string[];
+let historySignals: (AbortSignal | undefined)[];
+type CapabilityFixture = { mode?: "owned" | "intelligence"; voice?: boolean };
+let deployment: CapabilityFixture | null;
+let voiceHistoryReads = 0;
+let voiceHistoryFails = false;
 let gatewaySnapshot: readonly Message[] = [];
 let runRequests: { path: string; input: RunAgentInput }[] = [];
 let activityRequests: ActivityRequest[] = [];
@@ -98,6 +103,10 @@ beforeAll(() => {
       );
       if (url.pathname === "/api/agents")
         return NativeResponse.json({ agents: [] });
+      if (url.pathname === "/api/capabilities")
+        return deployment === null
+          ? new NativeResponse("unavailable", { status: 503 })
+          : NativeResponse.json(deployment);
       if (url.pathname === "/api/plugins/for/refresh-bot")
         return NativeResponse.json({ skills: [], tools: [] });
       if (url.pathname.endsWith("/info"))
@@ -132,13 +141,18 @@ beforeAll(() => {
       }
       if (/\/api\/channels\/[^/]+\/busy$/.test(url.pathname))
         return new NativeResponse(null, { status: 204 });
-      if (url.pathname === "/api/voice/sessions")
-        return NativeResponse.json({ sessions: [], nextCursor: null });
+      if (url.pathname === "/api/voice/sessions") {
+        voiceHistoryReads++;
+        return voiceHistoryFails
+          ? new NativeResponse("unavailable", { status: 503 })
+          : NativeResponse.json({ sessions: [], nextCursor: null });
+      }
       const match = url.pathname.match(/\/threads\/([^/]+)\/messages$/);
       if (match) {
         const threadId = match[1];
         if (!threadId) throw new Error("Missing fixture thread id");
         historyReads.push(threadId);
+        historySignals.push(init?.signal ?? undefined);
         return history(threadId);
       }
       throw new Error(`Unexpected fixture request: ${url.pathname}`);
@@ -202,8 +216,19 @@ function mounting(
   snapshot: readonly Message[] = [],
   cachedActivity: ActivityFixture | null = null,
   a2uiEnabled = false,
+  availability: {
+    capabilities?: CapabilityFixture | null;
+    voiceFailure?: boolean;
+  } = {},
 ) {
   historyReads = [];
+  historySignals = [];
+  deployment =
+    availability.capabilities === undefined
+      ? { mode: "intelligence", voice: true }
+      : availability.capabilities;
+  voiceHistoryReads = 0;
+  voiceHistoryFails = availability.voiceFailure === true;
   gatewaySnapshot = snapshot;
   runRequests = [];
   activityRequests = [];
@@ -779,7 +804,7 @@ test("a stalled mount history read releases the send gate and shows unavailable 
   );
   await user.click(view.getByRole("button", { name: "Send message" }));
 
-  await view.findByText(unavailable, {}, { timeout: 4000 });
+  await view.findByText(unavailable, {}, { timeout: 35000 });
   await waitFor(() => expect(runRequests).toHaveLength(1), { timeout: 4000 });
   expect(runRequests[0]?.path).toBe("/api/copilotkit/agent/refresh-bot/run");
   expect(runRequests[0]?.input.threadId).toBe(channel.threadId);
@@ -794,7 +819,7 @@ test("a stalled mount history read releases the send gate and shows unavailable 
   expect(currentAgent().messages.map((message) => message.id)).not.toContain(
     fresh.id,
   );
-});
+}, 40000);
 
 test("a UI send waits for mount history before adding its message", async () => {
   const pending = delayedResponse();
@@ -808,6 +833,11 @@ test("a UI send waits for mount history before adding its message", async () => 
   await user.click(view.getByRole("button", { name: "Send message" }));
   expect(runRequests).toHaveLength(0);
   expect(currentAgent().messages).toEqual([initial]);
+  // Authorized Odoo history can take longer than the unrelated gateway-join deadline.
+  await act(async () => Bun.sleep(1700));
+  expect(runRequests).toHaveLength(0);
+  expect(historySignals[0]?.aborted).toBe(false);
+  expect(view.queryByText(unavailable)).toBeNull();
   await act(async () => pending.resolve(stored([initial, fresh])));
   await waitFor(() => expect(runRequests).toHaveLength(1));
   expect(runRequests[0]?.input.messages.slice(0, -1)).toEqual([initial, fresh]);
@@ -822,9 +852,114 @@ test("an unmounted history read cannot append messages to its former agent", asy
   const view = mounting(() => pending.promise, [initial]);
   await waitFor(() => expect(historyReads).toHaveLength(1));
   const formerAgent = currentAgent();
+  expect(historySignals[0]?.aborted).toBe(false);
   view.unmount();
+  expect(historySignals[0]?.aborted).toBe(true);
   await act(async () => pending.resolve(stored([initial, fresh])));
   expect(formerAgent.messages).toEqual([initial]);
+});
+
+test("a send waiting for hydration cannot start a run after navigating away", async () => {
+  const pending = delayedResponse();
+  const view = mounting(() => pending.promise, [initial]);
+  await waitFor(() => expect(historyReads).toHaveLength(1));
+  const user = userEvent.setup({ document: view.container.ownerDocument });
+  await user.type(
+    view.getByRole("textbox", { name: "Message" }),
+    "Waiting request",
+  );
+  await user.click(view.getByRole("button", { name: "Send message" }));
+  expect(runRequests).toHaveLength(0);
+  view.unmount();
+  expect(historySignals[0]?.aborted).toBe(true);
+  await act(async () => pending.resolve(stored([initial, fresh])));
+  await act(async () => Bun.sleep(0));
+  expect(runRequests).toHaveLength(0);
+});
+
+test("old-channel cleanup cannot release the next channel's hydration gate", async () => {
+  const old = delayedResponse();
+  const nextHistory = delayedResponse();
+  const view = mounting(() => old.promise, [initial]);
+  await waitFor(() => expect(historyReads).toHaveLength(1));
+  const next = {
+    ...channel,
+    id: "gated-next-channel",
+    threadId: "gated-next-thread",
+  };
+  history = () => nextHistory.promise;
+  cacheChannel(next);
+  view.rerender(tree(next));
+  await waitFor(() => expect(historyReads).toContain(next.threadId));
+  expect(historySignals[0]?.aborted).toBe(true);
+  const user = userEvent.setup({ document: view.container.ownerDocument });
+  await user.type(
+    view.getByRole("textbox", { name: "Message" }),
+    "Next scoped request",
+  );
+  await user.click(view.getByRole("button", { name: "Send message" }));
+  await act(async () => Bun.sleep(20));
+  expect(runRequests).toHaveLength(0);
+  await act(async () => nextHistory.resolve(stored([initial, fresh])));
+  await waitFor(() => expect(runRequests).toHaveLength(1));
+  expect(runRequests[0]?.input.threadId).toBe(next.threadId);
+  expect(runRequests[0]?.input.messages).toContainEqual(fresh);
+  await act(async () =>
+    old.resolve(
+      stored([
+        initial,
+        { ...fresh, id: "obsolete", content: "Old scoped answer" },
+      ]),
+    ),
+  );
+  expect(view.queryByText("Old scoped answer")).toBeNull();
+});
+
+test.each([
+  {
+    name: "owned voice disabled",
+    capabilities: { mode: "owned", voice: false },
+  },
+  { name: "owned capability absent", capabilities: { mode: "owned" } },
+  { name: "old unknown schema", capabilities: {} },
+  { name: "capability service unavailable", capabilities: null },
+] satisfies { name: string; capabilities: CapabilityFixture | null }[])(
+  "$name never fetches an unsupported voice archive or warns during text chat",
+  async ({ capabilities }) => {
+    const view = mounting(async () => stored([initial]), [], null, false, {
+      capabilities,
+      voiceFailure: true,
+    });
+    await view.findByText(initial.content);
+    const user = userEvent.setup({ document: view.container.ownerDocument });
+    await user.type(
+      view.getByRole("textbox", { name: "Message" }),
+      "Text only",
+    );
+    await user.click(view.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(runRequests).toHaveLength(1));
+    expect(voiceHistoryReads).toBe(0);
+    expect(
+      view.queryByText("Couldn’t load voice chats. Reload the page."),
+    ).toBeNull();
+    expect(
+      view.queryByText(/Couldn’t bring in what was said on the call/),
+    ).toBeNull();
+  },
+);
+
+test("licensed voice archive failures remain visible even when new voice calls are disabled", async () => {
+  const view = mounting(async () => stored([initial]), [], null, false, {
+    capabilities: { mode: "intelligence", voice: false },
+    voiceFailure: true,
+  });
+  await view.findByText(initial.content);
+  await view.findByText(
+    "Couldn’t load voice chats. Reload the page.",
+    {},
+    { timeout: 5000 },
+  );
+  expect(voiceHistoryReads).toBeGreaterThan(0);
 });
 
 test("explicit valid-empty durable history finishes without a failure notice", async () => {
@@ -867,9 +1002,9 @@ test("a successful same-message refresh is not overwritten by later unavailable 
 
   await announce(1);
   await view.findByText(oneHole);
-  await new Promise((resolve) => setTimeout(resolve, 2300));
-
-  expect(historyReads.length - beforeRefresh).toBe(3);
+  await waitFor(() => expect(historyReads.length - beforeRefresh).toBe(3), {
+    timeout: 4000,
+  });
   expect(view.getByText(oneHole)).toBeTruthy();
   expect(view.queryByText(unavailable)).toBeNull();
   expect(currentAgent().messages.map((message) => message.id)).toEqual([
@@ -1083,6 +1218,7 @@ test("a cancelled channel refresh cannot replace the next channel's notice or me
   history = async () => stored([initial, broken]);
   cacheChannel(next);
   view.rerender(tree(next));
+  expect(historySignals[1]?.aborted).toBe(true);
   await view.findByText(oneHole);
   await act(async () =>
     old.resolve(

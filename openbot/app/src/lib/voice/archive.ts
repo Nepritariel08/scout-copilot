@@ -1,13 +1,13 @@
 import type { ActivityMessage, Message } from "@ag-ui/core";
-import { queryOptions, useQuery } from "@tanstack/react-query";
-import { channelKeys } from "@/lib/channels/queries";
-import { client } from "@/lib/client";
-import { queryClient } from "@/query-client";
 import type {
   SaveVoiceSessionInput,
   VoiceSessionPage,
   VoiceSessionRecord,
 } from "@openbot/shared/voice-session";
+import { queryOptions, useQuery } from "@tanstack/react-query";
+import { channelKeys } from "@/lib/channels/queries";
+import { client } from "@/lib/client";
+import { queryClient } from "@/query-client";
 import { closingOf } from "./cut";
 import {
   forgetVoiceCall,
@@ -128,8 +128,11 @@ export function saveVoiceSession(
   })();
 }
 
-export function useVoiceArchive(channelId: string) {
-  const saved = useQuery(voiceSessionQueryOptions(channelId), queryClient);
+export function useVoiceArchive(channelId: string, enabled = true) {
+  const saved = useQuery(
+    { ...voiceSessionQueryOptions(channelId), enabled },
+    queryClient,
+  );
   const { data: pending = [] } = useQuery(
     {
       queryKey: keys.pending(channelId),
@@ -160,11 +163,11 @@ export function useVoiceArchive(channelId: string) {
     if (entry.saveState !== "unsaved" || !entries.has(entry.id))
       entries.set(entry.id, entry);
   return {
-    entries: [...entries.values()].sort(
+    entries: (enabled ? [...entries.values()] : []).sort(
       (a, b) =>
         a.startedAt.localeCompare(b.startedAt) || a.id.localeCompare(b.id),
     ),
-    error: saved.error,
+    error: enabled ? saved.error : null,
   };
 }
 
